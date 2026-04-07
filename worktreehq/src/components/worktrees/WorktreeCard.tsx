@@ -3,6 +3,7 @@ import { FileEdit, GitCommit, Circle, AlertTriangle, Star } from 'lucide-react';
 import type { Worktree } from '../../types';
 import { worktreeStatusClass } from '../../lib/colors';
 import { relativeTime, shortSha, aheadBehind } from '../../lib/format';
+import { Notepad } from './Notepad';
 
 export function WorktreeCard({ wt }: { wt: Worktree }) {
   const statusIcon = {
@@ -49,6 +50,7 @@ export function WorktreeCard({ wt }: { wt: Worktree }) {
           {wt.lastCommit.author} · {relativeTime(wt.lastCommit.date)}
         </div>
       </div>
+      <Notepad worktreePath={wt.path} />
     </motion.div>
   );
 }
