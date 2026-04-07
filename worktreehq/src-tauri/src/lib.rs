@@ -15,6 +15,8 @@ pub fn run() {
             commands::repo::open_path,
             commands::config::read_config,
             commands::config::write_config,
+            commands::notepads::read_notepad,
+            commands::notepads::write_notepad,
             commands::watcher::start_watching,
             commands::watcher::stop_watching,
         ])
