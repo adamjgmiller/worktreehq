@@ -5,3 +5,4 @@ src-tauri/gen
 .vite
 *.log
 .DS_Store
+.claude/
