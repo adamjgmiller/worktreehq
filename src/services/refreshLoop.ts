@@ -84,12 +84,14 @@ async function runRefreshOnce(): Promise<void> {
 
     // Attach open PRs to branches. The REST list only populates isDraft; we
     // follow up with a GraphQL batch to fill in checksStatus / reviewDecision /
-    // mergeable so the BranchRow indicators work for open PRs too.
-    const openPRs = await listOpenPRsForBranches(
-      remote.owner ?? '',
-      remote.name ?? '',
-      branches.map((b) => b.name),
-    );
+    // mergeable so the BranchRow indicators work for open PRs too. Skip the
+    // call entirely when there's no resolvable GitHub remote — otherwise we'd
+    // round-trip a wasted 404 against /repos//pulls every refresh tick on
+    // non-github remotes.
+    const openPRs =
+      remote.owner && remote.name
+        ? await listOpenPRsForBranches(remote.owner, remote.name, branches.map((b) => b.name))
+        : new Map();
     if (remote.owner && remote.name && openPRs.size > 0) {
       const numbers = Array.from(openPRs.values()).map((pr) => pr.number);
       const enriched = await batchFetchPRs(remote.owner, remote.name, numbers);
