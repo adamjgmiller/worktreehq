@@ -16,7 +16,6 @@ function wt(path: string, branch = 'feat/x'): Worktree {
     head: 'abc',
     untrackedCount: 0,
     modifiedCount: 0,
-    uncommittedCount: 0,
     stagedCount: 0,
     stashCount: 0,
     ahead: 0,

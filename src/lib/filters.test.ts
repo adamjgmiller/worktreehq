@@ -46,6 +46,40 @@ describe('applyPreset', () => {
   });
 });
 
+describe('applyPreset: default-branch guard', () => {
+  // Guards against the edge case where the repo's default branch ends up matching
+  // a destructive preset (e.g. fork named `main` showing up as squash-merged).
+  // Git would reject the delete, but the UI should prevent the click entirely.
+  it('safe-to-delete excludes the repo default branch', () => {
+    const branches: Branch[] = [
+      b({ name: 'main', mergeStatus: 'squash-merged' }),
+      b({ name: 'feature', mergeStatus: 'squash-merged' }),
+    ];
+    const out = applyPreset(branches, 'safe-to-delete', { defaultBranch: 'main' }).map(
+      (x) => x.name,
+    );
+    expect(out).toEqual(['feature']);
+  });
+  it('stale excludes the repo default branch', () => {
+    const branches: Branch[] = [
+      b({ name: 'main', mergeStatus: 'stale' }),
+      b({ name: 'old-branch', mergeStatus: 'stale' }),
+    ];
+    const out = applyPreset(branches, 'stale', { defaultBranch: 'main' }).map((x) => x.name);
+    expect(out).toEqual(['old-branch']);
+  });
+  it('orphaned excludes the repo default branch', () => {
+    const branches: Branch[] = [
+      b({ name: 'main', hasLocal: true, hasRemote: false, upstreamGone: true }),
+      b({ name: 'stray', hasLocal: true, hasRemote: false, upstreamGone: true }),
+    ];
+    const out = applyPreset(branches, 'orphaned', { defaultBranch: 'main' }).map(
+      (x) => x.name,
+    );
+    expect(out).toEqual(['stray']);
+  });
+});
+
 describe('applyPreset: mine', () => {
   const branches: Branch[] = [
     b({ name: 'ada-branch', authorEmail: 'ada@example.com' }),

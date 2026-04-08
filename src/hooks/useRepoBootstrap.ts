@@ -29,7 +29,15 @@ export function useRepoBootstrap() {
   const setTokenPresent = useRepoStore((s) => s.setTokenPresent);
   const setRefreshInterval = useRepoStore((s) => s.setRefreshInterval);
   const setFetchInterval = useRepoStore((s) => s.setFetchInterval);
-  const worktrees = useRepoStore((s) => s.worktrees);
+  // Derive just the sorted-paths key so the watcher effect only re-runs when the
+  // actual path SET changes — not on every refresh tick when other worktree
+  // fields (branch name, commit count, etc.) churn.
+  const worktreePathsKey = useRepoStore((s) =>
+    s.worktrees
+      .map((w) => w.path)
+      .sort()
+      .join('\u0001'),
+  );
 
   // Debounced refresh trigger for watcher events — rapid file edits should coalesce
   // into one refresh.
@@ -93,16 +101,14 @@ export function useRepoBootstrap() {
 
   // Re-register the watcher on the Rust side whenever the set of worktree paths changes.
   // `start_watching` on its own replaces any prior watcher, so a second call reseats it.
-  const lastPaths = useRef<string>('');
+  // The selector above returns the joined-paths string, so strict equality on it
+  // means this effect only fires when a worktree path is added, removed, or renamed.
   useEffect(() => {
     if (!isTauri()) return;
-    const paths = worktrees.map((w) => w.path).sort();
-    const key = paths.join('\u0001');
-    if (key === lastPaths.current) return;
-    lastPaths.current = key;
-    if (paths.length === 0) return;
+    if (!worktreePathsKey) return;
+    const paths = worktreePathsKey.split('\u0001');
     invoke('start_watching', { paths }).catch(() => {
       /* best-effort */
     });
-  }, [worktrees]);
+  }, [worktreePathsKey]);
 }

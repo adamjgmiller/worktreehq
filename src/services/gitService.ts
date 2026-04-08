@@ -229,7 +229,6 @@ async function worktreeCore(
     head,
     untrackedCount: untracked,
     modifiedCount: modified,
-    uncommittedCount: uncommitted,
     stagedCount: staged,
     stashCount: stashes,
     ahead,

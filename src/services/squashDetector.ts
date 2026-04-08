@@ -53,8 +53,14 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       if (!c.prNumber) continue;
       const pr = prMap.get(c.prNumber);
       if (!pr) continue;
-      // GitHub reports merge_commit_sha for squash merges too, so matching the
-      // first-parent commit is our squash signal.
+      // GitHub populates merge_commit_sha for all three merge strategies (merge,
+      // squash, rebase). The disambiguating signal is that only squash and merge
+      // produce a commit whose first-parent on main EQUALS merge_commit_sha — a
+      // rebase-merge replays the branch's commits inline, so merge_commit_sha
+      // points at the tip of the replayed run, not at a first-parent commit. We
+      // walked `git log main --first-parent` to get `c.sha`, so matching it to
+      // pr.mergeCommitSha catches squash-merged PRs (and harmlessly also catches
+      // merge-commit PRs, which pass pr.state === 'merged' anyway).
       const isLikelySquash = pr.state === 'merged' && pr.mergeCommitSha === c.sha;
       const sourceBranch = pr.headRef;
       const archiveTag = tags.includes(`archive/${sourceBranch}`) ? `archive/${sourceBranch}` : undefined;

@@ -20,8 +20,6 @@ export interface Worktree {
   // Split counts: untracked ('?') and modified (tree-vs-index) are tracked separately.
   untrackedCount: number;
   modifiedCount: number;
-  // Legacy field = untracked + modified, kept for existing callers/tests.
-  uncommittedCount: number;
   stagedCount: number;
   stashCount: number;
   ahead: number;
