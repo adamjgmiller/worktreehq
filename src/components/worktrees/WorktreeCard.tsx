@@ -10,17 +10,35 @@ import {
   ChevronRight,
   Copy,
   Check,
+  GitBranch,
+  MoreVertical,
 } from 'lucide-react';
-import type { ClaudePresence, Worktree } from '../../types';
+import type { ClaudePresence, Worktree, InProgressOp } from '../../types';
 import { worktreeStatusClass } from '../../lib/colors';
 import { relativeTime, shortSha, aheadBehind } from '../../lib/format';
 import { resumeCommand } from '../../services/claudeAwarenessService';
 import { useRepoStore } from '../../store/useRepoStore';
 import { Notepad } from './Notepad';
 
-export function WorktreeCard({ wt }: { wt: Worktree }) {
-  const presence = useRepoStore((s) => s.claudePresence.get(wt.path));
+const inProgressLabel: Record<InProgressOp, string> = {
+  rebase: 'REBASE IN PROGRESS',
+  merge: 'MERGE IN PROGRESS',
+  'cherry-pick': 'CHERRY-PICK IN PROGRESS',
+  revert: 'REVERT IN PROGRESS',
+  bisect: 'BISECT IN PROGRESS',
+};
 
+export function WorktreeCard({
+  wt,
+  onRemove,
+  onPrune,
+}: {
+  wt: Worktree;
+  onRemove?: (wt: Worktree) => void;
+  onPrune?: () => void;
+}) {
+  const presence = useRepoStore((s) => s.claudePresence.get(wt.path));
+  const [menuOpen, setMenuOpen] = useState(false);
   const statusIcon = {
     clean: <Circle className="w-4 h-4 text-wt-clean" fill="currentColor" />,
     dirty: <FileEdit className="w-4 h-4 text-wt-dirty" />,
@@ -62,7 +80,52 @@ export function WorktreeCard({ wt }: { wt: Worktree }) {
             <Star className="w-4 h-4" fill="currentColor" />
           </span>
         )}
+        {(onRemove || onPrune) && (
+          <div className="relative">
+            <button
+              onClick={() => setMenuOpen((v) => !v)}
+              className="p-1 rounded hover:bg-wt-border"
+              aria-label="worktree actions"
+            >
+              <MoreVertical className="w-4 h-4 text-neutral-400" />
+            </button>
+            {menuOpen && (
+              <div className="absolute right-0 top-full mt-1 z-20 w-40 bg-wt-panel border border-wt-border rounded shadow-lg text-xs">
+                {onRemove && (
+                  <button
+                    disabled={wt.isPrimary}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onRemove(wt);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-wt-border disabled:opacity-40"
+                    title={wt.isPrimary ? 'Cannot remove primary worktree' : ''}
+                  >
+                    Remove worktree
+                  </button>
+                )}
+                {onPrune && (
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onPrune();
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-wt-border border-t border-wt-border"
+                  >
+                    Prune worktrees
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
+      {wt.inProgress && (
+        <div className="mb-3 flex items-center gap-1.5 px-2 py-1 rounded border border-wt-conflict/60 bg-wt-conflict/10 text-wt-conflict text-[10px] font-mono tracking-wider">
+          <AlertTriangle className="w-3 h-3" />
+          {inProgressLabel[wt.inProgress]}
+        </div>
+      )}
       <div className="relative group mb-4">
         <div
           className="text-xs font-mono text-neutral-500 truncate cursor-help"
@@ -78,8 +141,10 @@ export function WorktreeCard({ wt }: { wt: Worktree }) {
         </div>
       </div>
       <div className="grid grid-cols-2 gap-2 text-xs mb-3">
-        <Stat label="uncommitted" value={wt.uncommittedCount} />
+        <Stat label="untracked" value={wt.untrackedCount} />
+        <Stat label="modified" value={wt.modifiedCount} />
         <Stat label="staged" value={wt.stagedCount} />
+        <Stat label="stashes" value={wt.stashCount} />
         <Stat label="ahead / behind" value={aheadBehind(wt.ahead, wt.behind)} />
         <Stat label="conflicts" value={wt.hasConflicts ? 'yes' : 'no'} />
       </div>
@@ -88,7 +153,8 @@ export function WorktreeCard({ wt }: { wt: Worktree }) {
           <span className="font-mono text-neutral-500">{shortSha(wt.lastCommit.sha)}</span>{' '}
           {wt.lastCommit.message || '(no commits)'}
         </div>
-        <div className="text-neutral-600 mt-1">
+        <div className="text-neutral-600 mt-1 flex items-center gap-1">
+          <GitBranch className="w-3 h-3" />
           {wt.lastCommit.author} · {relativeTime(wt.lastCommit.date)}
         </div>
       </div>

@@ -1,5 +1,5 @@
 import type { Branch, MainCommit, SquashMapping, PRInfo } from '../types';
-import { getPR } from './githubService';
+import { batchFetchPRs } from './githubService';
 import { cherryCheck } from './gitService';
 
 export interface DetectInput {
@@ -41,16 +41,21 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
   for (const b of branches) branchIndex.set(b.name, { ...b });
 
   if (owner && name) {
+    // Collect every PR number referenced by a (#N) tag on main, batch-fetch them in
+    // a single GraphQL call, then attribute each main commit to its PR.
+    const prNumbers: number[] = [];
+    for (const c of mainCommits) {
+      if (c.prNumber) prNumbers.push(c.prNumber);
+    }
+    const prMap = await batchFetchPRs(owner, name, prNumbers);
+
     for (const c of mainCommits) {
       if (!c.prNumber) continue;
-      const pr = await getPR(owner, name, c.prNumber);
+      const pr = prMap.get(c.prNumber);
       if (!pr) continue;
-      // Treat any PR whose merge_commit_sha matches this first-parent commit as squashed-like
-      // (GitHub reports merge_commit_sha for squash merges too).
+      // GitHub reports merge_commit_sha for squash merges too, so matching the
+      // first-parent commit is our squash signal.
       const isLikelySquash = pr.state === 'merged' && pr.mergeCommitSha === c.sha;
-      if (!isLikelySquash) {
-        // Still record the PR mapping even if not squash so squash view can show it.
-      }
       const sourceBranch = pr.headRef;
       const archiveTag = tags.includes(`archive/${sourceBranch}`) ? `archive/${sourceBranch}` : undefined;
       mappings.push({

@@ -1,5 +1,8 @@
 export type MergeStatus = 'merged-normally' | 'squash-merged' | 'unmerged' | 'stale';
 export type WorktreeStatus = 'clean' | 'dirty' | 'conflict' | 'diverged';
+export type InProgressOp = 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect';
+export type ChecksStatus = 'success' | 'failure' | 'pending' | 'none';
+export type ReviewDecision = 'approved' | 'changes_requested' | 'review_required' | null;
 
 export interface LastCommit {
   sha: string;
@@ -14,11 +17,17 @@ export interface Worktree {
   upstream?: string;
   isPrimary: boolean;
   head: string;
+  // Split counts: untracked ('?') and modified (tree-vs-index) are tracked separately.
+  untrackedCount: number;
+  modifiedCount: number;
+  // Legacy field = untracked + modified, kept for existing callers/tests.
   uncommittedCount: number;
   stagedCount: number;
+  stashCount: number;
   ahead: number;
   behind: number;
   hasConflicts: boolean;
+  inProgress?: InProgressOp;
   lastCommit: LastCommit;
   status: WorktreeStatus;
 }
@@ -32,6 +41,10 @@ export interface PRInfo {
   headRef: string;
   mergeMethod?: 'merge' | 'squash' | 'rebase';
   url: string;
+  isDraft?: boolean;
+  mergeable?: boolean | null;
+  checksStatus?: ChecksStatus;
+  reviewDecision?: ReviewDecision;
 }
 
 export interface Branch {
@@ -46,6 +59,7 @@ export interface Branch {
   pr?: PRInfo;
   worktreePath?: string;
   upstreamGone?: boolean;
+  authorEmail?: string;
 }
 
 export interface SquashMapping {

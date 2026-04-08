@@ -1,6 +1,8 @@
 pub mod claude_state;
 pub mod config;
+pub mod fs_probe;
 pub mod git_exec;
 pub mod notepads;
+pub mod pr_cache;
 pub mod repo;
 pub mod watcher;

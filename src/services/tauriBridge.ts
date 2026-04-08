@@ -33,6 +33,32 @@ export async function readClaudeState(): Promise<ClaudeStateRaw> {
   return invoke<ClaudeStateRaw>('read_claude_state');
 }
 
+// Plain filesystem existence check. Used to probe in-progress-operation marker files
+// (MERGE_HEAD, rebase-merge/, …) and the on-disk PR cache file.
+export async function pathExists(path: string): Promise<boolean> {
+  try {
+    return await invoke<boolean>('path_exists', { path });
+  } catch {
+    return false;
+  }
+}
+
+export async function readPrCacheFile(): Promise<string> {
+  try {
+    return await invoke<string>('read_pr_cache');
+  } catch {
+    return '';
+  }
+}
+
+export async function writePrCacheFile(content: string): Promise<void> {
+  try {
+    await invoke<void>('write_pr_cache', { content });
+  } catch {
+    /* best-effort: a failed persist shouldn't break the app */
+  }
+}
+
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in (window as any);
 }
