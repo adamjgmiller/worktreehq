@@ -65,6 +65,13 @@ export function joinClaudeState(
     }
   }
 
+  // Set membership of worktree paths that have a `claude` process running
+  // with cwd == path. Used to promote `recent`/`dormant` → `idle` for
+  // worktrees where the user just stepped away from the prompt instead of
+  // closing the session. Falls back to empty set if Rust didn't populate
+  // the field (older snapshots in tests, or platforms with no scanner).
+  const liveCwds = new Set(raw.live_worktree_cwds ?? []);
+
   const out = new Map<string, ClaudePresence>();
   for (const wt of worktrees) {
     const project =
@@ -74,6 +81,10 @@ export function joinClaudeState(
       // A lockfile without a project dir is rare but can happen mid-startup
       // (IDE has the lock but no JSONL has been flushed yet). Count it as 1
       // live agent so the badge isn't blank in that window.
+      // We deliberately do NOT promote to `idle` here even if a process is
+      // running in this cwd: without a project dir we have no session to
+      // attribute the process to, and fabricating one would mean the badge
+      // appears with no resumable session id.
       const lock = lockByFolder.get(wt.path);
       out.set(wt.path, {
         status: lock ? 'live-ide' : 'none',
@@ -92,11 +103,19 @@ export function joinClaudeState(
     const age = now - newest.mtime_ms;
 
     const lock = lockByFolder.get(wt.path);
+    const hasLiveProcess = liveCwds.has(wt.path);
 
     let status: ClaudePresenceStatus;
     if (lock) status = 'live-ide';
     else if (age <= LIVE_WINDOW_MS) status = 'live';
-    else if (age <= RECENT_WINDOW_MS) status = 'recent';
+    else if (hasLiveProcess) {
+      // The JSONL is stale (≥60s) but a `claude` process is running with
+      // cwd == this worktree. The user is almost certainly idle in front
+      // of a still-open prompt rather than having closed the session.
+      // Promote past `recent`/`dormant` directly to `idle` so the closed
+      // sessions list doesn't lie about the most-recent session.
+      status = 'idle';
+    } else if (age <= RECENT_WINDOW_MS) status = 'recent';
     else status = 'dormant';
 
     // Count distinct live agents — JSONL sessions within LIVE_WINDOW_MS, plus
@@ -105,16 +124,26 @@ export function joinClaudeState(
     // lock if the newest JSONL is itself outside the live window. This
     // approximates "how many human-driven Claudes are touching this worktree
     // right now" — the number we want to warn about, not the raw file count.
+    //
+    // An `idle` promotion also counts the running process as 1 live agent,
+    // for the same warning logic. We only add it when no JSONL session is
+    // already counted (otherwise we'd double-count when a recent JSONL
+    // sneaks in just before the process is detected).
     const liveJsonlCount = sessions.filter((s) => now - s.mtime_ms <= LIVE_WINDOW_MS).length;
-    const liveSessionCount =
-      liveJsonlCount + (lock && age > LIVE_WINDOW_MS ? 1 : 0);
+    let liveSessionCount = liveJsonlCount + (lock && age > LIVE_WINDOW_MS ? 1 : 0);
+    if (status === 'idle' && liveJsonlCount === 0) {
+      liveSessionCount += 1;
+    }
 
-    // A session counts as "currently active" only for live/live-ide. Otherwise
-    // every session (including the most recent) goes into the closed list so
-    // the user can reopen any of them.
-    const isLive = status === 'live' || status === 'live-ide';
-    const activeSessionId = isLive ? newest.session_id : undefined;
-    const inactive = (isLive ? sessions.slice(1) : sessions).map((s) => ({
+    // A session counts as "currently active" for live/live-ide AND for the
+    // new `idle` status: the running process is attributed to the most-
+    // recent JSONL in this worktree, so it shouldn't appear in the closed
+    // list (where the UI would invite the user to "resume" a session that
+    // is already running). For non-live/non-idle states, every session
+    // including the newest goes to the closed list so the user can reopen.
+    const isActive = status === 'live' || status === 'live-ide' || status === 'idle';
+    const activeSessionId = isActive ? newest.session_id : undefined;
+    const inactive = (isActive ? sessions.slice(1) : sessions).map((s) => ({
       sessionId: s.session_id,
       lastActivity: new Date(s.mtime_ms).toISOString(),
     }));
@@ -188,14 +217,16 @@ export async function fetchClaudePresence(
     const raw = await readClaudeState(expected);
     if (raw.unchanged && cachedRaw && canUseCache) {
       // Rust confirmed the projects haven't moved. Combine the fresh
-      // ide_locks (always re-read so crashed-IDE detection works) with the
+      // ide_locks AND live_worktree_cwds (both always re-read so
+      // crashed-IDE and exited-process detection still work) with the
       // cached projects data, then re-join against the current `now` so
-      // live/recent/dormant transitions fire on time. Don't bump cachedAt —
-      // that timestamp tracks the last *full* read, not the last cache hit,
-      // so the force-refresh window remains accurate.
+      // live/recent/idle/dormant transitions fire on time. Don't bump
+      // cachedAt — that timestamp tracks the last *full* read, not the
+      // last cache hit, so the force-refresh window remains accurate.
       const merged: ClaudeStateRaw = {
         ide_locks: raw.ide_locks,
         projects: cachedRaw.projects,
+        live_worktree_cwds: raw.live_worktree_cwds,
         fingerprint: raw.fingerprint,
         unchanged: false,
       };

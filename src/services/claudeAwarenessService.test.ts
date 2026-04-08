@@ -280,6 +280,146 @@ describe('joinClaudeState', () => {
     });
   });
 
+  describe('idle promotion via live_worktree_cwds', () => {
+    it('keeps status=live when JSONL is fresh AND a process is running', () => {
+      // Process detection should not downgrade a live JSONL: a fresh mtime
+      // already proves the session is live, and the process is just confirming.
+      const raw: ClaudeStateRaw = {
+        ide_locks: [],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [{ session_id: 's', mtime_ms: NOW - 5_000 }],
+          },
+        ],
+        live_worktree_cwds: [worktreePath],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.status).toBe('live');
+    });
+
+    it('promotes recent → idle when a process is running', () => {
+      // Newest JSONL is 90s old (past LIVE_WINDOW_MS but inside RECENT_WINDOW_MS).
+      // Without process detection this would be `recent` and the session would
+      // be in inactiveSessions. With process detection it should be `idle` and
+      // the session is the activeSessionId (NOT in the past list).
+      const raw: ClaudeStateRaw = {
+        ide_locks: [],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [{ session_id: 'idling', mtime_ms: NOW - 90_000 }],
+          },
+        ],
+        live_worktree_cwds: [worktreePath],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.status).toBe('idle');
+      expect(presence.activeSessionId).toBe('idling');
+      expect(presence.inactiveSessions).toEqual([]);
+    });
+
+    it('promotes dormant → idle when a process is running', () => {
+      // Even a JSONL outside the RECENT_WINDOW_MS gets promoted: the running
+      // process is the authoritative signal, not the file mtime.
+      const raw: ClaudeStateRaw = {
+        ide_locks: [],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [
+              { session_id: 'idling', mtime_ms: NOW - 2 * RECENT_WINDOW_MS },
+              { session_id: 'older', mtime_ms: NOW - 3 * RECENT_WINDOW_MS },
+            ],
+          },
+        ],
+        live_worktree_cwds: [worktreePath],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.status).toBe('idle');
+      expect(presence.activeSessionId).toBe('idling');
+      // The older session is still surfaced as past — we only promote one.
+      expect(presence.inactiveSessions.map((s) => s.sessionId)).toEqual(['older']);
+    });
+
+    it('leaves status=recent when no process is running', () => {
+      // Sanity check: without the live_worktree_cwds entry, the existing
+      // recent/dormant behavior is preserved exactly.
+      const raw: ClaudeStateRaw = {
+        ide_locks: [],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [{ session_id: 's', mtime_ms: NOW - 90_000 }],
+          },
+        ],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.status).toBe('recent');
+      expect(presence.activeSessionId).toBeUndefined();
+      expect(presence.inactiveSessions).toHaveLength(1);
+    });
+
+    it('does NOT promote when process is running but no project dir exists', () => {
+      // Edge case: a `claude` process is running in a worktree that has no
+      // project dir (e.g. brand-new worktree, no flush yet). We can't
+      // attribute the process to any session, so we don't fabricate one —
+      // status stays `none` rather than fake-claiming `idle`.
+      const raw: ClaudeStateRaw = {
+        ide_locks: [],
+        projects: [],
+        live_worktree_cwds: [worktreePath],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.status).toBe('none');
+      expect(presence.activeSessionId).toBeUndefined();
+    });
+
+    it('counts the running process as 1 live agent for the multi-Claude warning', () => {
+      // When idle, the process counts as 1 live agent. If a second process
+      // were running in the same worktree we'd see 2 live agents — though
+      // we'd typically see that via the JSONL mtime path first. The
+      // important property: idle alone reports liveSessionCount === 1 so
+      // the badge isn't blank.
+      const raw: ClaudeStateRaw = {
+        ide_locks: [],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [{ session_id: 's', mtime_ms: NOW - 90_000 }],
+          },
+        ],
+        live_worktree_cwds: [worktreePath],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.liveSessionCount).toBe(1);
+    });
+
+    it('IDE lock still wins over idle (lock is the strongest signal)', () => {
+      // If the IDE lock is present, the user is actively in the IDE and
+      // we should keep `live-ide`. The idle promotion is only for the
+      // path where there's no lock.
+      const raw: ClaudeStateRaw = {
+        ide_locks: [{ pid: 1, ide_name: 'Cursor', workspace_folders: [worktreePath] }],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [{ session_id: 's', mtime_ms: NOW - 90_000 }],
+          },
+        ],
+        live_worktree_cwds: [worktreePath],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.status).toBe('live-ide');
+    });
+  });
+
   it('inactive sessions are emitted newest-first regardless of input order', () => {
     const raw: ClaudeStateRaw = {
       ide_locks: [],
@@ -375,6 +515,50 @@ describe('fetchClaudePresence fingerprint cache', () => {
       readClaudeStateMock.mockResolvedValueOnce({
         ide_locks: [],
         projects: [],
+        fingerprint: 'fp-1',
+        unchanged: true,
+      });
+      const second = await fetchClaudePresence(worktrees);
+      expect(second.get(wtPath)?.status).toBe('recent');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses fresh live_worktree_cwds from the unchanged response (exited-process detection)', async () => {
+    const t0 = 2_000_000_000_000;
+    // Pick a JSONL mtime that's outside LIVE_WINDOW_MS but inside
+    // RECENT_WINDOW_MS. With the cwd present we expect `idle`; without it,
+    // `recent`. The test confirms the cached projects data combines with the
+    // FRESH cwd list rather than the cached one — same fix shape as the
+    // existing crashed-IDE test.
+    const mtime = t0 - 90_000;
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(t0);
+      readClaudeStateMock.mockResolvedValueOnce({
+        ide_locks: [],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: wtPath,
+            sessions: [{ session_id: 's', mtime_ms: mtime }],
+          },
+        ],
+        live_worktree_cwds: [wtPath],
+        fingerprint: 'fp-1',
+        unchanged: false,
+      });
+      const first = await fetchClaudePresence(worktrees);
+      expect(first.get(wtPath)?.status).toBe('idle');
+
+      // Second call: Rust short-circuits projects but reports the process is
+      // gone. The TS side must use the fresh empty cwd list, dropping idle
+      // back to recent.
+      readClaudeStateMock.mockResolvedValueOnce({
+        ide_locks: [],
+        projects: [],
+        live_worktree_cwds: [],
         fingerprint: 'fp-1',
         unchanged: true,
       });

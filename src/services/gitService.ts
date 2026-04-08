@@ -53,21 +53,33 @@ export async function getUserEmail(repo: string): Promise<string> {
   return out;
 }
 
-// Parse `git worktree list --porcelain` output
-export function parseWorktreeList(text: string): Array<{ path: string; head: string; branch: string }> {
+// Parse `git worktree list --porcelain` output. The `prunable` line is git's
+// own signal that a worktree's bookkeeping points at a directory that no
+// longer exists (typically because the user `rm -rf`d it instead of running
+// `git worktree remove`). The reason text follows the keyword. Capture it so
+// callers can short-circuit per-worktree probes against a missing path and
+// surface the orphan in the UI — without this, an orphaned entry pretends to
+// be a tidy worktree because every `tryRun` against the missing path returns
+// empty.
+export function parseWorktreeList(
+  text: string,
+): Array<{ path: string; head: string; branch: string; prunable?: string }> {
   const blocks = text.split(/\n\n+/).filter(Boolean);
   return blocks.map((b) => {
     const lines = b.split('\n');
     let path = '';
     let head = '';
     let branch = '';
+    let prunable: string | undefined;
     for (const l of lines) {
       if (l.startsWith('worktree ')) path = l.slice(9);
       else if (l.startsWith('HEAD ')) head = l.slice(5);
       else if (l.startsWith('branch ')) branch = l.slice(7).replace(/^refs\/heads\//, '');
       else if (l === 'detached') branch = '(detached)';
+      else if (l === 'prunable') prunable = '(no reason given)';
+      else if (l.startsWith('prunable ')) prunable = l.slice(9);
     }
-    return { path, head, branch };
+    return prunable ? { path, head, branch, prunable } : { path, head, branch };
   });
 }
 
@@ -195,6 +207,36 @@ async function stashCount(worktreePath: string, branch: string): Promise<number>
   return parseStashBranches(raw).filter((b) => b === branch).length;
 }
 
+// Sentinel for an orphaned worktree: git's bookkeeping under
+// .git/worktrees/<name>/ still references a path that no longer exists. We
+// short-circuit every per-worktree probe (status, rev-list, stash list,
+// marker scans) because they'd all be operating on a missing directory and
+// returning empty strings — which silently paints the card as a tidy
+// worktree. The UI branches on `prunable` to render the OrphanedCard variant.
+function orphanedWorktree(
+  path: string,
+  head: string,
+  branch: string,
+  prunable: string,
+): Worktree {
+  return {
+    path,
+    branch: branch || '(detached)',
+    isPrimary: false,
+    head,
+    untrackedCount: 0,
+    modifiedCount: 0,
+    stagedCount: 0,
+    stashCount: 0,
+    ahead: 0,
+    behind: 0,
+    hasConflicts: false,
+    lastCommit: { sha: head, message: '', date: '', author: '' },
+    status: 'clean',
+    prunable,
+  };
+}
+
 async function worktreeCore(
   path: string,
   head: string,
@@ -258,8 +300,15 @@ export async function listWorktrees(repo: string): Promise<Worktree[]> {
   const raw = await run(repo, ['worktree', 'list', '--porcelain']);
   const entries = parseWorktreeList(raw);
   // Parallel across worktrees; each call internally parallelizes its per-worktree probes.
+  // Orphaned entries (prunable) skip the probes entirely and return a sentinel
+  // immediately — there's no point statting a directory that doesn't exist.
   return Promise.all(
-    entries.map((e, i) => worktreeCore(e.path, e.head, e.branch, i === 0)),
+    entries.map(async (e, i) => {
+      if (e.prunable) {
+        return orphanedWorktree(e.path, e.head, e.branch, e.prunable);
+      }
+      return worktreeCore(e.path, e.head, e.branch, i === 0);
+    }),
   );
 }
 
@@ -565,8 +614,18 @@ export async function removeWorktree(repo: string, path: string, force = false):
   await run(repo, args);
 }
 
-export async function pruneWorktrees(repo: string): Promise<void> {
-  await run(repo, ['worktree', 'prune']);
+// `git worktree prune` honors gc.worktreePruneExpire (default 3h) and skips
+// entries inside that grace window. When the user explicitly clicks
+// "prune this orphan" we want the action to actually happen now — passing
+// `--expire=now` bypasses the grace period. The default form (no expire)
+// stays for the repo-wide menu entry, where the grace period is fine.
+export async function pruneWorktrees(
+  repo: string,
+  opts: { expire?: 'now' } = {},
+): Promise<void> {
+  const args = ['worktree', 'prune'];
+  if (opts.expire === 'now') args.push('--expire=now');
+  await run(repo, args);
 }
 
 export async function fetchAllPrune(repo: string): Promise<void> {

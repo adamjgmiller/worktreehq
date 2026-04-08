@@ -45,6 +45,10 @@ See the **Testing Plan** section of [`PLAN.md`](./PLAN.md) for the full checklis
 6. Squash tab → click a recent squash commit → detail shows PR #, source branch, archive status.
 7. Graph tab → colored fork markers per merge status.
 
+## Platform notes
+
+- **Claude session "idle vs closed" detection** is currently macOS- and Linux-only. WorktreeHQ distinguishes a session whose `claude` process is still running but waiting for input ("idle") from one whose process has exited ("past") by scanning live `claude` processes and matching their `cwd` to a worktree path. The macOS path uses a single `lsof -nP -c claude -d cwd -Fpn` subprocess; the Linux path walks `/proc/*/comm`. On Windows, this scan returns an empty list and idle sessions are reported as "past" in the UI — the rest of the Claude awareness features (live, recent, dormant) work as normal. PRs to add a Windows scanner (e.g. via `tasklist` + `wmic` or a native API) welcome.
+
 ## Not in v1
 
 No commit/push/pull, no diff viewer, no Claude session management, no multi-repo, no full settings UI.

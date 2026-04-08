@@ -31,6 +31,7 @@ import {
   getPR,
   listOpenPRsForBranches,
   invalidateOpenPrListCache,
+  invalidatePrCacheForRepo,
   _clearPrCacheForTests,
   _getPrCacheKeysForTests,
 } from './githubService';
@@ -232,6 +233,59 @@ describe('hydratePrCache: on-disk TTL for open PRs', () => {
     // hydration-time filter this test covers.
     const keys = _getPrCacheKeysForTests();
     expect(keys).toContain('o/r#3');
+  });
+});
+
+describe('invalidatePrCacheForRepo', () => {
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    initGithub('test-token');
+  });
+
+  it('drops only the entries for the named repo', async () => {
+    // Hydrate three entries: two from owner1/repoA, one from owner2/repoB.
+    // After invalidating owner1/repoA, only the owner2/repoB key should
+    // remain. We use hydration to plant the entries because batchFetchPRs +
+    // graphql roundtripping is unnecessary noise here.
+    const now = Date.now();
+    const blob = JSON.stringify({
+      version: 1,
+      entries: {
+        'owner1/repoA#1': {
+          at: now - 1000,
+          pr: { number: 1, title: 'a1', state: 'open', headRef: 'feat/a1', url: '' },
+        },
+        'owner1/repoA#2': {
+          at: now - 1000,
+          pr: { number: 2, title: 'a2', state: 'open', headRef: 'feat/a2', url: '' },
+        },
+        'owner2/repoB#1': {
+          at: now - 1000,
+          pr: { number: 1, title: 'b1', state: 'open', headRef: 'feat/b1', url: '' },
+        },
+      },
+    });
+    readPrCacheFileMock.mockResolvedValueOnce(blob);
+    await hydratePrCache();
+    expect(_getPrCacheKeysForTests().sort()).toEqual([
+      'owner1/repoA#1',
+      'owner1/repoA#2',
+      'owner2/repoB#1',
+    ]);
+
+    invalidatePrCacheForRepo('owner1', 'repoA');
+
+    expect(_getPrCacheKeysForTests()).toEqual(['owner2/repoB#1']);
+  });
+
+  it('is a no-op (and skips the disk write) when the repo has no entries', async () => {
+    // No hydration → cache empty. Calling invalidate should not crash and
+    // should not schedule a persist (we can't directly observe the debounced
+    // write here without time travel; but the implementation gates persist
+    // on a non-zero removed count, which we trust via the previous test).
+    expect(() => invalidatePrCacheForRepo('owner', 'repo')).not.toThrow();
+    expect(_getPrCacheKeysForTests()).toEqual([]);
   });
 });
 

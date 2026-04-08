@@ -30,6 +30,7 @@ vi.mock('./githubService', () => ({
   listOpenPRsForBranches: vi.fn(),
   batchFetchPRs: vi.fn(),
   invalidateOpenPrListCache: vi.fn(),
+  invalidatePrCacheForRepo: vi.fn(),
 }));
 
 vi.mock('./claudeAwarenessService', () => ({
@@ -270,6 +271,26 @@ describe('runFetchOnce skip-when-unchanged', () => {
     // may be trying to surface PR-state-only changes that don't move refs.
     expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(1);
     expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+    // The per-PR detail cache must ALSO be invalidated on user-initiated
+    // fetches. Without this, squashDetector pass 1 reads the still-cached
+    // open-state PR via batchFetchPRs and won't detect a fresh merge until
+    // the 5min TTL expires — exactly the freshness bug the refresh button
+    // is supposed to fix.
+    expect(asMock(github.invalidatePrCacheForRepo)).toHaveBeenCalledWith('o', 'r');
+  });
+
+  it('background tick does NOT invalidate the per-PR cache', async () => {
+    // The per-PR cache is expensive to refill (one GraphQL call per chunk
+    // on the next refresh) and the 5min TTL is fine for unattended
+    // background ticks. Only the user-clicked path should drop it.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    // Default mock alternates strings → refs change → chained refresh runs.
+    await runFetchOnce();
+
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+    expect(asMock(github.invalidatePrCacheForRepo)).not.toHaveBeenCalled();
   });
 
   it('user-initiated fetch flips userRefreshing during the chained refresh', async () => {

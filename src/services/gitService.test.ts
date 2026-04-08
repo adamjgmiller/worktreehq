@@ -49,6 +49,44 @@ detached
       { path: '/home/u/repo-wt3', head: '000111', branch: '(detached)' },
     ]);
   });
+
+  it('captures the prunable reason when git flags an orphaned worktree', () => {
+    // Mixed input: one healthy worktree, one orphaned with a reason. Without
+    // the prunable capture the orphan would parse identically to the healthy
+    // entry and silently flow into worktreeCore against a missing path.
+    const input = `worktree /home/u/repo
+HEAD abc123
+branch refs/heads/main
+
+worktree /home/u/ghost
+HEAD def456
+branch refs/heads/feat/gone
+prunable gitdir file points to non-existent location
+`;
+    const out = parseWorktreeList(input);
+    expect(out).toEqual([
+      { path: '/home/u/repo', head: 'abc123', branch: 'main' },
+      {
+        path: '/home/u/ghost',
+        head: 'def456',
+        branch: 'feat/gone',
+        prunable: 'gitdir file points to non-existent location',
+      },
+    ]);
+  });
+
+  it('captures a bare prunable line with no reason text', () => {
+    // Older git versions sometimes emit `prunable` with no trailing reason.
+    // We still want to flag the entry as orphaned rather than dropping the
+    // signal entirely.
+    const input = `worktree /home/u/ghost
+HEAD def456
+branch refs/heads/feat/gone
+prunable
+`;
+    const out = parseWorktreeList(input);
+    expect(out[0].prunable).toBe('(no reason given)');
+  });
 });
 
 describe('classifyStatusLines', () => {

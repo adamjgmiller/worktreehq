@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize)]
@@ -43,6 +44,13 @@ pub struct ProjectDir {
 pub struct ClaudeState {
     pub ide_locks: Vec<IdeLock>,
     pub projects: Vec<ProjectDir>,
+    // Absolute cwd paths of every running `claude` process. Lets the TS side
+    // distinguish "session is closed" from "session is alive but idle waiting
+    // for input" — JSONL mtime alone can't tell those apart. Always re-read
+    // regardless of fingerprint match (same as ide_locks): process state
+    // changes faster than file mtimes, and the fingerprint only covers the
+    // projects/ tree.
+    pub live_worktree_cwds: Vec<String>,
     // A cheap mtime-based fingerprint of the dirs we walk. The TS side
     // passes the previous fingerprint back on the next call; if it still
     // matches, we set `unchanged = true` and return empty vecs to signal
@@ -219,6 +227,126 @@ fn read_projects(claude: &Path) -> Vec<ProjectDir> {
     out
 }
 
+// ─── Live `claude` process scan ──────────────────────────────────────────
+//
+// Goal: distinguish "session JSONL is stale because the user closed claude"
+// from "session JSONL is stale because the user is idle in front of a still-
+// running prompt". Both look identical from the projects/ dir alone — the
+// JSONL mtime only updates on assistant output, so an idle-but-alive session
+// can sit at the same mtime for hours. The only reliable signal is whether
+// a `claude` process actually exists.
+//
+// We don't try to map process → session_id (the session id isn't in argv).
+// Instead we collect cwds: every running `claude` process has a cwd pointing
+// at the worktree it was launched from. The TS side intersects this with the
+// per-worktree session list and attributes the live process to the most-
+// recent JSONL in that worktree (which is the one a single-claude user is
+// almost always on, since `claude` rotates session ids per launch).
+//
+// macOS path: one `lsof -nP -c claude -d cwd -Fpn` subprocess. lsof's `-F`
+// emits one record per line, prefixed with a single field-id char (`p` for
+// pid, `n` for filename). Parsed in `parse_lsof_pn_output` (a pure function
+// for testability).
+//
+// Linux path: walk /proc/*/comm, find entries equal to "claude", read
+// /proc/<pid>/cwd as a symlink. Multiple syscalls but no subprocess.
+//
+// Windows: returns empty Vec. The Claude Code user base is overwhelmingly
+// macOS/Linux and we'd need a different IPC mechanism (e.g. `tasklist` +
+// `wmic`) to do better. The "Claude idle vs closed" feature degrades
+// gracefully on Windows: sessions just stay marked as closed.
+
+/// Parse the output of `lsof -F pn ...`. lsof emits records in groups: each
+/// process is introduced by a `p<pid>` line and followed by one record per
+/// open file descriptor — for our `-d cwd` filter that's exactly one `n<path>`
+/// line per process. Records may include `f<fd>` lines and others between
+/// `p` and `n`; we only care about the most-recent `p` value when an `n`
+/// line arrives.
+pub(crate) fn parse_lsof_pn_output(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in text.lines() {
+        // We only care about `n` records (the cwd path). Skip `p`, `f`, etc.
+        // — we don't actually need the pid for our purposes, just the cwd.
+        let Some(rest) = line.strip_prefix('n') else {
+            continue;
+        };
+        let trimmed = rest.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Dedupe — two `claude` processes launched from the same worktree
+        // would otherwise produce two entries, and the TS side does set
+        // membership anyway.
+        if seen.insert(trimmed.to_string()) {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn scan_live_claude_cwds() -> Vec<String> {
+    // `-n` skips DNS lookups (faster), `-P` skips port name resolution,
+    // `-c claude` filters processes whose name starts with "claude", `-d cwd`
+    // restricts file descriptors to the cwd entry, and `-Fpn` emits machine-
+    // readable records with pid + path fields. The whole thing typically
+    // returns in well under 50ms even with several claude processes running.
+    let output = match Command::new("lsof")
+        .args(["-nP", "-c", "claude", "-d", "cwd", "-Fpn"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    // lsof exits non-zero when no matching processes are found — that's not
+    // an error for us, just an empty result. So we don't gate on `success()`,
+    // we just parse whatever it printed (which will be empty stdout).
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_lsof_pn_output(&text)
+}
+
+#[cfg(target_os = "linux")]
+fn scan_live_claude_cwds() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // /proc/<pid>/comm contains the process name (without args). We only
+        // want claude. Skip non-numeric dir names quickly.
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !name.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let comm = match fs::read_to_string(path.join("comm")) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if comm.trim() != "claude" {
+            continue;
+        }
+        // /proc/<pid>/cwd is a symlink to the process's cwd. read_link
+        // returns the resolved target as a PathBuf.
+        let Ok(cwd) = fs::read_link(path.join("cwd")) else { continue };
+        let Some(cwd_str) = cwd.to_str() else { continue };
+        let owned = cwd_str.to_string();
+        if seen.insert(owned.clone()) {
+            out.push(owned);
+        }
+    }
+    out
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn scan_live_claude_cwds() -> Vec<String> {
+    // Windows / other: no idle-vs-closed detection. See module comment for
+    // why this is acceptable.
+    Vec::new()
+}
+
 // Cheap fingerprint of the projects/ dir we'd otherwise read JSONL headers
 // from. Walks the project directories but only collects `(dirname, newest
 // session mtime)` pairs — no JSONL header reads. The result is sorted +
@@ -275,6 +403,7 @@ pub fn read_claude_state(expected_fingerprint: Option<String>) -> AppResult<Clau
         return Ok(ClaudeState {
             ide_locks: Vec::new(),
             projects: Vec::new(),
+            live_worktree_cwds: Vec::new(),
             fingerprint: String::new(),
             unchanged: false,
         });
@@ -288,16 +417,23 @@ pub fn read_claude_state(expected_fingerprint: Option<String>) -> AppResult<Clau
     // the stale-live-ide fix from earlier in the project's history.
     let ide_locks = read_ide_locks(claude.as_path());
 
+    // Always re-run the live-claude process scan for the same reason as
+    // ide_locks: process state changes faster than file mtimes, and the
+    // fingerprint only covers the projects/ tree.
+    let live_worktree_cwds = scan_live_claude_cwds();
+
     let fingerprint = compute_projects_fingerprint(&claude);
     if let Some(expected) = expected_fingerprint {
         if !expected.is_empty() && expected == fingerprint {
             // Short-circuit only the projects path: skip the JSONL header
-            // reads. The TS caller will combine these fresh ide_locks with
-            // its cached projects data and re-join against the current wall
-            // clock so live/recent/dormant transitions still fire on time.
+            // reads. The TS caller will combine these fresh ide_locks +
+            // live_worktree_cwds with its cached projects data and re-join
+            // against the current wall clock so live/recent/dormant
+            // transitions still fire on time.
             return Ok(ClaudeState {
                 ide_locks,
                 projects: Vec::new(),
+                live_worktree_cwds,
                 fingerprint,
                 unchanged: true,
             });
@@ -307,7 +443,55 @@ pub fn read_claude_state(expected_fingerprint: Option<String>) -> AppResult<Clau
     Ok(ClaudeState {
         ide_locks,
         projects: read_projects(&claude),
+        live_worktree_cwds,
         fingerprint,
         unchanged: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_lsof_pn_extracts_cwd_paths() {
+        // lsof -Fpn output: each process is introduced by `p<pid>`, then one
+        // record per file descriptor. With `-d cwd` there's exactly one `n`
+        // line per process. Real-world output also includes `f<fd>` lines
+        // we should ignore.
+        let raw = "p29244\nfcwd\nn/Users/adam/Projects/canopy/.claude/worktrees/feat-a\np43688\nfcwd\nn/Users/adam/Projects/other\n";
+        let out = parse_lsof_pn_output(raw);
+        assert_eq!(
+            out,
+            vec![
+                "/Users/adam/Projects/canopy/.claude/worktrees/feat-a".to_string(),
+                "/Users/adam/Projects/other".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_lsof_pn_dedupes_repeated_cwds() {
+        // Two claude processes launched from the same worktree → same cwd.
+        // The output should contain it once. The TS side does set membership
+        // anyway, but cleaning up at the parser keeps the contract honest.
+        let raw = "p1\nn/a/b\np2\nn/a/b\np3\nn/c/d\n";
+        let out = parse_lsof_pn_output(raw);
+        assert_eq!(out, vec!["/a/b".to_string(), "/c/d".to_string()]);
+    }
+
+    #[test]
+    fn parse_lsof_pn_handles_empty_input() {
+        // lsof exits with no stdout when no matching processes exist —
+        // not an error for us, just an empty result.
+        assert_eq!(parse_lsof_pn_output(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_lsof_pn_skips_lines_without_n_prefix() {
+        // Defensive: anything that isn't an `n`-prefixed record gets dropped.
+        let raw = "garbage\np123\nfcwd\nnvalid\nmore garbage\n";
+        let out = parse_lsof_pn_output(raw);
+        assert_eq!(out, vec!["valid".to_string()]);
+    }
 }

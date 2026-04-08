@@ -52,6 +52,21 @@ export function WorktreesView() {
     }
   }
 
+  // Per-card "prune this orphan" handler. Differs from the repo-wide prune
+  // above by passing `--expire=now`: the user explicitly clicked a button on
+  // a card we already know is orphaned, so honoring git's 3h grace period
+  // here would mean the click does nothing for new ghosts. Explicit user
+  // action wins over the heuristic.
+  async function handlePruneOrphan() {
+    if (!repo) return;
+    try {
+      await pruneWorktrees(repo.path, { expire: 'now' });
+      await refreshOnce({ userInitiated: true });
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-6 pt-4">
@@ -88,7 +103,19 @@ export function WorktreesView() {
           */}
           <div className="p-6 grid grid-cols-[repeat(auto-fit,minmax(20rem,1fr))] gap-5">
             {worktrees.map((w) => (
-              <WorktreeCard key={w.path} wt={w} onRemove={handleRemove} onPrune={handlePrune} />
+              // Vary the key on prunable so React unmounts the old card and
+              // mounts the orphaned variant when a worktree transitions
+              // (e.g. user `rm -rf`s the directory, refresh detects it).
+              // Otherwise the early-return inside WorktreeCard would change
+              // its hook count between renders and crash with a hooks-order
+              // violation.
+              <WorktreeCard
+                key={w.prunable ? `orphan:${w.path}` : w.path}
+                wt={w}
+                onRemove={handleRemove}
+                onPrune={handlePrune}
+                onPruneOrphan={handlePruneOrphan}
+              />
             ))}
           </div>
         </div>
