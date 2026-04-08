@@ -108,9 +108,15 @@ export async function getPR(owner: string, repo: string, number: number): Promis
     prCache.set(key, { at: Date.now(), pr });
     schedulePersist();
     return pr;
-  } catch (e) {
-    prCache.set(key, { at: Date.now(), pr: null });
-    schedulePersist();
+  } catch (e: any) {
+    // Only negative-cache the definitive "PR doesn't exist" case (404). For
+    // 401/403/network/5xx, leave the cache untouched so a transient hiccup
+    // doesn't wipe PR data for the next 5 minutes (and worse, persist that
+    // null entry to disk).
+    if (e?.status === 404) {
+      prCache.set(key, { at: Date.now(), pr: null });
+      schedulePersist();
+    }
     return null;
   }
 }
