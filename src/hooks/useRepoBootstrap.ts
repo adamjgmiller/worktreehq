@@ -104,6 +104,16 @@ export function useRepoBootstrap() {
           (cfg.recent_repo_paths && cfg.recent_repo_paths[0]) ||
           cfg.last_repo_path ||
           null;
+        // First-launch path: no last_repo_path, no recents → don't try to
+        // resolve current_dir() (which on a Mac dock launch is `/` and
+        // produces a confusing "Not a git repository: /" error). Surface a
+        // friendly onboarding message; App.tsx already renders the
+        // "Pick a repository…" affordance when repo is null and an error
+        // is set.
+        if (!launchPath) {
+          setError('No repository loaded. Pick a git repository to get started.');
+          return;
+        }
         const info = await invoke<RepoInfo>('resolve_repo', { path: launchPath });
         if (!info.is_git) {
           setError(`Not a git repository: ${info.path}`);

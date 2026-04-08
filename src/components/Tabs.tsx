@@ -19,6 +19,7 @@ export function Tabs({ value, onChange }: { value: TabKey; onChange: (v: TabKey)
         return (
           <button
             key={t.key}
+            id={`tab-${t.key}`}
             role="tab"
             aria-selected={selected}
             aria-controls={`panel-${t.key}`}
