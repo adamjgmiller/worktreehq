@@ -51,6 +51,7 @@ async function runRefreshOnce(): Promise<void> {
     setError,
     markRefreshed,
     setLoading,
+    setDataRepoPath,
   } = useRepoStore.getState();
   if (!repo) return;
   setLoading(true);
@@ -126,6 +127,14 @@ async function runRefreshOnce(): Promise<void> {
     setMainCommits(mainCommits, mainCommitsTotal);
     setSquashMappings(detect.mappings);
     setClaudePresence(presence);
+    // Mark the in-store collections as belonging to this repo path. App.tsx
+    // gates the content region on `dataRepoPath === repo.path`, so this is
+    // what lifts the shimmer skeleton on first load and after a repo switch.
+    // Set ONLY on success (never in finally) — a failed first refresh leaves
+    // the gate closed so we keep showing the skeleton + error banner instead
+    // of falling back to the empty states, which would lie about the repo's
+    // contents.
+    setDataRepoPath(repo.path);
     markRefreshed();
     // Clear any prior pipeline error now that this tick succeeded. We don't
     // clear at the START of the tick because user-action errors (set by
