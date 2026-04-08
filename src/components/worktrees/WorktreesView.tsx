@@ -77,7 +77,14 @@ export function WorktreesView() {
         </button>
       </div>
       {worktrees.length === 0 ? (
-        <EmptyState title="No worktrees yet" hint="Add one via the New worktree button above." />
+        // A valid git repo always has at least the primary worktree, so an
+        // empty list here means listWorktrees failed (or hasn't completed
+        // yet). Frame the empty state accordingly instead of suggesting the
+        // user add one with the button.
+        <EmptyState
+          title="No worktrees loaded"
+          hint="Either the repo isn't readable yet or `git worktree list` failed. Check the error banner above."
+        />
       ) : (
         <div className="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {worktrees.map((w) => (
