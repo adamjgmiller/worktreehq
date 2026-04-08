@@ -16,17 +16,25 @@ import { refreshOnce } from '../../services/refreshLoop';
 import { EmptyState } from '../common/EmptyState';
 import type { Branch } from '../../types';
 
+// Tracks a squash-merged branch that git -d rejected. Captures the original mode so
+// the follow-up force-delete can still fulfil the remote half of `both`/`archive-and-delete`.
+interface RejectedSquash {
+  branch: Branch;
+  mode: DeleteMode;
+}
+
 export function BranchesView() {
   const branches = useRepoStore((s) => s.branches);
   const repo = useRepoStore((s) => s.repo);
-  const setError = useRepoStore((s) => s.setError);
   const [preset, setPreset] = useState<FilterPreset>('all');
   const [search, setSearch] = useState('');
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<DeleteMode | null>(null);
   const [userEmail, setUserEmail] = useState<string | undefined>(undefined);
-  // Squash-merged branches that git -d refused. Setting this opens a follow-up prompt.
-  const [rejectedSquash, setRejectedSquash] = useState<Branch[] | null>(null);
+  // Local error slot — setError on the store gets clobbered by refreshOnce's `setError(null)`,
+  // so bulk-delete errors need their own home where refreshes don't touch them.
+  const [deleteErrors, setDeleteErrors] = useState<string[]>([]);
+  const [rejectedSquash, setRejectedSquash] = useState<RejectedSquash[] | null>(null);
 
   useEffect(() => {
     if (!repo) return;
@@ -61,32 +69,36 @@ export function BranchesView() {
 
   async function performDelete(mode: DeleteMode) {
     if (!repo) return;
-    const rejectedSquashMerged: Branch[] = [];
+    const rejected: RejectedSquash[] = [];
     const errors: string[] = [];
     const deletesLocal = mode !== 'remote';
     const deletesRemote = mode !== 'local';
 
     for (const b of selectedBranches) {
+      let localRejectedAsSquash = false;
       try {
         if (mode === 'archive-and-delete' && b.hasLocal) {
           await tagBranch(repo.path, b.name, archiveTagNameFor(b.name));
         }
         if (deletesLocal && b.hasLocal) {
           try {
-            // Never auto-force: git -d refuses unmerged branches and that's a
-            // feature. For squash-merged branches we surface a dedicated follow-up
-            // prompt; for other refusals we report the error so the user can act.
+            // Never auto-force: git -d refuses unmerged branches and that's a feature.
+            // Squash-merged rejections route to the force-delete follow-up dialog.
             await deleteLocalBranch(repo.path, b.name, false);
           } catch (e: any) {
             if (b.mergeStatus === 'squash-merged') {
-              rejectedSquashMerged.push(b);
+              rejected.push({ branch: b, mode });
+              localRejectedAsSquash = true;
             } else {
               errors.push(`${b.name}: ${e?.message ?? e}`);
+              continue;
             }
-            continue;
           }
         }
-        if (deletesRemote && b.hasRemote) {
+        // The remote side runs regardless of whether the local delete was deferred
+        // to the force-delete follow-up — otherwise `both`/`archive-and-delete` strand
+        // the remote ref for the user to clean up manually.
+        if (deletesRemote && b.hasRemote && !localRejectedAsSquash) {
           await deleteRemoteBranch(repo.path, 'origin', b.name);
         }
       } catch (e: any) {
@@ -96,32 +108,54 @@ export function BranchesView() {
 
     setSelection(new Set());
     setConfirm(null);
-    if (errors.length > 0) {
-      setError(errors.join('\n'));
-    }
-    if (rejectedSquashMerged.length > 0) {
-      setRejectedSquash(rejectedSquashMerged);
+    setDeleteErrors(errors);
+    if (rejected.length > 0) {
+      setRejectedSquash(rejected);
     }
     await refreshOnce();
   }
 
   async function performForceDeleteSquash() {
     if (!repo || !rejectedSquash) return;
-    try {
-      for (const b of rejectedSquash) {
-        if (b.hasLocal) await deleteLocalBranch(repo.path, b.name, true);
+    const errors: string[] = [];
+    for (const item of rejectedSquash) {
+      try {
+        if (item.branch.hasLocal) {
+          await deleteLocalBranch(repo.path, item.branch.name, true);
+        }
+        // Honor the original mode: if the user picked `both` or `archive-and-delete`,
+        // their confirmation covered the remote ref too, so remove it now that the
+        // local force-delete succeeded.
+        const wantsRemote = item.mode === 'both' || item.mode === 'archive-and-delete';
+        if (wantsRemote && item.branch.hasRemote) {
+          await deleteRemoteBranch(repo.path, 'origin', item.branch.name);
+        }
+      } catch (e: any) {
+        errors.push(`${item.branch.name}: ${e?.message ?? e}`);
       }
-      setRejectedSquash(null);
-      await refreshOnce();
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
-      setRejectedSquash(null);
     }
+    setRejectedSquash(null);
+    if (errors.length > 0) {
+      setDeleteErrors((prev) => [...prev, ...errors]);
+    }
+    await refreshOnce();
   }
 
   return (
     <div className="flex flex-col h-full">
       <FilterBar value={preset} onChange={setPreset} search={search} onSearch={setSearch} />
+      {deleteErrors.length > 0 && (
+        <div className="px-4 py-2 bg-wt-conflict/10 border-b border-wt-conflict/40 text-xs text-wt-conflict font-mono flex items-start gap-3">
+          <div className="flex-1 whitespace-pre-wrap">{deleteErrors.join('\n')}</div>
+          <button
+            onClick={() => setDeleteErrors([])}
+            className="text-neutral-400 hover:text-neutral-200"
+            aria-label="dismiss errors"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {filtered.length === 0 ? (
         <EmptyState title="No branches match" hint="Try a different filter." />
       ) : (
@@ -154,8 +188,8 @@ export function BranchesView() {
               commit. Force delete?
             </p>
             <div className="border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4 max-h-48 overflow-auto">
-              {rejectedSquash.map((b) => (
-                <div key={b.name}>{b.name}</div>
+              {rejectedSquash.map(({ branch }) => (
+                <div key={branch.name}>{branch.name}</div>
               ))}
             </div>
             <div className="flex justify-end gap-2">

@@ -8,17 +8,11 @@ import {
   fetchAllPrune,
 } from './gitService';
 import { detectSquashMerges } from './squashDetector';
-import { listOpenPRsForBranches } from './githubService';
+import { batchFetchPRs, listOpenPRsForBranches } from './githubService';
 import { fetchClaudePresence } from './claudeAwarenessService';
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
-// Re-entrancy guard: refreshOnce is called from the poll tick AND from
-// user-triggered paths (RepoBar onClick, BranchesView post-delete). Without
-// this, concurrent invocations can race through the store setters at the
-// bottom of the try block, letting a stale earlier-started refresh overwrite
-// a newer one's results.
-let inFlight = false;
 
 let fetchRunning = false;
 let fetchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -26,8 +20,15 @@ let fetchTimer: ReturnType<typeof setTimeout> | null = null;
 // we just skip this round rather than queue up work.
 let fetchInFlight = false;
 
-export async function refreshOnce(): Promise<void> {
-  if (inFlight) return;
+// Single in-flight refresh promise. Callers that land during an active refresh
+// await the same work rather than kicking off a second one. Without this the
+// fetch ticker (~60s) and poll ticker (~5s) race each other, both hitting every
+// store setter and producing UI flicker. Also covers the re-entrancy case where
+// refreshOnce is called from both the poll tick and user-triggered paths
+// (RepoBar onClick, BranchesView post-delete).
+let refreshInFlight: Promise<void> | null = null;
+
+async function runRefreshOnce(): Promise<void> {
   const {
     repo,
     setWorktrees,
@@ -40,7 +41,6 @@ export async function refreshOnce(): Promise<void> {
     setLoading,
   } = useRepoStore.getState();
   if (!repo) return;
-  inFlight = true;
   setLoading(true);
   setError(null);
   try {
@@ -59,12 +59,26 @@ export async function refreshOnce(): Promise<void> {
       if (wp) b.worktreePath = wp;
     }
 
-    // Attach open PRs to branches
+    // Attach open PRs to branches. The REST list only populates isDraft; we
+    // follow up with a GraphQL batch to fill in checksStatus / reviewDecision /
+    // mergeable so the BranchRow indicators work for open PRs too.
     const openPRs = await listOpenPRsForBranches(
       remote.owner ?? '',
       remote.name ?? '',
       branches.map((b) => b.name),
     );
+    if (remote.owner && remote.name && openPRs.size > 0) {
+      const numbers = Array.from(openPRs.values()).map((pr) => pr.number);
+      const enriched = await batchFetchPRs(remote.owner, remote.name, numbers);
+      for (const [branchName, rest] of openPRs) {
+        const full = enriched.get(rest.number);
+        if (full) {
+          // GraphQL `state` is "open" here by design (we only queried numbers from
+          // the open list), but keep the REST-side state to be safe.
+          openPRs.set(branchName, { ...full, state: rest.state });
+        }
+      }
+    }
     for (const b of branches) {
       const pr = openPRs.get(b.name);
       if (pr) b.pr = pr;
@@ -95,8 +109,17 @@ export async function refreshOnce(): Promise<void> {
     setError(e?.message ?? String(e));
   } finally {
     setLoading(false);
-    inFlight = false;
   }
+}
+
+// Public entry point. If a refresh is already running, await its completion
+// instead of launching a parallel one.
+export function refreshOnce(): Promise<void> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = runRefreshOnce().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
 }
 
 export function startRefreshLoop(): void {

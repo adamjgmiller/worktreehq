@@ -160,10 +160,30 @@ async function detectInProgress(worktreePath: string): Promise<InProgressOp | un
   return detectInProgressFromMarkers(markers);
 }
 
-async function stashCount(worktreePath: string): Promise<number> {
-  const out = await tryRun(worktreePath, ['stash', 'list']);
-  if (!out.trim()) return 0;
-  return out.split('\n').filter(Boolean).length;
+// `git stash list` always reports the repo-wide stash list, so counting raw lines
+// would give every linked worktree the same total. Each stash entry carries a
+// `WIP on <branch>:` (auto) or `On <branch>:` (manual) header naming the branch
+// that was checked out when the stash was created — that's our per-worktree key.
+// Exported so tests can exercise the parser without mocking the subprocess.
+export function parseStashBranches(output: string): string[] {
+  const out: string[] = [];
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    // stash@{0}: WIP on feat/login: abc1234 subject
+    // stash@{1}: On main: manual message
+    const m = line.match(/^stash@\{\d+\}:\s+(?:WIP on|On)\s+([^:]+):/);
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+
+async function stashCount(worktreePath: string, branch: string): Promise<number> {
+  // Detached worktrees have no branch to match against; a global count would be
+  // misleading for them too, so report 0.
+  if (!branch || branch === '(detached)') return 0;
+  const raw = await tryRun(worktreePath, ['stash', 'list']);
+  if (!raw.trim()) return 0;
+  return parseStashBranches(raw).filter((b) => b === branch).length;
 }
 
 async function worktreeCore(
@@ -177,7 +197,7 @@ async function worktreeCore(
     tryRun(path, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD']),
     tryRun(path, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']),
     tryRun(path, ['log', '-1', '--format=%H%x09%s%x09%cI%x09%an']),
-    stashCount(path),
+    stashCount(path, branch),
     detectInProgress(path),
   ]);
 

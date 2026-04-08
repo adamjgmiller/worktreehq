@@ -6,6 +6,7 @@ import {
   archiveTagNameFor,
   stripEmailAngles,
   isAncestor,
+  parseStashBranches,
 } from './gitService';
 
 vi.mock('./tauriBridge', () => ({
@@ -123,6 +124,34 @@ describe('stripEmailAngles', () => {
     expect(stripEmailAngles('')).toBeUndefined();
     expect(stripEmailAngles(undefined)).toBeUndefined();
     expect(stripEmailAngles('   ')).toBeUndefined();
+  });
+});
+
+describe('parseStashBranches', () => {
+  it('extracts branches from WIP stash entries', () => {
+    const raw = [
+      'stash@{0}: WIP on feat/login: abc1234 fix nav',
+      'stash@{1}: WIP on main: deadbee readme',
+      'stash@{2}: WIP on feat/login: beefcafe spinner',
+    ].join('\n');
+    expect(parseStashBranches(raw)).toEqual(['feat/login', 'main', 'feat/login']);
+  });
+  it('handles manual "On <branch>:" stashes', () => {
+    const raw = [
+      'stash@{0}: On feat/x: my manual stash',
+      'stash@{1}: WIP on feat/x: abc message',
+    ].join('\n');
+    expect(parseStashBranches(raw)).toEqual(['feat/x', 'feat/x']);
+  });
+  it('returns empty for empty or malformed input', () => {
+    expect(parseStashBranches('')).toEqual([]);
+    expect(parseStashBranches('\n\n')).toEqual([]);
+    expect(parseStashBranches('garbage line')).toEqual([]);
+  });
+  it('handles branch names with slashes', () => {
+    expect(
+      parseStashBranches('stash@{0}: WIP on fix/auth/token-refresh: 123 msg'),
+    ).toEqual(['fix/auth/token-refresh']);
   });
 });
 
