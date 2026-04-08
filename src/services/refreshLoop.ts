@@ -9,14 +9,32 @@ import {
 } from './gitService';
 import { detectSquashMerges } from './squashDetector';
 import { listOpenPRsForBranches } from './githubService';
+import { fetchClaudePresence } from './claudeAwarenessService';
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
+// Re-entrancy guard: refreshOnce is called from the poll tick AND from
+// user-triggered paths (RepoBar onClick, BranchesView post-delete). Without
+// this, concurrent invocations can race through the store setters at the
+// bottom of the try block, letting a stale earlier-started refresh overwrite
+// a newer one's results.
+let inFlight = false;
 
 export async function refreshOnce(): Promise<void> {
-  const { repo, setWorktrees, setBranches, setMainCommits, setSquashMappings, setError, markRefreshed, setLoading } =
-    useRepoStore.getState();
+  if (inFlight) return;
+  const {
+    repo,
+    setWorktrees,
+    setBranches,
+    setMainCommits,
+    setSquashMappings,
+    setClaudePresence,
+    setError,
+    markRefreshed,
+    setLoading,
+  } = useRepoStore.getState();
   if (!repo) return;
+  inFlight = true;
   setLoading(true);
   setError(null);
   try {
@@ -56,15 +74,22 @@ export async function refreshOnce(): Promise<void> {
       name: remote.name,
     });
 
+    // Claude Code awareness: fetch after we have worktrees so we can join
+    // by path. Runs against the same refresh tick so UI stays in sync.
+    // Failures degrade to an empty map via fetchClaudePresence's try/catch.
+    const presence = await fetchClaudePresence(wts);
+
     setWorktrees(wts);
     setBranches(detect.updatedBranches);
     setMainCommits(mainCommits);
     setSquashMappings(detect.mappings);
+    setClaudePresence(presence);
     markRefreshed();
   } catch (e: any) {
     setError(e?.message ?? String(e));
   } finally {
     setLoading(false);
+    inFlight = false;
   }
 }
 

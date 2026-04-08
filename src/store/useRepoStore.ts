@@ -1,5 +1,12 @@
 import { create } from 'zustand';
-import type { Worktree, Branch, SquashMapping, MainCommit, RepoState } from '../types';
+import type {
+  Worktree,
+  Branch,
+  SquashMapping,
+  MainCommit,
+  RepoState,
+  ClaudePresence,
+} from '../types';
 
 interface StoreState {
   repo: RepoState | null;
@@ -7,6 +14,7 @@ interface StoreState {
   branches: Branch[];
   mainCommits: MainCommit[];
   squashMappings: SquashMapping[];
+  claudePresence: Map<string, ClaudePresence>;
   loading: boolean;
   error: string | null;
   lastRefresh: number;
@@ -18,6 +26,7 @@ interface StoreState {
   setBranches: (b: Branch[]) => void;
   setMainCommits: (c: MainCommit[]) => void;
   setSquashMappings: (s: SquashMapping[]) => void;
+  setClaudePresence: (p: Map<string, ClaudePresence>) => void;
   setLoading: (v: boolean) => void;
   setError: (e: string | null) => void;
   setTokenPresent: (v: boolean) => void;
@@ -31,6 +40,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   branches: [],
   mainCommits: [],
   squashMappings: [],
+  claudePresence: new Map(),
   loading: false,
   error: null,
   lastRefresh: 0,
@@ -42,6 +52,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   setBranches: (branches) => set({ branches }),
   setMainCommits: (mainCommits) => set({ mainCommits }),
   setSquashMappings: (squashMappings) => set({ squashMappings }),
+  setClaudePresence: (claudePresence) => set({ claudePresence }),
   setLoading: (loading) => set({ loading }),
   setError: (error) => set({ error }),
   setTokenPresent: (githubTokenSet) => set({ githubTokenSet }),
