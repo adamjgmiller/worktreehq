@@ -106,7 +106,12 @@ fn extract_worktree_path(jsonl: &Path) -> Option<String> {
         if !line.contains("worktree-state") {
             continue;
         }
-        let v: serde_json::Value = serde_json::from_str(&line).ok()?;
+        // Skip this line on parse failure (e.g. a half-flushed append from a
+        // live-writing session) rather than aborting the whole scan — the
+        // next line in the 10-line window may still be a complete record.
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
         if v.get("type").and_then(|t| t.as_str()) != Some("worktree-state") {
             continue;
         }
