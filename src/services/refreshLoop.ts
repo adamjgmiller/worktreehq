@@ -181,34 +181,41 @@ export function stopRefreshLoop(): void {
 // RepoBar can show an indicator. Safe to call while a fetch is already in flight —
 // subsequent concurrent calls are dropped.
 //
-// We snapshot `for-each-ref refs/remotes` before and after the fetch and
-// only chain a full refresh if the remote ref set actually changed. On a
-// quiet repo this turns the 60s fetch tick from "git fetch + ~250 git
-// subprocesses + GraphQL batch + Claude scan" into just "git fetch + 2
-// for-each-refs". When refs *did* change we also invalidate the open-PR
-// list cache so the chained refresh sees newly-pushed branches.
-export async function runFetchOnce(): Promise<void> {
+// We snapshot `for-each-ref refs/remotes` before and after the fetch. For
+// background ticks (no `userInitiated`), if the snapshot is unchanged we
+// skip the chained refresh and the open-PR cache invalidation entirely —
+// turning a quiet 60s tick from "fetch + ~250 git subprocesses + GraphQL
+// batch + Claude scan" into "fetch + 2 for-each-refs". For user-initiated
+// fetches we ALWAYS chain a refresh and invalidate the open-PR cache,
+// because the user may be trying to surface PR-state changes (close,
+// merge-without-merge, draft toggle) that don't move any remote ref. The
+// userInitiated flag also propagates to refreshOnce so the spinner animates.
+export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   if (fetchInFlight) return;
-  const { repo, setFetching, markRefreshed } = useRepoStore.getState();
+  const { repo, setFetching } = useRepoStore.getState();
   if (!repo) return;
+  const userInitiated = opts?.userInitiated === true;
   fetchInFlight = true;
   setFetching(true);
   try {
     const before = await snapshotRemoteRefs(repo.path);
     await fetchAllPrune(repo.path);
     const after = await snapshotRemoteRefs(repo.path);
-    if (before && after && before === after) {
-      // No remote refs moved — nothing the rest of the pipeline could
-      // surface that the prior tick didn't already. Just bump lastRefresh
-      // so the "updated X ago" indicator stays current.
-      markRefreshed();
+    const refsChanged = !(before && after && before === after);
+    if (!refsChanged && !userInitiated) {
+      // Background skip path — local state hasn't changed in any way the
+      // pipeline would surface. Don't bump lastRefresh: the polling tick
+      // is the source of truth for the "updated X ago" indicator, and
+      // bumping it here would lie about a no-op fetch.
       return;
     }
     if (repo.owner && repo.name) {
       invalidateOpenPrListCache(repo.owner, repo.name);
     }
-    // Fetch changed remote refs on disk; trigger a tick so the UI reflects it.
-    await refreshOnce();
+    // Fetch changed remote refs on disk (or this is a user-initiated fetch
+    // and we want guaranteed visible feedback); trigger a refresh so the UI
+    // reflects the new state.
+    await refreshOnce(opts);
   } catch {
     /* best-effort: a failing fetch is logged via refreshOnce's own error path */
   } finally {

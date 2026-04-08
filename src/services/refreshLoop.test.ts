@@ -240,7 +240,7 @@ describe('runFetchOnce', () => {
 });
 
 describe('runFetchOnce skip-when-unchanged', () => {
-  it('skips the chained refresh when the remote ref snapshot is unchanged', async () => {
+  it('background tick skips the chained refresh when the remote ref snapshot is unchanged', async () => {
     asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
 
     await runFetchOnce();
@@ -249,11 +249,49 @@ describe('runFetchOnce skip-when-unchanged', () => {
     // Chained refresh should NOT have run, so listWorktrees was not called
     // (the only refreshOnce-side mock that's tied to it).
     expect(asMock(git.listWorktrees)).not.toHaveBeenCalled();
-    // We still bumped lastRefresh so the "updated X ago" indicator stays current.
-    expect(useRepoStore.getState().lastRefresh).toBeGreaterThan(0);
+    // lastRefresh must NOT advance on a no-op fetch — bumping it would
+    // dishonestly tell the user a refresh happened when nothing did. The
+    // polling tick is the source of truth for the "updated X ago" indicator.
+    expect(useRepoStore.getState().lastRefresh).toBe(0);
     // PR list cache must NOT be invalidated when nothing moved — otherwise
     // we'd negate half the value of the open-PR list cache.
     expect(asMock(github.invalidateOpenPrListCache)).not.toHaveBeenCalled();
+  });
+
+  it('user-initiated fetch always chains a refresh, even on unchanged refs', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+
+    await runFetchOnce({ userInitiated: true });
+
+    // The skip path is bypassed for user-initiated fetches because the user
+    // may be trying to surface PR-state-only changes that don't move refs.
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(1);
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+  });
+
+  it('user-initiated fetch flips userRefreshing during the chained refresh', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    let release: (v: unknown) => void = () => {};
+    asMock(git.listWorktrees).mockImplementation(
+      () => new Promise((r) => { release = r; }),
+    );
+
+    const p = runFetchOnce({ userInitiated: true });
+    // Yield so runFetchOnce gets past its synchronous prefix and into the
+    // chained refreshOnce, which is where userRefreshing flips on.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+
+    release([]);
+    await p;
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
   });
 
   it('invalidates the open-PR list cache when refs do change', async () => {

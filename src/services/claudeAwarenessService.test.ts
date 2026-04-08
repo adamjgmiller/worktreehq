@@ -249,21 +249,73 @@ describe('fetchClaudePresence fingerprint cache', () => {
     expect(readClaudeStateMock.mock.calls[1]?.[0]).toBe('fp-1');
   });
 
-  it('serves the cached presence when Rust returns unchanged=true', async () => {
+  it('re-joins from cached raw on unchanged so status fields reflect current time', async () => {
+    // Session mtime old enough that it's `live` at first call but should be
+    // `recent` once wall-clock advances past LIVE_WINDOW_MS (60s). The
+    // advance must stay under CLAUDE_FORCE_REFRESH_MS (30s) so the cache
+    // path actually engages — otherwise the force-refresh would kick us out
+    // and we'd be testing the cold path instead.
+    const t0 = 1_000_000_000_000;
+    const mtime = t0 - 50_000; // age 50s when first joined → live (≤ 60s)
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(t0);
+      readClaudeStateMock.mockResolvedValueOnce(
+        buildRaw({ fingerprint: 'fp-1', mtime }),
+      );
+      const first = await fetchClaudePresence(worktrees);
+      expect(first.get(wtPath)?.status).toBe('live');
+
+      // Advance 15s (within force-refresh window). True age now 65s, past
+      // LIVE_WINDOW_MS=60s. The cache hit (unchanged=true) should re-join
+      // the cached raw against the new wall clock and report `recent`, not
+      // the stale `live` from the first call's joined map.
+      vi.setSystemTime(t0 + 15_000);
+      readClaudeStateMock.mockResolvedValueOnce({
+        ide_locks: [],
+        projects: [],
+        fingerprint: 'fp-1',
+        unchanged: true,
+      });
+      const second = await fetchClaudePresence(worktrees);
+      expect(second.get(wtPath)?.status).toBe('recent');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses fresh ide_locks from the unchanged response (crashed-IDE detection)', async () => {
     const mtime = Date.now();
-    readClaudeStateMock.mockResolvedValueOnce(buildRaw({ fingerprint: 'fp-1', mtime }));
+    // First call: a session with status=live, plus an IDE lock pointing at it.
+    readClaudeStateMock.mockResolvedValueOnce({
+      ide_locks: [
+        { pid: 4242, ide_name: 'Cursor', workspace_folders: [wtPath] },
+      ],
+      projects: [
+        {
+          dir_name: dirName,
+          worktree_path: wtPath,
+          sessions: [{ session_id: 's', mtime_ms: mtime }],
+        },
+      ],
+      fingerprint: 'fp-1',
+      unchanged: false,
+    });
+    const first = await fetchClaudePresence(worktrees);
+    expect(first.get(wtPath)?.status).toBe('live-ide');
+
+    // Second call: Rust short-circuits projects but reports the IDE lock has
+    // disappeared (the editor crashed and pid_is_alive filtered it out).
+    // The TS side must use the fresh empty ide_locks rather than the cached
+    // ones, so status drops back to `live` (no IDE lock).
     readClaudeStateMock.mockResolvedValueOnce({
       ide_locks: [],
       projects: [],
       fingerprint: 'fp-1',
       unchanged: true,
     });
-
-    const first = await fetchClaudePresence(worktrees);
     const second = await fetchClaudePresence(worktrees);
-
-    // Strict identity: the cached map is reused, not re-joined.
-    expect(second).toBe(first);
+    expect(second.get(wtPath)?.status).toBe('live');
   });
 
   it('re-joins when Rust returns a different fingerprint', async () => {
@@ -276,6 +328,7 @@ describe('fetchClaudePresence fingerprint cache', () => {
     const first = await fetchClaudePresence(worktrees);
     const second = await fetchClaudePresence(worktrees);
 
+    // Different `raw` means a fresh join — different Map references.
     expect(second).not.toBe(first);
   });
 

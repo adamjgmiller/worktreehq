@@ -359,21 +359,46 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
           return;
         }
       }
-      const [abOut, merged] = await Promise.all([
-        tryRun(repo, ['rev-list', '--left-right', '--count', `${defaultBranch}...${ref}`]),
-        isAncestor(repo, ref, defaultBranch),
+      // Use gitExec directly for both probes so we can distinguish "exit 1 =
+      // not an ancestor" (a legitimate answer) from "thrown subprocess error"
+      // (transient — e.g. a ref race during rebase). Without this distinction
+      // a transient failure would get cached as `{0, 0, false}` and stick to
+      // the (sha, sha) key forever. The cherryCache in squashDetector.ts
+      // documents the same invariant: don't cache failures, retry next tick.
+      const [abResult, mergeResult] = await Promise.all([
+        gitExec(repo, [
+          'rev-list',
+          '--left-right',
+          '--count',
+          `${defaultBranch}...${ref}`,
+        ]).catch(() => null),
+        gitExec(repo, ['merge-base', '--is-ancestor', ref, defaultBranch]).catch(
+          () => null,
+        ),
       ]);
       let aheadOfMain = 0;
       let behindMain = 0;
-      const m = abOut.trim().match(/^(\d+)\s+(\d+)$/);
-      if (m) {
-        behindMain = parseInt(m[1], 10);
-        aheadOfMain = parseInt(m[2], 10);
+      const abMatch =
+        abResult && abResult.code === 0
+          ? abResult.stdout.trim().match(/^(\d+)\s+(\d+)$/)
+          : null;
+      if (abMatch) {
+        behindMain = parseInt(abMatch[1], 10);
+        aheadOfMain = parseInt(abMatch[2], 10);
       }
+      // `merge-base --is-ancestor` returns 0 (true) or 1 (false). Anything else
+      // (or a thrown subprocess error) is "unknown" — leave merged false but
+      // don't cache it.
+      const mergeBaseSucceeded =
+        mergeResult !== null && (mergeResult.code === 0 || mergeResult.code === 1);
+      const merged = mergeResult?.code === 0;
       b.aheadOfMain = aheadOfMain;
       b.behindMain = behindMain;
       if (merged) b.mergeStatus = 'merged-normally';
-      if (key) {
+      // Only cache when both probes returned a usable answer. A partial
+      // failure means we may have a stale 0/0/false; serving that from cache
+      // would lock it in until the branch sha actually moves.
+      if (key && abMatch && mergeBaseSucceeded) {
         // Cheap FIFO trim: if we cross the cap, drop the oldest 25%. Maps
         // preserve insertion order, so slice-from-start is "oldest first".
         if (branchAbCache.size >= BRANCH_AB_CACHE_MAX) {

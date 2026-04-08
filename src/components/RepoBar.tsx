@@ -32,7 +32,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
         {lastRefresh ? `updated ${relativeTime(new Date(lastRefresh).toISOString())}` : 'never'}
       </div>
       <button
-        onClick={runFetchOnce}
+        onClick={() => void runFetchOnce({ userInitiated: true })}
         disabled={fetching}
         className="p-1.5 rounded hover:bg-wt-border disabled:opacity-50"
         aria-label="fetch"

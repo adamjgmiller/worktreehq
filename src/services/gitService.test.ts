@@ -323,6 +323,67 @@ describe('listBranches sha-cache', () => {
     expect(callsAfterSecond - callsAfterFirst).toBe(2);
   });
 
+  it('does NOT cache transient subprocess failures', async () => {
+    // First call: rev-list for feat/a throws (transient ref race during
+    // rebase). main's probes succeed normally. The fix gates cache writes
+    // on both probes returning a usable answer, so feat/a stays uncached
+    // while main does get cached.
+    //
+    // Without the fix, feat/a would be cached as { aheadOfMain: 0,
+    // behindMain: 0, merged: false } and that bogus answer would stick
+    // until either sha actually moved.
+    let revListThrowsForNextFeatA = true;
+    gitExecMock.mockImplementation(async (_repo: string, args: string[]) => {
+      if (args[0] === 'for-each-ref' && args.includes('refs/heads')) {
+        return {
+          stdout:
+            'main\tmainsha\t2026-01-01 00:00:00 +0000\t\t<u@x.com>\n' +
+            'feat/a\tshaA\t2026-01-01 00:00:00 +0000\t\t<u@x.com>',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args[0] === 'for-each-ref' && args.includes('refs/remotes')) {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (args[0] === 'rev-list') {
+        // Only the first feat/a rev-list throws; main's rev-list and the
+        // second-call feat/a rev-list both succeed.
+        const isFeatA = args[args.length - 1].includes('feat/a');
+        if (isFeatA && revListThrowsForNextFeatA) {
+          revListThrowsForNextFeatA = false;
+          throw new Error('object not found');
+        }
+        return { stdout: '0\t3\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'merge-base') {
+        return { stdout: '', stderr: '', code: 1 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    await listBranches('/repo', 'main');
+    const callsAfterFirst = gitExecMock.mock.calls.length;
+
+    // Second call with the same shas. main's per-branch probes were cached
+    // on the first call (succeeded), so they don't re-run. feat/a's per-branch
+    // probes were NOT cached (rev-list threw), so they DO re-run. The diff
+    // should be exactly: 2 for-each-ref + 2 per-branch for feat/a = 4.
+    //
+    // If failures WERE cached (the bug this test guards against), feat/a
+    // would also be served from cache and the diff would be just 2.
+    await listBranches('/repo', 'main');
+    const callsAfterSecond = gitExecMock.mock.calls.length;
+
+    expect(callsAfterSecond - callsAfterFirst).toBe(4);
+
+    // Sanity: confirm one of the new calls is the feat/a rev-list retry.
+    const featARevListCalls = gitExecMock.mock.calls.filter(
+      (c) => c[1][0] === 'rev-list' && c[1][c[1].length - 1].includes('feat/a'),
+    );
+    expect(featARevListCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('re-runs per-branch subprocesses when the branch sha moves', async () => {
     setupMocks({ main: 'mainsha', 'feat/a': 'shaA' });
     await listBranches('/repo', 'main');

@@ -112,24 +112,28 @@ export function joinClaudeState(
 }
 
 // Fingerprint-based memo cache for fetchClaudePresence. We pass the last
-// fingerprint back to Rust on each call; if the projects/lockfiles haven't
-// moved AND the worktree set hasn't changed, Rust returns `unchanged: true`
-// (skipping JSONL header reads + lockfile parses) and we serve the previously
-// joined presence map without re-running joinClaudeState.
+// projects fingerprint back to Rust on each call; if it still matches, Rust
+// returns `unchanged: true` with empty `projects` (skipping JSONL header
+// reads) but ALWAYS-fresh `ide_locks` (so crashed-IDE detection still works
+// via pid_is_alive). The TS side merges the fresh ide_locks with the cached
+// projects data and re-joins against the current wall clock — that way the
+// live/recent/dormant status fields update as time passes even when no
+// underlying mtimes have moved, instead of being frozen at the last full
+// read's value.
 //
-// Stale-IDE detection caveat: a crashed editor whose lockfile mtime never
-// moves can't be detected by the fingerprint alone, so we force a full read
-// every CLAUDE_FORCE_REFRESH_MS regardless of whether the fingerprint matches.
+// We cache the LAST FULL `raw` (not the joined map) so the re-join sees the
+// real project sessions data. Returning the previously joined map directly
+// would freeze status fields and is the bug the re-join was added to fix.
 const CLAUDE_FORCE_REFRESH_MS = 30_000;
 let cachedFingerprint: string | null = null;
-let cachedPresence: Map<string, ClaudePresence> | null = null;
+let cachedRaw: ClaudeStateRaw | null = null;
 let cachedWorktreeKey: string | null = null;
 let cachedAt = 0;
 
 // Test seam: clear the cache between tests so behavior is deterministic.
 export function _resetClaudePresenceCacheForTests(): void {
   cachedFingerprint = null;
-  cachedPresence = null;
+  cachedRaw = null;
   cachedWorktreeKey = null;
   cachedAt = 0;
 }
@@ -161,16 +165,24 @@ export async function fetchClaudePresence(
     const expected = canUseCache ? cachedFingerprint ?? undefined : undefined;
 
     const raw = await readClaudeState(expected);
-    if (raw.unchanged && cachedPresence && canUseCache) {
-      // Rust confirmed the state is identical to last call's; serve the
-      // cached join result. Don't bump cachedAt — that timestamp tracks the
-      // last *full* read, not the last cache hit, so the force-refresh
-      // window remains accurate.
-      return cachedPresence;
+    if (raw.unchanged && cachedRaw && canUseCache) {
+      // Rust confirmed the projects haven't moved. Combine the fresh
+      // ide_locks (always re-read so crashed-IDE detection works) with the
+      // cached projects data, then re-join against the current `now` so
+      // live/recent/dormant transitions fire on time. Don't bump cachedAt —
+      // that timestamp tracks the last *full* read, not the last cache hit,
+      // so the force-refresh window remains accurate.
+      const merged: ClaudeStateRaw = {
+        ide_locks: raw.ide_locks,
+        projects: cachedRaw.projects,
+        fingerprint: raw.fingerprint,
+        unchanged: false,
+      };
+      return joinClaudeState(merged, worktrees);
     }
     const presence = joinClaudeState(raw, worktrees);
     cachedFingerprint = raw.fingerprint || null;
-    cachedPresence = presence;
+    cachedRaw = raw;
     cachedWorktreeKey = wtKey;
     cachedAt = now;
     return presence;
