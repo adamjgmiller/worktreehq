@@ -432,3 +432,43 @@ export async function pruneWorktrees(repo: string): Promise<void> {
 export async function fetchAllPrune(repo: string): Promise<void> {
   await run(repo, ['fetch', '--all', '--prune']);
 }
+
+// Resolve the set of directories the filesystem watcher should watch for a
+// set of worktrees. We deliberately avoid watching worktree roots because
+// `notify` with `RecursiveMode::Recursive` on a worktree root fires for every
+// change under `node_modules/`, `dist/`, `.next/`, log files, and so on — a
+// busy repo produces a continuous stream of refresh events.
+//
+// The only paths that actually affect anything the app displays live under
+// each worktree's per-worktree git dir (HEAD, index, rebase-merge/,
+// MERGE_HEAD, …) and the common git dir (refs/heads, refs/remotes, …). We
+// use `rev-parse --path-format=absolute --git-dir --git-common-dir` to get
+// both in one subprocess call. For the primary worktree these are the same
+// path; for linked worktrees they differ.
+//
+// Returns a deduped list of absolute paths. Best-effort: if rev-parse fails
+// for a given worktree it's silently dropped — the polling loop still covers
+// that worktree, just without the watcher's immediacy.
+export async function resolveWatchDirs(worktreePaths: string[]): Promise<string[]> {
+  const out = new Set<string>();
+  await Promise.all(
+    worktreePaths.map(async (p) => {
+      try {
+        const r = await gitExec(p, [
+          'rev-parse',
+          '--path-format=absolute',
+          '--git-dir',
+          '--git-common-dir',
+        ]);
+        if (r.code !== 0) return;
+        for (const line of r.stdout.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed) out.add(trimmed);
+        }
+      } catch {
+        /* best-effort */
+      }
+    }),
+  );
+  return Array.from(out);
+}

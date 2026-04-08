@@ -17,6 +17,10 @@ interface StoreState {
   squashMappings: SquashMapping[];
   claudePresence: Map<string, ClaudePresence>;
   loading: boolean;
+  // `loading` flips on every poll tick; `userRefreshing` only flips when the
+  // user explicitly asked for a refresh (button click, post-mutation). The
+  // RepoBar spinner binds to this so it doesn't animate on the heartbeat.
+  userRefreshing: boolean;
   fetching: boolean;
   error: string | null;
   lastRefresh: number;
@@ -31,6 +35,7 @@ interface StoreState {
   setSquashMappings: (s: SquashMapping[]) => void;
   setClaudePresence: (p: Map<string, ClaudePresence>) => void;
   setLoading: (v: boolean) => void;
+  setUserRefreshing: (v: boolean) => void;
   setFetching: (v: boolean) => void;
   setError: (e: string | null) => void;
   setTokenPresent: (v: boolean) => void;
@@ -48,6 +53,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   squashMappings: [],
   claudePresence: new Map(),
   loading: false,
+  userRefreshing: false,
   fetching: false,
   error: null,
   lastRefresh: 0,
@@ -63,6 +69,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   setSquashMappings: (squashMappings) => set({ squashMappings }),
   setClaudePresence: (claudePresence) => set({ claudePresence }),
   setLoading: (loading) => set({ loading }),
+  setUserRefreshing: (userRefreshing) => set({ userRefreshing }),
   setFetching: (fetching) => set({ fetching }),
   setError: (error) => set({ error }),
   setTokenPresent: (githubTokenSet) => set({ githubTokenSet }),

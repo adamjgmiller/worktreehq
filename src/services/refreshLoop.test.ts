@@ -53,6 +53,7 @@ function resetStore() {
     squashMappings: [],
     claudePresence: new Map(),
     loading: false,
+    userRefreshing: false,
     fetching: false,
     error: null,
     lastRefresh: 0,
@@ -141,6 +142,48 @@ describe('refreshOnce re-entrancy guard', () => {
 
     expect(useRepoStore.getState().mainCommits).toHaveLength(1);
     expect(useRepoStore.getState().mainCommitsTotal).toBe(1234);
+  });
+});
+
+describe('refreshOnce userInitiated flag', () => {
+  it('flips userRefreshing on and off when userInitiated is true', async () => {
+    let release: (v: unknown) => void = () => {};
+    asMock(git.listWorktrees).mockImplementation(
+      () => new Promise((r) => { release = r; }),
+    );
+
+    const p = refreshOnce({ userInitiated: true });
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+
+    release([]);
+    await p;
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
+  });
+
+  it('leaves userRefreshing false for background ticks', async () => {
+    await refreshOnce();
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
+  });
+
+  it('joining an in-flight background refresh still animates the spinner', async () => {
+    let release: (v: unknown) => void = () => {};
+    asMock(git.listWorktrees).mockImplementation(
+      () => new Promise((r) => { release = r; }),
+    );
+
+    // Kick off a background refresh (userRefreshing stays false).
+    const bg = refreshOnce();
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
+
+    // User clicks the button — same in-flight promise, but spinner should
+    // animate for the duration so the click has a visible effect.
+    const user = refreshOnce({ userInitiated: true });
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+    expect(bg).toBe(user);
+
+    release([]);
+    await Promise.all([bg, user]);
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
   });
 });
 

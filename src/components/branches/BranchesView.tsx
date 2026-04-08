@@ -116,7 +116,7 @@ export function BranchesView() {
     if (rejected.length > 0) {
       setRejectedSquash(rejected);
     }
-    await refreshOnce();
+    await refreshOnce({ userInitiated: true });
   }
 
   async function performForceDeleteSquash() {
@@ -142,7 +142,7 @@ export function BranchesView() {
     if (errors.length > 0) {
       setDeleteErrors((prev) => [...prev, ...errors]);
     }
-    await refreshOnce();
+    await refreshOnce({ userInitiated: true });
   }
 
   return (

@@ -7,6 +7,7 @@ import {
   stripEmailAngles,
   isAncestor,
   parseStashBranches,
+  resolveWatchDirs,
 } from './gitService';
 
 vi.mock('./tauriBridge', () => ({
@@ -152,6 +153,52 @@ describe('parseStashBranches', () => {
     expect(
       parseStashBranches('stash@{0}: WIP on fix/auth/token-refresh: 123 msg'),
     ).toEqual(['fix/auth/token-refresh']);
+  });
+});
+
+describe('resolveWatchDirs', () => {
+  it('dedupes git-dir + git-common-dir across multiple worktrees', async () => {
+    // Primary worktree: both dirs are the same `.git/`. Linked worktree:
+    // git-dir differs (points at .git/worktrees/<name>/) but common-dir is
+    // the same as the primary. Expect 2 unique dirs in output.
+    gitExecMock.mockImplementation(async (repo: string) => {
+      if (repo === '/repo/primary') {
+        return {
+          stdout: '/repo/primary/.git\n/repo/primary/.git\n',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (repo === '/repo/linked') {
+        return {
+          stdout: '/repo/primary/.git/worktrees/linked\n/repo/primary/.git\n',
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { stdout: '', stderr: '', code: 1 };
+    });
+
+    const out = await resolveWatchDirs(['/repo/primary', '/repo/linked']);
+    expect(out.sort()).toEqual(
+      ['/repo/primary/.git', '/repo/primary/.git/worktrees/linked'].sort(),
+    );
+  });
+
+  it('silently drops worktrees where rev-parse fails', async () => {
+    gitExecMock.mockImplementation(async (repo: string) => {
+      if (repo === '/repo/ok') {
+        return { stdout: '/repo/ok/.git\n/repo/ok/.git\n', stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: 'bad', code: 1 };
+    });
+    const out = await resolveWatchDirs(['/repo/ok', '/repo/broken']);
+    expect(out).toEqual(['/repo/ok/.git']);
+  });
+
+  it('handles a rejecting gitExec without throwing', async () => {
+    gitExecMock.mockRejectedValue(new Error('boom'));
+    await expect(resolveWatchDirs(['/repo/a'])).resolves.toEqual([]);
   });
 });
 

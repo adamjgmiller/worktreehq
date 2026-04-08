@@ -29,6 +29,13 @@ let fetchInFlight = false;
 // (RepoBar onClick, BranchesView post-delete).
 let refreshInFlight: Promise<void> | null = null;
 
+export interface RefreshOptions {
+  // When true, flips the store `userRefreshing` flag so the RepoBar spinner
+  // animates. Background ticks leave it false so the spinner doesn't spin
+  // on every heartbeat — the user only sees it when they asked for a refresh.
+  userInitiated?: boolean;
+}
+
 async function runRefreshOnce(): Promise<void> {
   const {
     repo,
@@ -115,11 +122,32 @@ async function runRefreshOnce(): Promise<void> {
 }
 
 // Public entry point. If a refresh is already running, await its completion
-// instead of launching a parallel one.
-export function refreshOnce(): Promise<void> {
-  if (refreshInFlight) return refreshInFlight;
+// instead of launching a parallel one. Callers that want the RepoBar spinner
+// to animate (button clicks, post-mutation refreshes) pass
+// `{ userInitiated: true }`; the automatic poll tick + watcher events do not.
+//
+// Note: if a user-initiated refresh lands on top of an in-flight background
+// refresh, we still flip the userRefreshing flag for the duration so the
+// click has a visible effect.
+export function refreshOnce(opts?: RefreshOptions): Promise<void> {
+  const userInitiated = opts?.userInitiated === true;
+  if (userInitiated) {
+    useRepoStore.getState().setUserRefreshing(true);
+  }
+  const existing = refreshInFlight;
+  if (existing) {
+    if (userInitiated) {
+      void existing.finally(() => {
+        useRepoStore.getState().setUserRefreshing(false);
+      });
+    }
+    return existing;
+  }
   refreshInFlight = runRefreshOnce().finally(() => {
     refreshInFlight = null;
+    if (userInitiated) {
+      useRepoStore.getState().setUserRefreshing(false);
+    }
   });
   return refreshInFlight;
 }
