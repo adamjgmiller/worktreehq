@@ -87,9 +87,17 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       const match = branchIndex.get(sourceBranch);
       if (match && match.mergeStatus === 'unmerged' && isLikelySquash) {
         match.mergeStatus = 'squash-merged';
-        match.pr = pr;
+        // Only attach the historical merged PR when the branch doesn't
+        // already carry an open PR from refreshLoop's listOpenPRsForBranches
+        // pass — otherwise we'd clobber checksStatus / reviewDecision /
+        // mergeable on a live open PR with stale merged-PR data.
+        if (!match.pr || match.pr.state !== 'open') {
+          match.pr = pr;
+        }
       } else if (match) {
-        match.pr = pr;
+        if (!match.pr || match.pr.state !== 'open') {
+          match.pr = pr;
+        }
       }
       prByBranch.set(sourceBranch, pr);
     }
