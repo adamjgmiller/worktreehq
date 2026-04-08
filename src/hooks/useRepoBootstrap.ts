@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
-import { invoke, isTauri } from '../services/tauriBridge';
+import { invoke, isTauri, stopWatching } from '../services/tauriBridge';
 import { hydratePrCache, initGithub } from '../services/githubService';
 import { getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
 import {
@@ -77,7 +77,10 @@ export function useRepoBootstrap() {
         const cfg = await invoke<AppConfig>('read_config');
         initGithub(cfg.github_token || '');
         setTokenPresent(!!cfg.github_token);
-        setRefreshInterval(cfg.refresh_interval_ms || 5000);
+        // Mirror the Rust default (config.rs default_interval = 15_000) and the
+        // store default. The previous `|| 5000` silently undermined the
+        // documented 15s default whenever the field deserialized to 0.
+        setRefreshInterval(cfg.refresh_interval_ms || 15_000);
         setFetchInterval(cfg.fetch_interval_ms ?? 60_000);
         await hydratePrCache();
 
@@ -122,6 +125,9 @@ export function useRepoBootstrap() {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       stopRefreshLoop();
       stopFetchLoop();
+      // Tear down the Rust-side watcher so a stale notify thread doesn't
+      // keep firing `worktree-changed` events at a remounted hook.
+      void stopWatching();
     };
   }, [setRepo, setError, setTokenPresent, setRefreshInterval, setFetchInterval]);
 

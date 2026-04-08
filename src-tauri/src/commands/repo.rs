@@ -40,8 +40,3 @@ pub fn resolve_repo(path: Option<String>) -> AppResult<RepoInfo> {
         })
     }
 }
-
-#[tauri::command]
-pub fn open_path(_path: String) -> AppResult<()> {
-    Ok(())
-}

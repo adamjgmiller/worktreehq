@@ -55,6 +55,18 @@ export async function readPrCacheFile(): Promise<string> {
   }
 }
 
+// Tear down the Rust-side filesystem watcher. Used by the bootstrap effect's
+// cleanup so a hot-reload / unmount doesn't leave a watcher firing against
+// stale paths. Best-effort: a failed stop is harmless because the next
+// `start_watching` call replaces the slot anyway.
+export async function stopWatching(): Promise<void> {
+  try {
+    await invoke<void>('stop_watching');
+  } catch {
+    /* best-effort */
+  }
+}
+
 export async function writePrCacheFile(content: string): Promise<void> {
   try {
     await invoke<void>('write_pr_cache', { content });

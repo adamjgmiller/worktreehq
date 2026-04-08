@@ -12,7 +12,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::git_exec::git_exec,
             commands::repo::resolve_repo,
-            commands::repo::open_path,
             commands::config::read_config,
             commands::config::write_config,
             commands::notepads::read_notepad,
