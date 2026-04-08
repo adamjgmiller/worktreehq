@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { FolderOpen, X } from 'lucide-react';
 import type { Branch } from '../../types';
+import { pathExists } from '../../services/tauriBridge';
 
 export interface CreateWorktreeValue {
   path: string;
@@ -48,8 +49,9 @@ export function CreateWorktreeDialog({
     if (picked) setPath(picked);
   };
 
-  const submit = () => {
-    if (!path.trim()) {
+  const submit = async () => {
+    const trimmed = path.trim();
+    if (!trimmed) {
       setError('Path is required');
       return;
     }
@@ -58,7 +60,16 @@ export function CreateWorktreeDialog({
       setError('Branch is required');
       return;
     }
-    onConfirm({ path: path.trim(), branch, newBranch: mode === 'new' });
+    // Pre-check: git worktree add will reject an existing directory anyway,
+    // but the error surfaces post-click and is cryptic. Catching it here gives
+    // inline feedback before the user commits. pathExists returns false on
+    // any error (per tauriBridge.ts), so this fails open if the backend is
+    // unreachable, preserving the pre-change behavior.
+    if (await pathExists(trimmed)) {
+      setError(`Path already exists: ${trimmed}`);
+      return;
+    }
+    onConfirm({ path: trimmed, branch, newBranch: mode === 'new' });
   };
 
   return (
