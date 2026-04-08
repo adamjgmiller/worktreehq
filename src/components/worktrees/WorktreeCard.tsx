@@ -21,19 +21,45 @@ export function WorktreeCard({ wt }: { wt: Worktree }) {
       transition={{ duration: 0.2 }}
       className={`rounded-xl border-2 p-5 min-w-[300px] bg-wt-panel ${worktreeStatusClass(wt.status)}`}
     >
-      <div className="flex items-center gap-2 mb-3">
-        {statusIcon}
-        <div className="font-mono text-sm text-neutral-100 truncate flex-1" title={wt.branch}>
-          {wt.branch}
+      <div className="flex items-start gap-2 mb-3">
+        <div className="mt-0.5">{statusIcon}</div>
+        <div className="flex-1 min-w-0">
+          <div className="font-mono text-sm text-neutral-100 truncate" title={wt.branch}>
+            {wt.branch}
+          </div>
+          <div
+            className="font-mono text-[11px] text-neutral-500 truncate"
+            title={wt.upstream ? `tracks ${wt.upstream}` : 'no upstream configured'}
+          >
+            {wt.upstream ? (
+              <>
+                <span className="text-neutral-600">↳ </span>
+                {wt.upstream}
+              </>
+            ) : (
+              <span className="text-neutral-600 italic">↳ (no upstream)</span>
+            )}
+          </div>
         </div>
         {wt.isPrimary && (
-          <span title="primary worktree" className="text-wt-info">
+          <span title="primary worktree" className="text-wt-info mt-0.5">
             <Star className="w-4 h-4" fill="currentColor" />
           </span>
         )}
       </div>
-      <div className="text-xs font-mono text-neutral-500 mb-4 truncate" title={wt.path}>
-        {wt.path}
+      <div className="relative group mb-4">
+        <div
+          className="text-xs font-mono text-neutral-500 truncate cursor-help"
+          title={wt.path}
+        >
+          {wt.path}
+        </div>
+        <div
+          className="hidden group-hover:block absolute bottom-full left-0 mb-1 z-10 max-w-[420px] bg-wt-panel border border-wt-border rounded px-2 py-1 shadow-lg text-xs font-mono text-neutral-200 break-all pointer-events-none"
+          role="tooltip"
+        >
+          {wt.path}
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-2 text-xs mb-3">
         <Stat label="uncommitted" value={wt.uncommittedCount} />
