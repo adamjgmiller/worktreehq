@@ -26,6 +26,7 @@ interface AppConfig {
   refresh_interval_ms: number;
   fetch_interval_ms: number;
   last_repo_path?: string;
+  recent_repo_paths?: string[];
   zoom_level?: number;
 }
 
@@ -41,6 +42,7 @@ export function useRepoBootstrap() {
   const setRefreshInterval = useRepoStore((s) => s.setRefreshInterval);
   const setFetchInterval = useRepoStore((s) => s.setFetchInterval);
   const setZoomLevel = useRepoStore((s) => s.setZoomLevel);
+  const setRecentRepoPaths = useRepoStore((s) => s.setRecentRepoPaths);
   // Derive just the sorted-paths key so the watcher effect only re-runs when the
   // actual path SET changes — not on every refresh tick when other worktree
   // fields (branch name, commit count, etc.) churn.
@@ -90,9 +92,19 @@ export function useRepoBootstrap() {
         // Hydrate persisted zoom. The Rust side already clamps and falls back
         // to 1.0 for malformed values, so we can trust whatever it returned.
         if (typeof cfg.zoom_level === 'number') setZoomLevel(cfg.zoom_level);
+        // Hydrate recents into the store before any UI mounts that might
+        // read it. Rust seeds this from `last_repo_path` on first read of an
+        // older config so the list is non-empty for upgraders.
+        setRecentRepoPaths(cfg.recent_repo_paths ?? []);
         await hydratePrCache();
 
-        const info = await invoke<RepoInfo>('resolve_repo', { path: cfg.last_repo_path ?? null });
+        // Prefer the head of the MRU list; fall back to last_repo_path for
+        // safety in case a hand-edited config has them out of sync.
+        const launchPath =
+          (cfg.recent_repo_paths && cfg.recent_repo_paths[0]) ||
+          cfg.last_repo_path ||
+          null;
+        const info = await invoke<RepoInfo>('resolve_repo', { path: launchPath });
         if (!info.is_git) {
           setError(`Not a git repository: ${info.path}`);
           return;
@@ -137,7 +149,15 @@ export function useRepoBootstrap() {
       // keep firing `worktree-changed` events at a remounted hook.
       void stopWatching();
     };
-  }, [setRepo, setError, setTokenPresent, setRefreshInterval, setFetchInterval, setZoomLevel]);
+  }, [
+    setRepo,
+    setError,
+    setTokenPresent,
+    setRefreshInterval,
+    setFetchInterval,
+    setZoomLevel,
+    setRecentRepoPaths,
+  ]);
 
   // Re-register the watcher on the Rust side whenever the set of worktree paths changes.
   // `start_watching` on its own replaces any prior watcher, so a second call reseats it.

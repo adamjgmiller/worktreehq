@@ -19,6 +19,13 @@ pub struct AppConfig {
     pub fetch_interval_ms: u64,
     #[serde(default)]
     pub last_repo_path: Option<String>,
+    // MRU list of repos the user has opened in this app, most-recent first.
+    // Maintained from the frontend (`repoSelect.ts`) which dedupes and caps
+    // the length. `last_repo_path` is kept in sync as `recent_repo_paths[0]`
+    // so an older binary that doesn't know about this field still resolves
+    // to the same repo on launch.
+    #[serde(default)]
+    pub recent_repo_paths: Vec<String>,
     // UI zoom level. Multiplied against the root font-size on the frontend so
     // every rem-based Tailwind class scales together. Persisted so the user's
     // preferred zoom survives restarts. Range clamped to [0.5, 2.0] in the
@@ -70,6 +77,7 @@ pub fn read_config() -> AppResult<AppConfig> {
             refresh_interval_ms: default_interval(),
             fetch_interval_ms: default_fetch_interval(),
             last_repo_path: None,
+            recent_repo_paths: Vec::new(),
             zoom_level: default_zoom_level(),
         });
     }
@@ -85,6 +93,17 @@ pub fn read_config() -> AppResult<AppConfig> {
     }
     if cfg.refresh_interval_ms == 0 {
         cfg.refresh_interval_ms = default_interval();
+    }
+    // Migrate from the single-path schema: if a user upgrades from a build
+    // that only knew about `last_repo_path`, seed the MRU list from it so the
+    // dropdown isn't empty on first launch of the new build. Subsequent
+    // writes from the frontend keep both fields in sync.
+    if cfg.recent_repo_paths.is_empty() {
+        if let Some(p) = cfg.last_repo_path.as_ref() {
+            if !p.is_empty() {
+                cfg.recent_repo_paths.push(p.clone());
+            }
+        }
     }
     // Note: fetch_interval_ms == 0 is a valid "disabled" signal and is preserved as-is.
     // Clamp zoom on read so a hand-edited config can't crash the UI with a wild value.
