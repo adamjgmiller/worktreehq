@@ -31,6 +31,11 @@ interface PersistedCache {
 let hydrated = false;
 let persistDebounce: ReturnType<typeof setTimeout> | null = null;
 
+// Entries older than this for OPEN PRs are dropped on hydration — their
+// checks/reviews/mergeable fields may have drifted on GitHub while the app
+// was closed. Merged PRs are kept forever because their fields are immutable.
+const STALE_OPEN_PR_MS = 7 * 24 * 60 * 60 * 1000;
+
 // One-time load from disk. Callers can await this at startup, but we also lazy-load
 // on the first cache hit so tests that never initialize don't hang.
 export async function hydratePrCache(): Promise<void> {
@@ -41,7 +46,13 @@ export async function hydratePrCache(): Promise<void> {
   try {
     const parsed: PersistedCache = JSON.parse(raw);
     if (parsed.version !== 1 || !parsed.entries) return;
+    const now = Date.now();
     for (const [k, v] of Object.entries(parsed.entries)) {
+      // Drop stale open-PR entries on hydration. Merged PRs are kept forever
+      // since their fields don't change once merged; treating them as fresh
+      // lets a long-idle laptop reopen the app with its cache intact.
+      const isOpen = v.pr?.state === 'open';
+      if (isOpen && now - v.at > STALE_OPEN_PR_MS) continue;
       prCache.set(k, v);
     }
   } catch {
@@ -66,6 +77,12 @@ function cacheKey(owner: string, repo: string, n: number) {
 export function _clearPrCacheForTests() {
   prCache.clear();
   hydrated = false;
+}
+
+// Test-only: snapshot the in-memory cache keys. Used to verify hydration
+// behavior without going through getPR, which applies its own TTL on top.
+export function _getPrCacheKeysForTests(): string[] {
+  return Array.from(prCache.keys());
 }
 
 // Kept as the single-PR fallback for cache misses outside the batch path.
@@ -98,33 +115,20 @@ export async function getPR(owner: string, repo: string, number: number): Promis
   }
 }
 
-// Batch PR fetch via GraphQL. One request fetches every PR number in `numbers`.
-// Returns a Map keyed by PR number. Missing PRs (404, bad token) are absent from the map.
-// Cached hits are served from the in-memory cache and removed from the outbound query.
-export async function batchFetchPRs(
+// Chunk size for GraphQL alias batching. GitHub's GraphQL API has a 500-point
+// complexity limit and a practical query-size ceiling; keeping chunks at 50
+// leaves plenty of headroom on repos with hundreds of open PRs.
+const BATCH_CHUNK_SIZE = 50;
+
+async function runBatchChunk(
   owner: string,
   repo: string,
-  numbers: number[],
+  chunk: number[],
 ): Promise<Map<number, PRInfo>> {
-  if (!hydrated) await hydratePrCache();
   const out = new Map<number, PRInfo>();
-  const unique = Array.from(new Set(numbers));
-  const toFetch: number[] = [];
-  for (const n of unique) {
-    const key = cacheKey(owner, repo, n);
-    const hit = prCache.get(key);
-    if (hit && Date.now() - hit.at < TTL_MS) {
-      if (hit.pr) out.set(n, hit.pr);
-    } else {
-      toFetch.push(n);
-    }
-  }
-  if (!octokit) initGithub('');
-  if (toFetch.length === 0 || !currentToken) return out;
+  if (chunk.length === 0) return out;
 
-  // Build one GraphQL query that asks for every PR number under the same repo node
-  // via aliased fields: p42: pullRequest(number: 42) { … }. One round trip.
-  const aliased = toFetch
+  const aliased = chunk
     .map(
       (n) => `p${n}: pullRequest(number: ${n}) {
         number
@@ -158,7 +162,7 @@ export async function batchFetchPRs(
   try {
     const data: any = await octokit!.graphql(query, { owner, repo });
     const repoNode = data?.repository ?? {};
-    for (const n of toFetch) {
+    for (const n of chunk) {
       const node = repoNode[`p${n}`];
       if (!node) {
         prCache.set(cacheKey(owner, repo, n), { at: Date.now(), pr: null });
@@ -168,10 +172,45 @@ export async function batchFetchPRs(
       out.set(n, pr);
       prCache.set(cacheKey(owner, repo, n), { at: Date.now(), pr });
     }
-    schedulePersist();
   } catch {
     // On failure, leave cache untouched so REST fallback can retry on subsequent calls.
   }
+  return out;
+}
+
+// Batch PR fetch via GraphQL. Splits large requests into CHUNK_SIZE-sized
+// groups and issues them sequentially (not in parallel — GitHub rate-limiting
+// is expensive to hit, and for steady-state refreshes most chunks are cached).
+// Returns a Map keyed by PR number. Missing PRs (404, bad token) are absent
+// from the map. Cached hits are served from the in-memory cache and removed
+// from the outbound query.
+export async function batchFetchPRs(
+  owner: string,
+  repo: string,
+  numbers: number[],
+): Promise<Map<number, PRInfo>> {
+  if (!hydrated) await hydratePrCache();
+  const out = new Map<number, PRInfo>();
+  const unique = Array.from(new Set(numbers));
+  const toFetch: number[] = [];
+  for (const n of unique) {
+    const key = cacheKey(owner, repo, n);
+    const hit = prCache.get(key);
+    if (hit && Date.now() - hit.at < TTL_MS) {
+      if (hit.pr) out.set(n, hit.pr);
+    } else {
+      toFetch.push(n);
+    }
+  }
+  if (!octokit) initGithub('');
+  if (toFetch.length === 0 || !currentToken) return out;
+
+  for (let i = 0; i < toFetch.length; i += BATCH_CHUNK_SIZE) {
+    const chunk = toFetch.slice(i, i + BATCH_CHUNK_SIZE);
+    const chunkOut = await runBatchChunk(owner, repo, chunk);
+    for (const [n, pr] of chunkOut) out.set(n, pr);
+  }
+  schedulePersist();
   return out;
 }
 
