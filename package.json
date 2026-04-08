@@ -1,7 +1,27 @@
 {
   "name": "worktreehq",
-  "private": true,
   "version": "0.1.0",
+  "description": "A squash-merge-aware git worktree dashboard for developers running parallel AI coding sessions.",
+  "author": "Adam Miller",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adamjgmiller/worktreehq.git"
+  },
+  "homepage": "https://github.com/adamjgmiller/worktreehq#readme",
+  "bugs": {
+    "url": "https://github.com/adamjgmiller/worktreehq/issues"
+  },
+  "keywords": [
+    "git",
+    "worktree",
+    "tauri",
+    "desktop",
+    "squash-merge",
+    "github",
+    "claude-code",
+    "ai-coding"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",

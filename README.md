@@ -1,54 +1,111 @@
 # WorktreeHQ
 
-A lightweight Tauri v2 desktop dashboard for real-time git worktree and branch hygiene — with first-class understanding of **squash-merged** PRs.
+**A squash-merge-aware git worktree dashboard for developers running parallel AI coding sessions.**
 
-## Features (MVP)
+> v0.x — early, actively developed. Currently builds from source; pre-built binaries are not yet provided.
 
-- **Worktree cards** — live-refreshing cards per `git worktree` showing branch, path, uncommitted/staged counts, ahead/behind, last commit. Color-coded: green (clean), yellow (dirty), red (conflict), blue (diverged).
-- **Branch audit** — all local + remote branches in one sortable/filterable list. Filter presets: _safe to delete_, _stale_, _active_, _orphaned_. Bulk delete with a confirmation dialog listing exactly which refs will be removed (requires typing `delete` for bulk >5).
-- **Squash-merge detection** — parses `(#N)` PR references on `main`, queries GitHub API, marks matching branches as `squash-merged` (not `unmerged`). Falls back to `git cherry` patch-id matching for PRs without references.
-- **Squash archaeology** — click any commit on `main` to see `squash sha → PR #N → source branch → original commits` (via `archive/<branch>` tags if present).
-- **Simplified graph** — SVG-rendered first-parent timeline of `main` with colored fork markers by merge status.
-- Dark theme, large readable cards, monospace for refs/paths, accessible icons alongside colors.
+<!-- TODO: drop a hero screenshot here once one exists -->
 
-## Architecture
+## Why this exists
 
-- **Frontend**: React 18 + TypeScript + Tailwind + Vite + Zustand + Framer Motion + Octokit.
-- **Backend**: Tauri v2 (Rust). A single generic `git_exec(repo_path, args[])` command shells out to `git`; all git logic is in TypeScript on top of it. `notify` crate watches worktree paths for live change events. Config in `~/.config/worktreehq/config.toml`.
+Two problems most git GUIs don't solve:
 
-See [`PLAN.md`](./PLAN.md) for full architecture, data model, component breakdown, and squash detection algorithm.
+**1. Squash merges break branch hygiene.** After GitHub squash-merges a PR, the source branch's commits never appear on `main`, so `git branch --merged` returns nothing. Tools like GitKraken, Fork, and Tower treat the commit graph as the source of truth — but squash merging deliberately breaks that graph. The result: dead branches pile up forever and there's no safe way to bulk-clean them.
 
-## Dev
+**2. Parallel AI coding sessions across worktrees have no unified view.** If you run 2–8 [Claude Code](https://claude.com/claude-code), Codex, or other agent sessions in parallel `git worktree`s, you have no single place to see what's committed, what's dirty, what's ahead/behind main, which sessions are alive, or which branches are stale.
+
+WorktreeHQ is a desktop dashboard for both. It detects squash-merged branches via the GitHub API plus a `git cherry` patch-id fallback, surfaces live worktree state across all your parallel sessions, and lets you safely bulk-delete the dead branches that other tools think are still alive.
+
+## What it does
+
+### Worktrees tab
+
+- Live cards per `git worktree`: branch, path, dirty/clean state (untracked, modified, staged, stashed), ahead/behind, last commit, conflict markers
+- In-progress operation detection (rebase, merge, cherry-pick, revert, bisect)
+- Composite "branch disposition" pill summarizing how each worktree's branch relates to `main`, with a one-click "pull main" affordance when behind
+- Per-worktree notepad for capturing session context and TODOs
+- **Claude session awareness** — detects whether the worktree currently has a live, idle, recent, or dormant `claude` process bound to it, and warns when multiple Claude sessions are writing to the same worktree at once (macOS + Linux; Windows degrades gracefully — see [Limitations](#status--limitations))
+- Create new worktrees and safely remove existing ones, with typed-confirmation safety on dirty removals and orphaned-worktree detection
+
+### Branches tab
+
+- All local + remote branches in one sortable, filterable list
+- **Squash-merge detection** — parses `(#N)` PR refs in main commit subjects, queries GitHub via Octokit, and marks the source branch as `merged (squash)` even though `git branch --merged` doesn't think so
+- **Patch-equivalent fallback** — `git cherry main <branch>` catches squash-merged branches that lack a PR-tagged commit
+- Filter presets: *safe to delete*, *stale*, *active*, *orphaned*
+- Bulk delete (local, remote, or both) with a confirmation dialog that lists the exact refs to be removed and a typed `delete` gate for selections of more than 5 branches
+
+### Squash Archaeology tab
+
+- For any squash commit on `main`: see the PR number, source branch, and the original commit history of the now-deleted branch (via `archive/<branch>` tags if you've adopted that convention)
+- Solves the "I squash-merged this two months ago and want to see what was actually in it" problem
+
+### Graph tab
+
+- SVG-rendered first-parent timeline of `main` with fork markers colored by branch merge status
+
+## Screenshots
+
+<!-- TODO: drop screenshots into docs/screenshots/ and reference them here -->
+
+*Screenshots coming soon.*
+
+## Install
+
+WorktreeHQ is a [Tauri v2](https://tauri.app) desktop app. Pre-built binaries are not yet provided — for now, you build from source.
+
+### Prerequisites
+
+- **Node.js** 20+ and npm
+- **Rust** toolchain ([rustup](https://rustup.rs/), latest stable)
+- Tauri's per-platform dependencies:
+  - **macOS** — Xcode Command Line Tools (`xcode-select --install`)
+  - **Linux** — `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`
+  - **Windows** — WebView2 Runtime (preinstalled on Windows 11) and Microsoft C++ Build Tools
+
+See [Tauri's prerequisites page](https://v2.tauri.app/start/prerequisites/) for the canonical, up-to-date list.
+
+### Build & run
 
 ```bash
+git clone https://github.com/adamjgmiller/worktreehq.git
+cd worktreehq
 npm install
-npm run dev          # vite only
-npm run tauri dev    # full Tauri app (requires Linux: libwebkit2gtk-4.1-dev, libgtk-3-dev, libayatana-appindicator3-dev, librsvg2-dev)
-npm test             # vitest
-npm run build        # tsc + vite build
+npm run tauri dev      # development build with hot reload
+npm run tauri build    # produces a platform installer in src-tauri/target/release/bundle/
 ```
 
 ### First run
 
-1. Launch inside a git repo (`cd ~/your-repo && /path/to/worktreehq`) or pass `--` args.
-2. If no `GITHUB_TOKEN` env var or `~/.config/worktreehq/config.toml` is found, the settings modal will prompt for a GitHub token (needed for PR lookup).
+1. Launch the app inside any git repository, or click the folder icon in the top bar to pick one. Recently-used repos are remembered in a dropdown.
+2. (Optional but recommended) Add a GitHub Personal Access Token in **Settings** to enable squash-merge detection and PR enrichment.
+   - **Scopes needed**: `public_repo` for open-source repos, or `repo` for private repositories
+   - The token is stored locally in `~/.config/worktreehq/config.toml` and is only sent to `api.github.com`
+   - You can also set `GITHUB_TOKEN` as an environment variable; the app will use it as a fallback if no token is configured in Settings
 
-## Validation / manual QA
+## Architecture
 
-See the **Testing Plan** section of [`PLAN.md`](./PLAN.md) for the full checklist. Summary:
+WorktreeHQ is intentionally thin on the Rust side: a single Tauri command shells out to the system `git` binary, and every git operation in the app is a TypeScript function built on top of it. The Rust side handles only what shell-git can't: filesystem watching (`notify`), config and notepad persistence, Claude IDE state polling, and the on-disk PR cache.
 
-1. `cd ~/gov-portal && npm run tauri dev` from the worktreehq dir — window opens, 3 worktree cards render.
-2. `touch ~/gov-portal-wt2/foo.txt` → within 5s card flips green → yellow, `uncommitted=1`.
-3. `git -C ~/gov-portal-wt2 add foo.txt` → `staged=1`.
-4. Branches tab → previously squash-merged branches show `merged (squash)` pill with PR link.
-5. Filter "safe to delete" → select all → `Delete local` → confirmation lists exact refs → confirm → they disappear.
-6. Squash tab → click a recent squash commit → detail shows PR #, source branch, archive status.
-7. Graph tab → colored fork markers per merge status.
+Frontend stack: React 18 + TypeScript + Tailwind + Vite + Zustand + Octokit. Backend: Tauri v2 (Rust). A polling refresh loop is the source of truth for worktree state, with a `notify`-based file watcher as an early-refresh signal between ticks.
 
-## Platform notes
+For full architecture details, the squash-detection algorithm, persistence locations, and conventions for adding new git operations, see [`CLAUDE.md`](./CLAUDE.md).
 
-- **Claude session "idle vs closed" detection** is currently macOS- and Linux-only. WorktreeHQ distinguishes a session whose `claude` process is still running but waiting for input ("idle") from one whose process has exited ("past") by scanning live `claude` processes and matching their `cwd` to a worktree path. The macOS path uses a single `lsof -nP -c claude -d cwd -Fpn` subprocess; the Linux path walks `/proc/*/comm`. On Windows, this scan returns an empty list and idle sessions are reported as "past" in the UI — the rest of the Claude awareness features (live, recent, dormant) work as normal. PRs to add a Windows scanner (e.g. via `tasklist` + `wmic` or a native API) welcome.
+## Status & limitations
 
-## Not in v1
+This project is **v0.x** — actively developed, breaking changes possible. Known limitations:
 
-No commit/push/pull, no diff viewer, no Claude session management, no multi-repo, no full settings UI.
+- **Build from source only.** No pre-built installers yet. macOS Gatekeeper will require you to right-click → Open the first launch of any locally-built binary (the bundles are unsigned).
+- **One repo at a time.** Multi-repo support is not in scope; the recent-repos dropdown lets you switch between recently-used repos quickly instead.
+- **Read-only except for branch deletion and worktree create/remove.** No commit, push, pull (other than the explicit "pull main" action), diff viewer, or merge-conflict tooling. WorktreeHQ is designed to *complement* your existing git workflow, not replace it.
+- **Claude session detection is macOS + Linux only.** On Windows, the "idle vs. closed" distinction degrades gracefully — the rest of the Claude awareness features still work. PRs to add a Windows scanner welcome.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the dev loop, conventions, and how to file issues. Contributors should also read [`CLAUDE.md`](./CLAUDE.md) for the load-bearing architecture decisions before adding new features.
+
+Security issues: please use the private reporting process in [`SECURITY.md`](./SECURITY.md), not the public issue tracker.
+
+## License
+
+[MIT](./LICENSE) © 2026 Adam Miller

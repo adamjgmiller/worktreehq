@@ -1,9 +1,13 @@
 [package]
 name = "worktreehq"
 version = "0.1.0"
-description = "Worktree and branch hygiene dashboard"
-authors = ["you"]
+description = "A squash-merge-aware git worktree dashboard for developers running parallel AI coding sessions."
+authors = ["Adam Miller"]
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/adamjgmiller/worktreehq"
+homepage = "https://github.com/adamjgmiller/worktreehq"
+readme = "../README.md"
 
 [lib]
 name = "worktreehq_lib"
