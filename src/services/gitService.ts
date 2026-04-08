@@ -108,25 +108,29 @@ export function detectInProgressFromMarkers(markers: {
   return undefined;
 }
 
-// Resolve a $GIT_DIR-relative path inside a worktree. `git rev-parse --git-path`
-// handles linked worktrees where .git is a file pointing at .git/worktrees/<name>/.
-async function gitPath(worktreePath: string, rel: string): Promise<string> {
-  return (await tryRun(worktreePath, ['rev-parse', '--git-path', rel])).trim();
-}
+// The six markers we care about. `rebase-merge/` and `rebase-apply/` are
+// directories; the other four are files (MERGE_HEAD etc. are pseudo-refs but
+// we treat them as files so one probe shape handles every case). All six
+// live in the per-worktree git dir — for a linked worktree that's
+// .git/worktrees/<name>/, not the common .git/.
+type MarkerKey =
+  | 'rebaseMerge'
+  | 'rebaseApply'
+  | 'mergeHead'
+  | 'cherryPickHead'
+  | 'revertHead'
+  | 'bisectLog';
 
-// The six markers we care about. `rebase-merge/` and `rebase-apply/` are directories;
-// the other four are files (MERGE_HEAD etc. are pseudo-refs but we treat them as files
-// so one probe shape handles every case).
-const IN_PROGRESS_MARKERS: Array<keyof ReturnType<typeof emptyMarkers>> = [
-  'rebaseMerge',
-  'rebaseApply',
-  'mergeHead',
-  'cherryPickHead',
-  'revertHead',
-  'bisectLog',
-];
+const MARKER_REL_PATH: Record<MarkerKey, string> = {
+  rebaseMerge: 'rebase-merge',
+  rebaseApply: 'rebase-apply',
+  mergeHead: 'MERGE_HEAD',
+  cherryPickHead: 'CHERRY_PICK_HEAD',
+  revertHead: 'REVERT_HEAD',
+  bisectLog: 'BISECT_LOG',
+};
 
-function emptyMarkers() {
+function emptyMarkers(): Record<MarkerKey, boolean> {
   return {
     rebaseMerge: false,
     rebaseApply: false,
@@ -137,26 +141,22 @@ function emptyMarkers() {
   };
 }
 
-const MARKER_REL_PATH: Record<keyof ReturnType<typeof emptyMarkers>, string> = {
-  rebaseMerge: 'rebase-merge',
-  rebaseApply: 'rebase-apply',
-  mergeHead: 'MERGE_HEAD',
-  cherryPickHead: 'CHERRY_PICK_HEAD',
-  revertHead: 'REVERT_HEAD',
-  bisectLog: 'BISECT_LOG',
-};
-
 async function detectInProgress(worktreePath: string): Promise<InProgressOp | undefined> {
-  const entries = await Promise.all(
-    IN_PROGRESS_MARKERS.map(async (key) => {
-      const abs = await gitPath(worktreePath, MARKER_REL_PATH[key]);
-      if (!abs) return [key, false] as const;
-      const exists = await pathExists(abs);
-      return [key, exists] as const;
-    }),
-  );
+  // One `rev-parse --git-dir` resolves the per-worktree git dir for both
+  // primary and linked worktrees (git makes the linked-worktree case work
+  // transparently). Previously we shelled out six times — once per marker —
+  // with `--git-path <rel>`, which was 6× the subprocess cost for the same
+  // answer. Now: one rev-parse + six path stats.
+  const gitDir = (
+    await tryRun(worktreePath, ['rev-parse', '--path-format=absolute', '--git-dir'])
+  ).trim();
+  if (!gitDir) return undefined;
   const markers = emptyMarkers();
-  for (const [k, v] of entries) markers[k] = v;
+  const keys = Object.keys(MARKER_REL_PATH) as MarkerKey[];
+  const results = await Promise.all(
+    keys.map(async (k) => [k, await pathExists(`${gitDir}/${MARKER_REL_PATH[k]}`)] as const),
+  );
+  for (const [k, v] of results) markers[k] = v;
   return detectInProgressFromMarkers(markers);
 }
 
@@ -265,6 +265,29 @@ export async function isAncestor(repo: string, ref: string, base: string): Promi
   }
 }
 
+// Cache of per-branch ahead/behind/merged results, keyed by the tuple of
+// `(branch sha, main sha, ref shape)`. The keys are content-addressed, so
+// when either sha moves the key changes and we re-compute; when nothing has
+// moved between ticks we skip a `rev-list` + `merge-base --is-ancestor`
+// subprocess per branch. On a 100-branch repo that's ~200 spawns/tick
+// eliminated in the steady state.
+//
+// No TTL: stale entries are harmless because a stale key only becomes
+// reachable again if the branch/main sha actually regresses to the same
+// value, in which case the cached answer is still correct. We do cap the
+// size to keep long sessions bounded — see trim below.
+interface BranchAbCacheEntry {
+  aheadOfMain: number;
+  behindMain: number;
+  merged: boolean;
+}
+const branchAbCache = new Map<string, BranchAbCacheEntry>();
+const BRANCH_AB_CACHE_MAX = 2000;
+
+export function _clearBranchAbCacheForTests(): void {
+  branchAbCache.clear();
+}
+
 export async function listBranches(repo: string, defaultBranch: string): Promise<Branch[]> {
   const localRaw = await tryRun(repo, [
     'for-each-ref',
@@ -315,20 +338,54 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
       });
     }
   }
-  // ahead/behind vs default + merged check, in parallel.
+  // Pick up the default branch's current sha from the ref data we already
+  // have. Used as a cache key component — if main moves, every branch's
+  // ahead/behind relative to main is potentially stale and must be recomputed.
+  const mainSha = branches.get(defaultBranch)?.lastCommitSha ?? '';
+
+  // ahead/behind vs default + merged check, in parallel — cached by
+  // (branch sha, main sha, ref) so the steady-state refresh skips the
+  // subprocess pair entirely when nothing has moved.
   await Promise.all(
     Array.from(branches.values()).map(async (b) => {
       const ref = b.hasLocal ? b.name : `origin/${b.name}`;
+      const key = mainSha ? `${b.lastCommitSha}|${mainSha}|${ref}` : '';
+      if (key) {
+        const cached = branchAbCache.get(key);
+        if (cached) {
+          b.aheadOfMain = cached.aheadOfMain;
+          b.behindMain = cached.behindMain;
+          if (cached.merged) b.mergeStatus = 'merged-normally';
+          return;
+        }
+      }
       const [abOut, merged] = await Promise.all([
         tryRun(repo, ['rev-list', '--left-right', '--count', `${defaultBranch}...${ref}`]),
         isAncestor(repo, ref, defaultBranch),
       ]);
+      let aheadOfMain = 0;
+      let behindMain = 0;
       const m = abOut.trim().match(/^(\d+)\s+(\d+)$/);
       if (m) {
-        b.behindMain = parseInt(m[1], 10);
-        b.aheadOfMain = parseInt(m[2], 10);
+        behindMain = parseInt(m[1], 10);
+        aheadOfMain = parseInt(m[2], 10);
       }
+      b.aheadOfMain = aheadOfMain;
+      b.behindMain = behindMain;
       if (merged) b.mergeStatus = 'merged-normally';
+      if (key) {
+        // Cheap FIFO trim: if we cross the cap, drop the oldest 25%. Maps
+        // preserve insertion order, so slice-from-start is "oldest first".
+        if (branchAbCache.size >= BRANCH_AB_CACHE_MAX) {
+          const toDrop = Math.floor(BRANCH_AB_CACHE_MAX / 4);
+          let i = 0;
+          for (const k of branchAbCache.keys()) {
+            if (i++ >= toDrop) break;
+            branchAbCache.delete(k);
+          }
+        }
+        branchAbCache.set(key, { aheadOfMain, behindMain, merged });
+      }
     }),
   );
   return Array.from(branches.values()).filter((b) => b.name !== defaultBranch);
@@ -343,7 +400,24 @@ export function stripEmailAngles(raw: string | undefined): string | undefined {
   return m ? m[1] : trimmed;
 }
 
-export async function listMainCommits(repo: string, defaultBranch: string, limit = 200): Promise<MainCommit[]> {
+export interface MainCommitsResult {
+  commits: MainCommit[];
+  total: number;
+}
+
+// Returns the first-parent history on the default branch (capped at `limit`)
+// along with the total commit count. The total is used by the Graph view to
+// render "showing N of M" when the history is truncated.
+//
+// If the log came back with fewer than `limit` rows, `commits.length` IS the
+// total — we skip the follow-up `rev-list --count` subprocess entirely in
+// that case. For repos with short histories (most of them, most of the time)
+// this drops a subprocess per refresh tick.
+export async function listMainCommits(
+  repo: string,
+  defaultBranch: string,
+  limit = 200,
+): Promise<MainCommitsResult> {
   const raw = await tryRun(repo, [
     'log',
     defaultBranch,
@@ -351,7 +425,7 @@ export async function listMainCommits(repo: string, defaultBranch: string, limit
     `-${limit}`,
     '--format=%H%x09%s%x09%cI',
   ]);
-  return raw
+  const commits = raw
     .split('\n')
     .filter(Boolean)
     .map((l) => {
@@ -364,20 +438,40 @@ export async function listMainCommits(repo: string, defaultBranch: string, limit
         prNumber: m ? parseInt(m[1], 10) : undefined,
       };
     });
+  if (commits.length < limit) {
+    return { commits, total: commits.length };
+  }
+  const countRaw = await tryRun(repo, ['rev-list', '--count', '--first-parent', defaultBranch]);
+  const n = parseInt(countRaw.trim(), 10);
+  return { commits, total: Number.isFinite(n) ? n : commits.length };
 }
 
-// Total first-parent commit count on the default branch. Used alongside
-// listMainCommits so the Graph view can surface "showing N of M" when the
-// history is truncated to the fetch cap.
-export async function countMainCommits(repo: string, defaultBranch: string): Promise<number> {
-  const raw = await tryRun(repo, ['rev-list', '--count', '--first-parent', defaultBranch]);
-  const n = parseInt(raw.trim(), 10);
-  return Number.isFinite(n) ? n : 0;
+// Short-TTL cache. Tags change rarely and only matter for `archive/<branch>`
+// detection in squashDetector; a steady-state poll loop shouldn't re-shell
+// every 5s. The cache key is the repo path so switching repos trivially
+// invalidates. Callers that need guaranteed freshness after a known mutation
+// (e.g. after tagging from BranchesView) can call `invalidateTagsCache()`.
+interface TagsCacheEntry {
+  repo: string;
+  tags: string[];
+  at: number;
+}
+let tagsCache: TagsCacheEntry | null = null;
+const TAGS_TTL_MS = 30_000;
+
+export function invalidateTagsCache(): void {
+  tagsCache = null;
 }
 
 export async function listTags(repo: string): Promise<string[]> {
+  const now = Date.now();
+  if (tagsCache && tagsCache.repo === repo && now - tagsCache.at < TAGS_TTL_MS) {
+    return tagsCache.tags;
+  }
   const raw = await tryRun(repo, ['tag', '--list']);
-  return raw.split('\n').filter(Boolean);
+  const tags = raw.split('\n').filter(Boolean);
+  tagsCache = { repo, tags, at: now };
+  return tags;
 }
 
 export async function cherryCheck(repo: string, defaultBranch: string, branchRef: string): Promise<boolean> {
@@ -402,6 +496,9 @@ export function archiveTagNameFor(branch: string): string {
 
 export async function tagBranch(repo: string, branch: string, tagName: string): Promise<void> {
   await run(repo, ['tag', tagName, branch]);
+  // A fresh archive tag is load-bearing for the squash-detector's archaeology
+  // mapping; invalidate so the next refresh sees it without waiting on TTL.
+  invalidateTagsCache();
 }
 
 // Worktree admin (create / remove / prune). All destructive — use run() so failures surface.

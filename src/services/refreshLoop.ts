@@ -3,9 +3,7 @@ import {
   listWorktrees,
   listBranches,
   listMainCommits,
-  countMainCommits,
   listTags,
-  getRemoteUrl,
   fetchAllPrune,
 } from './gitService';
 import { detectSquashMerges } from './squashDetector';
@@ -52,14 +50,18 @@ async function runRefreshOnce(): Promise<void> {
   setLoading(true);
   setError(null);
   try {
-    const [wts, branches, mainCommits, mainCommitsTotal, tags, remote] = await Promise.all([
+    // Remote owner/name is resolved once at bootstrap and stashed on
+    // `repo`; no per-tick subprocess for it. countMainCommits is folded
+    // into listMainCommits (returns `{ commits, total }`). listTags is
+    // now short-TTL cached inside gitService.
+    const [wts, branches, mainCommitsResult, tags] = await Promise.all([
       listWorktrees(repo.path),
       listBranches(repo.path, repo.defaultBranch),
       listMainCommits(repo.path, repo.defaultBranch),
-      countMainCommits(repo.path, repo.defaultBranch),
       listTags(repo.path),
-      getRemoteUrl(repo.path),
     ]);
+    const { commits: mainCommits, total: mainCommitsTotal } = mainCommitsResult;
+    const remote = { owner: repo.owner, name: repo.name };
 
     // Attach worktree paths to branches
     const wtByBranch = new Map(wts.map((w) => [w.branch, w.path]));

@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
 import { invoke, isTauri } from '../services/tauriBridge';
 import { hydratePrCache, initGithub } from '../services/githubService';
-import { getDefaultBranch, resolveWatchDirs } from '../services/gitService';
+import { getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
 import {
   refreshOnce,
   startFetchLoop,
@@ -87,8 +87,18 @@ export function useRepoBootstrap() {
           return;
         }
         const defaultBranch = await getDefaultBranch(info.path);
+        // Resolve the origin owner/name once at bootstrap and stash on the
+        // repo state. This never changes for a given repo so paying the
+        // `remote get-url` subprocess on every 5s refresh tick was pure
+        // waste. The refresh loop reads these off `repo` directly.
+        const remote = await getRemoteUrl(info.path);
         if (cancelled) return;
-        setRepo({ path: info.path, defaultBranch });
+        setRepo({
+          path: info.path,
+          defaultBranch,
+          owner: remote.owner,
+          name: remote.name,
+        });
         startRefreshLoop();
         startFetchLoop();
 

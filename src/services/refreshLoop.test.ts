@@ -17,9 +17,7 @@ vi.mock('./gitService', () => ({
   listWorktrees: vi.fn(),
   listBranches: vi.fn(),
   listMainCommits: vi.fn(),
-  countMainCommits: vi.fn(),
   listTags: vi.fn(),
-  getRemoteUrl: vi.fn(),
   fetchAllPrune: vi.fn(),
 }));
 
@@ -66,10 +64,8 @@ beforeEach(() => {
 
   asMock(git.listWorktrees).mockResolvedValue([]);
   asMock(git.listBranches).mockResolvedValue([]);
-  asMock(git.listMainCommits).mockResolvedValue([]);
-  asMock(git.countMainCommits).mockResolvedValue(0);
+  asMock(git.listMainCommits).mockResolvedValue({ commits: [], total: 0 });
   asMock(git.listTags).mockResolvedValue([]);
-  asMock(git.getRemoteUrl).mockResolvedValue({ owner: null, name: null });
   asMock(git.fetchAllPrune).mockResolvedValue(undefined);
   asMock(github.listOpenPRsForBranches).mockResolvedValue(new Map());
   asMock(github.batchFetchPRs).mockResolvedValue(new Map());
@@ -133,10 +129,10 @@ describe('refreshOnce re-entrancy guard', () => {
   });
 
   it('propagates mainCommitsTotal to the store for the truncation indicator', async () => {
-    asMock(git.listMainCommits).mockResolvedValueOnce([
-      { sha: 'a', subject: 'one', date: '', prNumber: undefined },
-    ]);
-    asMock(git.countMainCommits).mockResolvedValueOnce(1234);
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [{ sha: 'a', subject: 'one', date: '', prNumber: undefined }],
+      total: 1234,
+    });
 
     await refreshOnce();
 
