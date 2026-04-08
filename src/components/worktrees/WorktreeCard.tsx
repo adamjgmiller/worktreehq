@@ -233,11 +233,12 @@ function ClosedSessionsList({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-1 text-[11px] text-neutral-500 hover:text-neutral-300 transition-colors"
+        className="w-full flex items-center gap-1 text-[11px] text-wt-claude-dormant hover:text-wt-claude-recent transition-colors"
       >
         <ChevronRight
           className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`}
         />
+        <Sparkles className="w-3 h-3" />
         <span className="uppercase tracking-wide">
           {sessions.length} closed Claude {sessions.length === 1 ? 'session' : 'sessions'}
         </span>
