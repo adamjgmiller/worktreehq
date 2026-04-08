@@ -19,6 +19,7 @@ pub fn run() {
             commands::notepads::write_notepad,
             commands::watcher::start_watching,
             commands::watcher::stop_watching,
+            commands::claude_state::read_claude_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

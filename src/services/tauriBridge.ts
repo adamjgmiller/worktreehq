@@ -1,5 +1,5 @@
 // Thin wrapper over Tauri invoke that falls back to a browser stub for dev/tests.
-import type { GitExecResult } from '../types';
+import type { ClaudeStateRaw, GitExecResult } from '../types';
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -27,6 +27,10 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
 
 export async function gitExec(repoPath: string, args: string[]): Promise<GitExecResult> {
   return invoke<GitExecResult>('git_exec', { repoPath, args });
+}
+
+export async function readClaudeState(): Promise<ClaudeStateRaw> {
+  return invoke<ClaudeStateRaw>('read_claude_state');
 }
 
 export function isTauri(): boolean {

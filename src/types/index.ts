@@ -76,3 +76,52 @@ export interface GitExecResult {
   stderr: string;
   code: number;
 }
+
+// ─── Claude Code awareness ──────────────────────────────────────────────────
+// Raw shape returned by the `read_claude_state` Tauri command. Mirror of the
+// Rust ClaudeState struct. Fields are snake_case to match Rust serde defaults
+// (same convention as AppConfig in useRepoBootstrap). Timestamps are
+// unix-epoch milliseconds.
+export interface ClaudeIdeLockRaw {
+  pid: number;
+  ide_name?: string;
+  workspace_folders: string[];
+}
+
+export interface ClaudeProjectSessionRaw {
+  session_id: string;
+  mtime_ms: number;
+}
+
+export interface ClaudeProjectDirRaw {
+  dir_name: string;
+  worktree_path?: string;
+  sessions: ClaudeProjectSessionRaw[];
+}
+
+export interface ClaudeStateRaw {
+  ide_locks: ClaudeIdeLockRaw[];
+  projects: ClaudeProjectDirRaw[];
+}
+
+// Joined per-worktree view used by the UI.
+export type ClaudePresenceStatus =
+  | 'live-ide' // IDE lockfile currently references this worktree
+  | 'live' // newest JSONL mtime within LIVE_WINDOW_MS
+  | 'recent' // newest JSONL mtime within RECENT_WINDOW_MS
+  | 'dormant' // has sessions but none are recent
+  | 'none'; // no project dir at all
+
+export interface ClaudeSession {
+  sessionId: string;
+  lastActivity: string; // ISO
+}
+
+export interface ClaudePresence {
+  status: ClaudePresenceStatus;
+  ideName?: string;
+  pid?: number;
+  lastActivity?: string; // ISO of newest session, if any
+  activeSessionId?: string; // sessionId of the currently-live session, if any
+  inactiveSessions: ClaudeSession[]; // closed sessions, newest-first
+}
