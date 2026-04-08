@@ -7,6 +7,19 @@ export default {
       fontFamily: {
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
       },
+      // Shimmer keyframe used by ContentSkeleton's loading placeholders. A
+      // moving gradient sweep across each block (rather than the simple
+      // animate-pulse) reads as "data is on its way here" instead of "this
+      // empty box is the final state". Speed and easing tuned to feel
+      // unobtrusive on a dashboard.
+      keyframes: {
+        shimmer: {
+          '100%': { transform: 'translateX(100%)' },
+        },
+      },
+      animation: {
+        shimmer: 'shimmer 1.8s ease-in-out infinite',
+      },
       colors: {
         wt: {
           bg: '#0a0a0b',

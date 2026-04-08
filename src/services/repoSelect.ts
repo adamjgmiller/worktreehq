@@ -59,8 +59,18 @@ export async function pickDirectory(): Promise<string | null> {
 // On success persists the path to config so next launch reuses it.
 // On failure sets the store error and leaves the prior repo in place.
 export async function loadRepoAtPath(candidate: string): Promise<boolean> {
-  const { setRepo, setError, setRecentRepoPaths, recentRepoPaths } =
-    useRepoStore.getState();
+  const {
+    setRepo,
+    setError,
+    setRecentRepoPaths,
+    recentRepoPaths,
+    setWorktrees,
+    setBranches,
+    setMainCommits,
+    setSquashMappings,
+    setClaudePresence,
+    setDataRepoPath,
+  } = useRepoStore.getState();
   try {
     const info = await invoke<RepoInfo>('resolve_repo', { path: candidate });
     if (!info.is_git) {
@@ -69,6 +79,19 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     }
     const defaultBranch = await getDefaultBranch(info.path);
     const remote = await getRemoteUrl(info.path);
+    // Drop the previous repo's collections BEFORE flipping `repo`. App.tsx
+    // gates the content region on `dataRepoPath === repo.path`, so resetting
+    // dataRepoPath to null here puts the new repo into the shimmer state
+    // instantly — no flash of the previous repo's worktree cards / branch
+    // table while the new refresh is in flight. We also clear the actual
+    // collections (rather than relying on the gate alone) so the store stays
+    // coherent even if a future code path forgets to check the gate.
+    setWorktrees([]);
+    setBranches([]);
+    setMainCommits([]);
+    setSquashMappings([]);
+    setClaudePresence(new Map());
+    setDataRepoPath(null);
     setRepo({
       path: info.path,
       defaultBranch,

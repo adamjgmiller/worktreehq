@@ -6,6 +6,7 @@ import { BranchesView } from './components/branches/BranchesView';
 import { SquashView } from './components/squash/SquashView';
 import { GraphView } from './components/graph/GraphView';
 import { ErrorBanner } from './components/common/ErrorBanner';
+import { ContentSkeleton } from './components/common/ContentSkeleton';
 import { SettingsModal } from './components/common/SettingsModal';
 import { ZoomIndicator } from './components/common/ZoomIndicator';
 import {
@@ -42,6 +43,7 @@ export default function App() {
   const repo = useRepoStore((s) => s.repo);
   const error = useRepoStore((s) => s.error);
   const tokenSet = useRepoStore((s) => s.githubTokenSet);
+  const dataRepoPath = useRepoStore((s) => s.dataRepoPath);
   const setError = useRepoStore((s) => s.setError);
   const zoomLevel = useRepoStore((s) => s.zoomLevel);
   const setZoomLevel = useRepoStore((s) => s.setZoomLevel);
@@ -119,6 +121,21 @@ export default function App() {
   // dedicated picker affordance alongside the error banner.
   const showRepoPicker = !repo && !!error;
 
+  // Content region gating. `dataReady` is the only honest answer to "is the
+  // store's data coherent with the current repo?" — set inside refreshLoop
+  // only on a successful pipeline. The view tree is rendered ONLY when this
+  // is true; everything else falls back to the shimmer or to nothing.
+  //
+  // Skeleton is suppressed when the picker is up so the recovery affordance
+  // gets the floor instead of competing with a loading state for a repo
+  // that doesn't exist yet.
+  //
+  // The token banner is also gated on dataReady so it doesn't pop above the
+  // shimmer during the loading window — for users without a token it should
+  // appear once content is visible, not while content is still painting.
+  const dataReady = !!repo && dataRepoPath === repo.path;
+  const showContentSkeleton = !dataReady && !showRepoPicker;
+
   return (
     <div className="h-screen flex flex-col bg-wt-bg text-neutral-100">
       <RepoBar onSettings={() => setSettingsOpen(true)} />
@@ -141,7 +158,7 @@ export default function App() {
           )}
         </div>
       )}
-      {!tokenSet && !error && (
+      {dataReady && !tokenSet && !error && (
         <div className="px-6 pt-4 text-xs text-wt-dirty">
           No GitHub token configured — squash-merge detection from PRs will be limited.{' '}
           <button onClick={() => setSettingsOpen(true)} className="underline">
@@ -151,10 +168,16 @@ export default function App() {
         </div>
       )}
       <div className="flex-1 overflow-hidden">
-        {tab === 'worktrees' && <WorktreesView />}
-        {tab === 'branches' && <BranchesView />}
-        {tab === 'squash' && <SquashView />}
-        {tab === 'graph' && <GraphView />}
+        {dataReady ? (
+          <>
+            {tab === 'worktrees' && <WorktreesView />}
+            {tab === 'branches' && <BranchesView />}
+            {tab === 'squash' && <SquashView />}
+            {tab === 'graph' && <GraphView />}
+          </>
+        ) : showContentSkeleton ? (
+          <ContentSkeleton tab={tab} />
+        ) : null}
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ZoomIndicator zoomLevel={zoomLevel} pulseKey={zoomTick} />

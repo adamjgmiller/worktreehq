@@ -34,6 +34,18 @@ interface StoreState {
   error: string | null;
   lastRefresh: number;
   githubTokenSet: boolean;
+  // The repo path the current `worktrees`/`branches`/`mainCommits`/`squashMappings`
+  // collections correspond to. Set inside `runRefreshOnce` only on success.
+  // App.tsx gates the content region on `dataRepoPath === repo.path` so:
+  //   - first launch: stays null until the first refresh lands → shimmer
+  //   - repo switch:  cleared to null in loadRepoAtPath → shimmer until the
+  //     new refresh lands → no flash of the previous repo's cards
+  //   - failed first refresh: stays null → shimmer persists with the error
+  //     banner above instead of lying about the repo's contents
+  // Doubles as the gate for the "no GitHub token" banner: that warning only
+  // shows once dataRepoPath matches repo.path, so it never pops above the
+  // shimmer during the loading window.
+  dataRepoPath: string | null;
   refreshIntervalMs: number;
   fetchIntervalMs: number;
   zoomLevel: number;
@@ -55,6 +67,7 @@ interface StoreState {
   setFetching: (v: boolean) => void;
   setError: (e: string | null) => void;
   setTokenPresent: (v: boolean) => void;
+  setDataRepoPath: (p: string | null) => void;
   setRefreshInterval: (ms: number) => void;
   setFetchInterval: (ms: number) => void;
   setZoomLevel: (z: number) => void;
@@ -84,6 +97,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   error: null,
   lastRefresh: 0,
   githubTokenSet: false,
+  dataRepoPath: null,
   // 15s default. The watcher (scoped to .git/) covers the immediacy case
   // for actual git changes, so the poll loop just needs to be a safety net.
   // 5s was both wasteful (re-running the full pipeline 12×/min) and
@@ -105,6 +119,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   setFetching: (fetching) => set({ fetching }),
   setError: (error) => set({ error }),
   setTokenPresent: (githubTokenSet) => set({ githubTokenSet }),
+  setDataRepoPath: (dataRepoPath) => set({ dataRepoPath }),
   setRefreshInterval: (refreshIntervalMs) => set({ refreshIntervalMs }),
   setFetchInterval: (fetchIntervalMs) => set({ fetchIntervalMs }),
   setZoomLevel: (z) => set({ zoomLevel: clampZoom(z) }),
