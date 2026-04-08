@@ -367,6 +367,15 @@ export async function listMainCommits(repo: string, defaultBranch: string, limit
     });
 }
 
+// Total first-parent commit count on the default branch. Used alongside
+// listMainCommits so the Graph view can surface "showing N of M" when the
+// history is truncated to the fetch cap.
+export async function countMainCommits(repo: string, defaultBranch: string): Promise<number> {
+  const raw = await tryRun(repo, ['rev-list', '--count', '--first-parent', defaultBranch]);
+  const n = parseInt(raw.trim(), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export async function listTags(repo: string): Promise<string[]> {
   const raw = await tryRun(repo, ['tag', '--list']);
   return raw.split('\n').filter(Boolean);
