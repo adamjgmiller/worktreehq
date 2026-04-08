@@ -19,6 +19,12 @@ pub struct AppConfig {
     pub fetch_interval_ms: u64,
     #[serde(default)]
     pub last_repo_path: Option<String>,
+    // UI zoom level. Multiplied against the root font-size on the frontend so
+    // every rem-based Tailwind class scales together. Persisted so the user's
+    // preferred zoom survives restarts. Range clamped to [0.5, 2.0] in the
+    // setter; out-of-range values from manual edits are clamped on read.
+    #[serde(default = "default_zoom_level")]
+    pub zoom_level: f64,
 }
 
 // 15s default. The filesystem watcher (scoped to .git/) covers the immediacy
@@ -34,6 +40,13 @@ fn default_interval() -> u64 {
 fn default_fetch_interval() -> u64 {
     60_000
 }
+
+fn default_zoom_level() -> f64 {
+    1.0
+}
+
+const ZOOM_MIN: f64 = 0.5;
+const ZOOM_MAX: f64 = 2.0;
 
 fn config_path() -> AppResult<PathBuf> {
     let base = dirs::config_dir()
@@ -57,6 +70,7 @@ pub fn read_config() -> AppResult<AppConfig> {
             refresh_interval_ms: default_interval(),
             fetch_interval_ms: default_fetch_interval(),
             last_repo_path: None,
+            zoom_level: default_zoom_level(),
         });
     }
     let text = std::fs::read_to_string(&p).map_err(AppError::Io)?;
@@ -73,6 +87,10 @@ pub fn read_config() -> AppResult<AppConfig> {
         cfg.refresh_interval_ms = default_interval();
     }
     // Note: fetch_interval_ms == 0 is a valid "disabled" signal and is preserved as-is.
+    // Clamp zoom on read so a hand-edited config can't crash the UI with a wild value.
+    if !cfg.zoom_level.is_finite() || cfg.zoom_level < ZOOM_MIN || cfg.zoom_level > ZOOM_MAX {
+        cfg.zoom_level = default_zoom_level();
+    }
     Ok(cfg)
 }
 

@@ -72,10 +72,25 @@ export function WorktreesView() {
           hint="Either the repo isn't readable yet or `git worktree list` failed. Check the error banner above."
         />
       ) : (
-        <div className="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-          {worktrees.map((w) => (
-            <WorktreeCard key={w.path} wt={w} onRemove={handleRemove} onPrune={handlePrune} />
-          ))}
+        // Wrap the grid in a flex-1 scroll container so cards below the
+        // viewport are reachable. Without this the grid spills out of the
+        // parent (which is `flex-1 overflow-hidden` in App.tsx) and lower
+        // cards are simply clipped — there's no way to scroll to them.
+        <div className="flex-1 overflow-auto">
+          {/*
+            Rem-based responsive grid: column count is derived from how many
+            20rem-wide tracks fit in the viewport, not from fixed pixel
+            breakpoints. When the user zooms in, 20rem grows in pixel terms,
+            so fewer columns fit and cards become genuinely wider — not just
+            taller. With the old breakpoint grid (md:cols-2 xl:cols-3) the
+            column count was locked to viewport pixels, so zoom only changed
+            card height, never width.
+          */}
+          <div className="p-6 grid grid-cols-[repeat(auto-fit,minmax(20rem,1fr))] gap-5">
+            {worktrees.map((w) => (
+              <WorktreeCard key={w.path} wt={w} onRemove={handleRemove} onPrune={handlePrune} />
+            ))}
+          </div>
         </div>
       )}
       {createOpen && repo && (

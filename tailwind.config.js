@@ -24,6 +24,10 @@ export default {
           'claude-live': '#10b981', // emerald — CLI live session (matches clean)
           'claude-recent': '#eab308', // amber — active within last 10 min
           'claude-dormant': '#52525b', // zinc — has history, nothing recent
+          // True orange — distinct from `dirty` amber and `conflict` red.
+          // Used to warn when ≥2 Claudes are live in the same worktree, since
+          // they can clobber each other's edits without realizing.
+          'claude-conflict': '#f97316',
         },
       },
     },

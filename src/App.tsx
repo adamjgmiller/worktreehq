@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Tabs, type TabKey } from './components/Tabs';
 import { RepoBar } from './components/RepoBar';
 import { WorktreesView } from './components/worktrees/WorktreesView';
@@ -7,9 +7,34 @@ import { SquashView } from './components/squash/SquashView';
 import { GraphView } from './components/graph/GraphView';
 import { ErrorBanner } from './components/common/ErrorBanner';
 import { SettingsModal } from './components/common/SettingsModal';
-import { useRepoStore } from './store/useRepoStore';
+import { ZoomIndicator } from './components/common/ZoomIndicator';
+import {
+  useRepoStore,
+  ZOOM_DEFAULT,
+  ZOOM_MAX,
+  ZOOM_MIN,
+  ZOOM_STEP,
+} from './store/useRepoStore';
 import { useRepoBootstrap } from './hooks/useRepoBootstrap';
 import { pickAndLoadRepo } from './services/repoSelect';
+import { invoke } from './services/tauriBridge';
+
+// Persist zoom to config.toml so it survives restarts. Best-effort: a failed
+// write doesn't roll back the in-memory zoom — the keystroke still feels
+// responsive and the next save will retry. We read+merge the existing config
+// (rather than reconstructing it from store state) because the github_token
+// is not held in the Zustand store, only the boolean `githubTokenSet`. A
+// fresh write_config without merging would silently wipe the user's token.
+async function persistZoom(level: number) {
+  try {
+    const cfg = await invoke<Record<string, unknown>>('read_config');
+    await invoke('write_config', {
+      cfg: { ...cfg, zoom_level: level },
+    });
+  } catch {
+    /* zoom is a UX nicety; persistence failure shouldn't disrupt anything */
+  }
+}
 
 export default function App() {
   const [tab, setTab] = useState<TabKey>('worktrees');
@@ -18,7 +43,76 @@ export default function App() {
   const error = useRepoStore((s) => s.error);
   const tokenSet = useRepoStore((s) => s.githubTokenSet);
   const setError = useRepoStore((s) => s.setError);
+  const zoomLevel = useRepoStore((s) => s.zoomLevel);
+  const setZoomLevel = useRepoStore((s) => s.setZoomLevel);
+  // Indicator pulse: bumped on every successful zoom change so the
+  // ZoomIndicator can re-show itself. Starts at 0 so the indicator skips
+  // its first render (no flash on launch).
+  const [zoomTick, setZoomTick] = useState(0);
   useRepoBootstrap();
+
+  // Global zoom keyboard shortcuts. Cmd/Ctrl + +/-/0 are the universal
+  // browser-style bindings; we also accept the bare keys (when no input is
+  // focused) as a power-user affordance. Range and step come from the store.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Bail if the user is typing in a text field — bare +/- should not zoom
+      // while editing a notepad or token input. Modifier-prefixed shortcuts
+      // are still honored everywhere.
+      const target = e.target as HTMLElement | null;
+      const inEditable =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          (target as HTMLElement).isContentEditable);
+      const mod = e.metaKey || e.ctrlKey;
+
+      // `=` is the unshifted key on the `+` button on US keyboards. Honor
+      // both `+` and `=` so the shortcut works whether or not the user is
+      // also pressing Shift.
+      const isPlus = e.key === '+' || e.key === '=';
+      const isMinus = e.key === '-' || e.key === '_';
+      const isZero = e.key === '0';
+
+      // Only act on the relevant keys to avoid intercepting other shortcuts.
+      if (!isPlus && !isMinus && !isZero) return;
+      // Bare keys are blocked when typing; modifier-prefixed are not.
+      if (!mod && inEditable) return;
+      // Ignore Cmd+0 etc. with extra modifiers we don't intend (Shift+Cmd+0 etc.)
+      if (e.altKey) return;
+
+      const current = useRepoStore.getState().zoomLevel;
+      let next = current;
+      if (isPlus) next = Math.min(ZOOM_MAX, current + ZOOM_STEP);
+      else if (isMinus) next = Math.max(ZOOM_MIN, current - ZOOM_STEP);
+      else if (isZero) next = ZOOM_DEFAULT;
+
+      if (next === current) {
+        // Hit the rail — still preventDefault so the browser/Tauri doesn't
+        // also try to zoom the WebView itself.
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      setZoomLevel(next);
+      setZoomTick((t) => t + 1);
+      void persistZoom(useRepoStore.getState().zoomLevel);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [setZoomLevel]);
+
+  // Apply zoom by mutating the root <html> font-size. This is the load-bearing
+  // detail: rem units in CSS are relative to the ROOT element (`<html>`), not
+  // to whatever ancestor you set font-size on. An earlier attempt set font-size
+  // on the App root div and only un-classed text scaled — every Tailwind
+  // text-sm/text-xs/etc. kept computing against html (16px) and stayed put.
+  // Setting documentElement.style.fontSize is what actually moves the rem
+  // baseline so the whole rem-based UI scales together.
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${zoomLevel * 16}px`;
+  }, [zoomLevel]);
 
   // When the bootstrap can't resolve a repo (last_repo_path moved/deleted)
   // there's no in-app way to recover without editing config.toml. Show a
@@ -63,6 +157,7 @@ export default function App() {
         {tab === 'graph' && <GraphView />}
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ZoomIndicator zoomLevel={zoomLevel} pulseKey={zoomTick} />
     </div>
   );
 }

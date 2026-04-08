@@ -1,21 +1,45 @@
 import type { SquashMapping } from '../../types';
 import { shortSha, relativeTime } from '../../lib/format';
 import { GitCommit, GitBranch, Archive, ArrowRight } from 'lucide-react';
+import { Tooltip } from '../common/Tooltip';
 
 export function SquashDetail({ mapping }: { mapping: SquashMapping }) {
   return (
     <div className="p-6">
       <div className="text-xs text-neutral-500 uppercase tracking-wide mb-2">Squash archaeology</div>
       <div className="flex flex-wrap items-center gap-3 mb-6">
-        <Badge icon={<GitCommit className="w-3.5 h-3.5" />} label={`main ${shortSha(mapping.squashCommitSha)}`} />
+        <Tooltip label="The squash commit that landed on the default branch">
+          <Badge
+            icon={<GitCommit className="w-3.5 h-3.5" />}
+            label={`main ${shortSha(mapping.squashCommitSha)}`}
+          />
+        </Tooltip>
         <ArrowRight className="w-4 h-4 text-neutral-600" />
-        <Badge icon={<Archive className="w-3.5 h-3.5" />} label={`PR #${mapping.prNumber}`} color="info" />
+        <Tooltip label="The pull request whose merge produced this squash commit">
+          <Badge
+            icon={<Archive className="w-3.5 h-3.5" />}
+            label={`PR #${mapping.prNumber}`}
+            color="info"
+          />
+        </Tooltip>
         <ArrowRight className="w-4 h-4 text-neutral-600" />
-        <Badge icon={<GitBranch className="w-3.5 h-3.5" />} label={mapping.sourceBranch} color="squash" />
+        <Tooltip label="The source branch the PR was opened from (now safe to delete)">
+          <Badge
+            icon={<GitBranch className="w-3.5 h-3.5" />}
+            label={mapping.sourceBranch}
+            color="squash"
+          />
+        </Tooltip>
         {mapping.archiveTag && (
           <>
             <ArrowRight className="w-4 h-4 text-neutral-600" />
-            <Badge icon={<Archive className="w-3.5 h-3.5" />} label={mapping.archiveTag} color="dirty" />
+            <Tooltip label="An archive/* tag preserving the original commits before the squash">
+              <Badge
+                icon={<Archive className="w-3.5 h-3.5" />}
+                label={mapping.archiveTag}
+                color="dirty"
+              />
+            </Tooltip>
           </>
         )}
       </div>

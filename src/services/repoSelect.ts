@@ -21,6 +21,7 @@ interface AppConfigShape {
   refresh_interval_ms: number;
   fetch_interval_ms: number;
   last_repo_path?: string | null;
+  zoom_level?: number;
 }
 
 // Open the system directory picker. Returns the selected path or null.
