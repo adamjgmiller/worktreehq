@@ -5,6 +5,7 @@ import {
   startFetchLoop,
   stopFetchLoop,
   stopRefreshLoop,
+  _resetRefreshLoopForTests,
 } from './refreshLoop';
 import { useRepoStore } from '../store/useRepoStore';
 
@@ -64,6 +65,9 @@ function resetStore() {
 beforeEach(() => {
   vi.clearAllMocks();
   resetStore();
+  // Reset the module-level in-flight flags so a previous test that left
+  // refreshInFlight or pendingUserRefresh stuck doesn't poison this run.
+  _resetRefreshLoopForTests();
 
   asMock(git.listWorktrees).mockResolvedValue([]);
   asMock(git.listBranches).mockResolvedValue([]);
@@ -169,25 +173,41 @@ describe('refreshOnce userInitiated flag', () => {
     expect(useRepoStore.getState().userRefreshing).toBe(false);
   });
 
-  it('joining an in-flight background refresh still animates the spinner', async () => {
-    let release: (v: unknown) => void = () => {};
+  it('joining an in-flight background refresh queues a follow-up and animates the spinner', async () => {
+    // Hold the first refresh open with a release-on-demand listWorktrees mock.
+    // Each refresh resolves the promise it captured, so the test can step through
+    // (1) the in-flight bg refresh, then (2) the queued follow-up, in sequence.
+    const releases: Array<(v: unknown) => void> = [];
     asMock(git.listWorktrees).mockImplementation(
-      () => new Promise((r) => { release = r; }),
+      () => new Promise((r) => { releases.push(r); }),
     );
 
     // Kick off a background refresh (userRefreshing stays false).
     const bg = refreshOnce();
     expect(useRepoStore.getState().userRefreshing).toBe(false);
 
-    // User clicks the button — same in-flight promise, but spinner should
-    // animate for the duration so the click has a visible effect.
+    // User clicks the button while bg is in flight. The dedupe must NOT
+    // collapse this onto the bg promise — bg started against pre-mutation
+    // state. Instead a follow-up is queued, and the user-initiated promise
+    // resolves only after the follow-up completes.
     const user = refreshOnce({ userInitiated: true });
     expect(useRepoStore.getState().userRefreshing).toBe(true);
-    expect(bg).toBe(user);
 
-    release([]);
-    await Promise.all([bg, user]);
+    // Release the first (background) refresh. The follow-up should kick off
+    // automatically from the in-flight finally hook.
+    releases[0]([]);
+    await bg;
+    // bg has resolved but the follow-up is now in flight; user is still pending.
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+
+    // Release the follow-up. user should now resolve and clear the spinner.
+    // Yield once so the follow-up's listWorktrees promise has been pushed.
+    await Promise.resolve();
+    expect(releases.length).toBeGreaterThanOrEqual(2);
+    releases[1]([]);
+    await user;
     expect(useRepoStore.getState().userRefreshing).toBe(false);
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(2);
   });
 });
 

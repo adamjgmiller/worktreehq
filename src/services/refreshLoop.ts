@@ -346,3 +346,18 @@ export function stopFetchLoop(): void {
   if (fetchTimer) clearTimeout(fetchTimer);
   fetchTimer = null;
 }
+
+// Test-only: reset all module-level state between tests. Without this, a
+// failing test that leaves an unresolved refreshInFlight or a stuck
+// pendingUserRefresh poisons every test that follows in the same file.
+export function _resetRefreshLoopForTests(): void {
+  refreshInFlight = null;
+  pendingUserRefresh = false;
+  fetchInFlight = false;
+  running = false;
+  if (timer) clearTimeout(timer);
+  timer = null;
+  fetchRunning = false;
+  if (fetchTimer) clearTimeout(fetchTimer);
+  fetchTimer = null;
+}
