@@ -19,6 +19,7 @@ vi.mock('./gitService', () => ({
   listMainCommits: vi.fn(),
   listTags: vi.fn(),
   fetchAllPrune: vi.fn(),
+  snapshotRemoteRefs: vi.fn(),
 }));
 
 vi.mock('./squashDetector', () => ({
@@ -28,6 +29,7 @@ vi.mock('./squashDetector', () => ({
 vi.mock('./githubService', () => ({
   listOpenPRsForBranches: vi.fn(),
   batchFetchPRs: vi.fn(),
+  invalidateOpenPrListCache: vi.fn(),
 }));
 
 vi.mock('./claudeAwarenessService', () => ({
@@ -67,6 +69,11 @@ beforeEach(() => {
   asMock(git.listMainCommits).mockResolvedValue({ commits: [], total: 0 });
   asMock(git.listTags).mockResolvedValue([]);
   asMock(git.fetchAllPrune).mockResolvedValue(undefined);
+  // Default: every snapshot call returns a different string so the runFetchOnce
+  // diff check always sees a change and fires the chained refresh. Tests that
+  // exercise the skip-when-unchanged branch override this per-test.
+  let snapCounter = 0;
+  asMock(git.snapshotRemoteRefs).mockImplementation(async () => `snap-${snapCounter++}\n`);
   asMock(github.listOpenPRsForBranches).mockResolvedValue(new Map());
   asMock(github.batchFetchPRs).mockResolvedValue(new Map());
   asMock(squash.detectSquashMerges).mockResolvedValue({
@@ -205,10 +212,15 @@ describe('runFetchOnce', () => {
   });
 
   it('dedupes concurrent fetches via the in-flight flag', async () => {
+    // Construct the held promise eagerly so `release` is captured the moment
+    // the promise exists — not lazily inside the mock implementation, where
+    // ordering depends on exactly when `fetchAllPrune` gets awaited inside
+    // `runFetchOnce`. The previous form was brittle: any new await added
+    // before `fetchAllPrune` (e.g. the snapshotRemoteRefs call) would race
+    // the test's `release()` and wedge the timeout.
     let release: () => void = () => {};
-    asMock(git.fetchAllPrune).mockImplementation(
-      () => new Promise<void>((r) => { release = r; }),
-    );
+    const heldPromise = new Promise<void>((r) => { release = r; });
+    asMock(git.fetchAllPrune).mockReturnValue(heldPromise);
 
     const p1 = runFetchOnce();
     const p2 = runFetchOnce(); // should short-circuit on fetchInFlight
@@ -224,6 +236,46 @@ describe('runFetchOnce', () => {
 
     await expect(runFetchOnce()).resolves.toBeUndefined();
     expect(useRepoStore.getState().fetching).toBe(false);
+  });
+});
+
+describe('runFetchOnce skip-when-unchanged', () => {
+  it('skips the chained refresh when the remote ref snapshot is unchanged', async () => {
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+
+    await runFetchOnce();
+
+    expect(asMock(git.fetchAllPrune)).toHaveBeenCalledTimes(1);
+    // Chained refresh should NOT have run, so listWorktrees was not called
+    // (the only refreshOnce-side mock that's tied to it).
+    expect(asMock(git.listWorktrees)).not.toHaveBeenCalled();
+    // We still bumped lastRefresh so the "updated X ago" indicator stays current.
+    expect(useRepoStore.getState().lastRefresh).toBeGreaterThan(0);
+    // PR list cache must NOT be invalidated when nothing moved — otherwise
+    // we'd negate half the value of the open-PR list cache.
+    expect(asMock(github.invalidateOpenPrListCache)).not.toHaveBeenCalled();
+  });
+
+  it('invalidates the open-PR list cache when refs do change', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    // Default mock alternates strings, so before != after.
+
+    await runFetchOnce();
+
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(1);
+  });
+
+  it('still triggers a refresh on snapshot failure (empty string fallback)', async () => {
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('');
+
+    await runFetchOnce();
+
+    // Empty strings on both sides — the skip path requires both to be
+    // truthy to engage, so we err on the side of refreshing.
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(1);
   });
 });
 

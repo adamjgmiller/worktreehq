@@ -5,9 +5,14 @@ import {
   listMainCommits,
   listTags,
   fetchAllPrune,
+  snapshotRemoteRefs,
 } from './gitService';
 import { detectSquashMerges } from './squashDetector';
-import { batchFetchPRs, listOpenPRsForBranches } from './githubService';
+import {
+  batchFetchPRs,
+  invalidateOpenPrListCache,
+  listOpenPRsForBranches,
+} from './githubService';
 import { fetchClaudePresence } from './claudeAwarenessService';
 
 let running = false;
@@ -175,14 +180,33 @@ export function stopRefreshLoop(): void {
 // Run a single fetch + refresh now, flipping the store's `fetching` flag so the
 // RepoBar can show an indicator. Safe to call while a fetch is already in flight —
 // subsequent concurrent calls are dropped.
+//
+// We snapshot `for-each-ref refs/remotes` before and after the fetch and
+// only chain a full refresh if the remote ref set actually changed. On a
+// quiet repo this turns the 60s fetch tick from "git fetch + ~250 git
+// subprocesses + GraphQL batch + Claude scan" into just "git fetch + 2
+// for-each-refs". When refs *did* change we also invalidate the open-PR
+// list cache so the chained refresh sees newly-pushed branches.
 export async function runFetchOnce(): Promise<void> {
   if (fetchInFlight) return;
-  const { repo, setFetching } = useRepoStore.getState();
+  const { repo, setFetching, markRefreshed } = useRepoStore.getState();
   if (!repo) return;
   fetchInFlight = true;
   setFetching(true);
   try {
+    const before = await snapshotRemoteRefs(repo.path);
     await fetchAllPrune(repo.path);
+    const after = await snapshotRemoteRefs(repo.path);
+    if (before && after && before === after) {
+      // No remote refs moved — nothing the rest of the pipeline could
+      // surface that the prior tick didn't already. Just bump lastRefresh
+      // so the "updated X ago" indicator stays current.
+      markRefreshed();
+      return;
+    }
+    if (repo.owner && repo.name) {
+      invalidateOpenPrListCache(repo.owner, repo.name);
+    }
     // Fetch changed remote refs on disk; trigger a tick so the UI reflects it.
     await refreshOnce();
   } catch {

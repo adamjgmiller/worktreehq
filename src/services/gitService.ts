@@ -530,6 +530,20 @@ export async function fetchAllPrune(repo: string): Promise<void> {
   await run(repo, ['fetch', '--all', '--prune']);
 }
 
+// A deterministic single-string fingerprint of every remote ref in the repo,
+// used by `runFetchOnce` to skip the chained refresh when `git fetch` didn't
+// actually pull anything new. Cheap (one for-each-ref subprocess) and
+// stable across runs because we sort by refname. Returns '' on error so the
+// caller falls back to "definitely refresh" rather than "definitely skip".
+export async function snapshotRemoteRefs(repo: string): Promise<string> {
+  return tryRun(repo, [
+    'for-each-ref',
+    '--sort=refname',
+    '--format=%(refname) %(objectname)',
+    'refs/remotes',
+  ]);
+}
+
 // Resolve the set of directories the filesystem watcher should watch for a
 // set of worktrees. We deliberately avoid watching worktree roots because
 // `notify` with `RecursiveMode::Recursive` on a worktree root fires for every
