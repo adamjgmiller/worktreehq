@@ -85,7 +85,7 @@ When changing merge-status logic, both passes need to stay consistent or branche
 
 ### Polling + filesystem watcher
 
-The 5s polling loop is the source of truth for refreshes. The Rust `notify`-based watcher (`src-tauri/src/commands/watcher.rs`) is a complement — it emits a `worktree-changed` event the frontend can listen for to trigger an early refresh between ticks. Don't rely on the watcher alone; on macOS in particular `notify` events can be flaky for git's internal `.git/index` churn.
+The 15s polling loop is the source of truth for refreshes. The Rust `notify`-based watcher (`src-tauri/src/commands/watcher.rs`) is a complement — it emits a `worktree-changed` event the frontend can listen for to trigger an early refresh between ticks. Don't rely on the watcher alone; on macOS in particular `notify` events can be flaky for git's internal `.git/index` churn.
 
 ## Project layout (the parts that matter)
 

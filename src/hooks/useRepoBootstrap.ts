@@ -122,7 +122,7 @@ export function useRepoBootstrap() {
         const defaultBranch = await getDefaultBranch(info.path);
         // Resolve the origin owner/name once at bootstrap and stash on the
         // repo state. This never changes for a given repo so paying the
-        // `remote get-url` subprocess on every 5s refresh tick was pure
+        // `remote get-url` subprocess on every refresh tick was pure
         // waste. The refresh loop reads these off `repo` directly.
         const remote = await getRemoteUrl(info.path);
         if (cancelled) return;

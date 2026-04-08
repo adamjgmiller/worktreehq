@@ -318,10 +318,10 @@ export function mapMergeable(m: string | undefined | null): boolean | null {
   return null;
 }
 
-// TTL cache for the paginated open-PR list. Without this, the 5s refresh
-// loop fully re-paginated `pulls.list` every tick — on a repo with hundreds
-// of open PRs that's hundreds of REST calls per minute against the token's
-// 5,000/hr budget. The cache stores the *unfiltered* list (every open PR for
+// TTL cache for the paginated open-PR list. Without this, every refresh
+// tick fully re-paginated `pulls.list` — on a repo with hundreds of open
+// PRs that's a steady drip against the token's 5,000/hr budget. The cache
+// stores the *unfiltered* list (every open PR for
 // the repo, regardless of branch set) so callers with different branch sets
 // can share the same entry. The fetch loop calls `invalidateOpenPrListCache`
 // after a successful `git fetch --all --prune` so newly-pushed branches show
