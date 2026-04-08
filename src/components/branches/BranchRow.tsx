@@ -13,6 +13,7 @@ import {
   MessageSquare,
   ThumbsUp,
 } from 'lucide-react';
+import { Tooltip } from '../common/Tooltip';
 
 const checksStyles: Record<Exclude<ChecksStatus, 'none'>, { cls: string; label: string }> = {
   success: { cls: 'text-wt-clean', label: 'checks passing' },
@@ -24,11 +25,13 @@ function ChecksDot({ status }: { status: ChecksStatus }) {
   if (!status || status === 'none') return null;
   const s = checksStyles[status];
   return (
-    <span title={s.label} className={clsx('inline-block w-2 h-2 rounded-full', {
-      'bg-wt-clean': status === 'success',
-      'bg-wt-conflict': status === 'failure',
-      'bg-wt-dirty': status === 'pending',
-    })} />
+    <Tooltip label={s.label}>
+      <span className={clsx('inline-block w-2 h-2 rounded-full', {
+        'bg-wt-clean': status === 'success',
+        'bg-wt-conflict': status === 'failure',
+        'bg-wt-dirty': status === 'pending',
+      })} />
+    </Tooltip>
   );
 }
 
@@ -36,22 +39,28 @@ function ReviewIcon({ decision }: { decision: ReviewDecision }) {
   if (!decision) return null;
   if (decision === 'approved') {
     return (
-      <span title="approved" className="text-wt-clean">
-        <ThumbsUp className="w-3 h-3" />
-      </span>
+      <Tooltip label="PR approved">
+        <span className="text-wt-clean inline-flex">
+          <ThumbsUp className="w-3 h-3" />
+        </span>
+      </Tooltip>
     );
   }
   if (decision === 'changes_requested') {
     return (
-      <span title="changes requested" className="text-wt-conflict">
-        <MessageSquare className="w-3 h-3" />
-      </span>
+      <Tooltip label="Changes requested by reviewer">
+        <span className="text-wt-conflict inline-flex">
+          <MessageSquare className="w-3 h-3" />
+        </span>
+      </Tooltip>
     );
   }
   return (
-    <span title="review required" className="text-neutral-500">
-      <Clock className="w-3 h-3" />
-    </span>
+    <Tooltip label="Review required — no review yet">
+      <span className="text-neutral-500 inline-flex">
+        <Clock className="w-3 h-3" />
+      </span>
+    </Tooltip>
   );
 }
 
@@ -73,36 +82,52 @@ export function BranchRow({
         <div className="flex items-center gap-2">
           <span>{branch.name}</span>
           {branch.worktreePath && (
-            <span title={branch.worktreePath} className="text-wt-info">
-              <Briefcase className="w-3.5 h-3.5" />
-            </span>
+            <Tooltip
+              label={
+                <span>
+                  Branch is checked out in a worktree:
+                  <br />
+                  <span className="font-mono">{branch.worktreePath}</span>
+                </span>
+              }
+            >
+              <span className="text-wt-info inline-flex">
+                <Briefcase className="w-3.5 h-3.5" />
+              </span>
+            </Tooltip>
           )}
         </div>
-        <div className="text-[10px] text-neutral-600 font-mono">{shortSha(branch.lastCommitSha)}</div>
+        <div className="text-[0.625rem] text-neutral-600 font-mono">{shortSha(branch.lastCommitSha)}</div>
       </td>
       <td className="px-3 py-3">
-        <div className="flex gap-1 text-[10px] font-mono">
+        <div className="flex gap-1 text-[0.625rem] font-mono">
           {branch.hasLocal && (
-            <span className="px-1.5 py-0.5 border border-wt-border rounded flex items-center gap-1">
-              <HardDrive className="w-3 h-3" /> local
-            </span>
+            <Tooltip label="A local ref for this branch exists in this clone">
+              <span className="px-1.5 py-0.5 border border-wt-border rounded flex items-center gap-1">
+                <HardDrive className="w-3 h-3" /> local
+              </span>
+            </Tooltip>
           )}
           {branch.hasRemote && (
-            <span className="px-1.5 py-0.5 border border-wt-border rounded flex items-center gap-1">
-              <Cloud className="w-3 h-3" /> remote
-            </span>
+            <Tooltip label="A remote ref for this branch exists on origin">
+              <span className="px-1.5 py-0.5 border border-wt-border rounded flex items-center gap-1">
+                <Cloud className="w-3 h-3" /> remote
+              </span>
+            </Tooltip>
           )}
           {branch.upstreamGone && (
-            <span className="px-1.5 py-0.5 border border-wt-conflict/50 text-wt-conflict rounded">
-              gone
-            </span>
+            <Tooltip label="Local branch tracks an upstream that no longer exists on origin">
+              <span className="px-1.5 py-0.5 border border-wt-conflict/50 text-wt-conflict rounded">
+                gone
+              </span>
+            </Tooltip>
           )}
         </div>
       </td>
       <td className="px-3 py-3">
         <span
           className={clsx(
-            'px-2 py-0.5 text-[10px] font-mono border rounded',
+            'px-2 py-0.5 text-[0.625rem] font-mono border rounded',
             mergeStatusClass(branch.mergeStatus),
           )}
         >
@@ -125,24 +150,27 @@ export function BranchRow({
               <ExternalLink className="w-3 h-3" />
             </a>
             {branch.pr.isDraft && (
-              <span
-                title="draft"
-                className="px-1.5 py-0.5 text-[9px] font-mono border border-neutral-600 text-neutral-400 rounded uppercase"
-              >
-                draft
-              </span>
+              <Tooltip label="Draft PR — not yet ready for review">
+                <span className="px-1.5 py-0.5 text-[0.5625rem] font-mono border border-neutral-600 text-neutral-400 rounded uppercase">
+                  draft
+                </span>
+              </Tooltip>
             )}
             <ChecksDot status={branch.pr.checksStatus ?? 'none'} />
             <ReviewIcon decision={branch.pr.reviewDecision ?? null} />
             {branch.pr.mergeable === false && (
-              <span title="conflicts with base" className="text-wt-conflict">
-                <XIcon className="w-3 h-3" />
-              </span>
+              <Tooltip label="PR has merge conflicts with the base branch">
+                <span className="text-wt-conflict inline-flex">
+                  <XIcon className="w-3 h-3" />
+                </span>
+              </Tooltip>
             )}
             {branch.pr.mergeable === true && !branch.pr.isDraft && (
-              <span title="mergeable" className="text-wt-clean">
-                <Check className="w-3 h-3" />
-              </span>
+              <Tooltip label="PR is mergeable — no conflicts with base">
+                <span className="text-wt-clean inline-flex">
+                  <Check className="w-3 h-3" />
+                </span>
+              </Tooltip>
             )}
           </div>
         ) : (

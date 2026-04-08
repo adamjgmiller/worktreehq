@@ -18,6 +18,7 @@ import { worktreeStatusClass } from '../../lib/colors';
 import { relativeTime, shortSha, aheadBehind } from '../../lib/format';
 import { resumeCommand } from '../../services/claudeAwarenessService';
 import { useRepoStore } from '../../store/useRepoStore';
+import { Tooltip } from '../common/Tooltip';
 import { Notepad } from './Notepad';
 
 const inProgressLabel: Record<InProgressOp, string> = {
@@ -60,12 +61,25 @@ export function WorktreeCard({
       document.removeEventListener('keydown', onKey);
     };
   }, [menuOpen]);
-  const statusIcon = {
-    clean: <Circle className="w-4 h-4 text-wt-clean" fill="currentColor" />,
-    dirty: <FileEdit className="w-4 h-4 text-wt-dirty" />,
-    conflict: <AlertTriangle className="w-4 h-4 text-wt-conflict" />,
-    diverged: <GitCommit className="w-4 h-4 text-wt-info" />,
-  }[wt.status];
+  const statusIconMap = {
+    clean: {
+      icon: <Circle className="w-4 h-4 text-wt-clean" fill="currentColor" />,
+      label: 'Clean — no uncommitted changes',
+    },
+    dirty: {
+      icon: <FileEdit className="w-4 h-4 text-wt-dirty" />,
+      label: 'Dirty — modified, staged, or untracked files present',
+    },
+    conflict: {
+      icon: <AlertTriangle className="w-4 h-4 text-wt-conflict" />,
+      label: 'Conflict — unresolved merge or rebase conflicts',
+    },
+    diverged: {
+      icon: <GitCommit className="w-4 h-4 text-wt-info" />,
+      label: 'Diverged — local and upstream have moved in different directions',
+    },
+  };
+  const statusIconEntry = statusIconMap[wt.status];
 
   return (
     <motion.div
@@ -73,16 +87,18 @@ export function WorktreeCard({
       animate={{ opacity: 1 }}
       initial={{ opacity: 0, y: 4 }}
       transition={{ duration: 0.2 }}
-      className={`rounded-xl border-2 p-5 min-w-[300px] bg-wt-panel ${worktreeStatusClass(wt.status)}`}
+      className={`rounded-xl border-2 p-5 min-w-[18.75rem] bg-wt-panel ${worktreeStatusClass(wt.status)}`}
     >
       <div className="flex items-start gap-2 mb-3">
-        <div className="mt-0.5">{statusIcon}</div>
+        <Tooltip label={statusIconEntry.label}>
+          <div className="mt-0.5">{statusIconEntry.icon}</div>
+        </Tooltip>
         <div className="flex-1 min-w-0">
           <div className="font-mono text-sm text-neutral-100 truncate" title={wt.branch}>
             {wt.branch}
           </div>
           <div
-            className="font-mono text-[11px] text-neutral-500 truncate"
+            className="font-mono text-[0.6875rem] text-neutral-500 truncate"
             title={wt.upstream ? `tracks ${wt.upstream}` : 'no upstream configured'}
           >
             {wt.upstream ? (
@@ -95,11 +111,15 @@ export function WorktreeCard({
             )}
           </div>
         </div>
-        {presence && presence.status !== 'none' && <ClaudeBadge presence={presence} />}
+        {presence && (presence.status !== 'none' || presence.liveSessionCount > 0) && (
+          <ClaudeBadge presence={presence} />
+        )}
         {wt.isPrimary && (
-          <span title="primary worktree" className="text-wt-info mt-0.5">
-            <Star className="w-4 h-4" fill="currentColor" />
-          </span>
+          <Tooltip label="Primary worktree — the original repo checkout, cannot be removed">
+            <span className="text-wt-info mt-0.5 inline-flex">
+              <Star className="w-4 h-4" fill="currentColor" />
+            </span>
+          </Tooltip>
         )}
         {(onRemove || onPrune) && (
           <div className="relative" ref={menuRef}>
@@ -142,24 +162,21 @@ export function WorktreeCard({
         )}
       </div>
       {wt.inProgress && (
-        <div className="mb-3 flex items-center gap-1.5 px-2 py-1 rounded border border-wt-conflict/60 bg-wt-conflict/10 text-wt-conflict text-[10px] font-mono tracking-wider">
-          <AlertTriangle className="w-3 h-3" />
-          {inProgressLabel[wt.inProgress]}
-        </div>
+        <Tooltip
+          label={`A ${wt.inProgress} is partially completed in this worktree — finish or abort it before switching branches`}
+        >
+          <div className="mb-3 flex items-center gap-1.5 px-2 py-1 rounded border border-wt-conflict/60 bg-wt-conflict/10 text-wt-conflict text-[0.625rem] font-mono tracking-wider cursor-help">
+            <AlertTriangle className="w-3 h-3" />
+            {inProgressLabel[wt.inProgress]}
+          </div>
+        </Tooltip>
       )}
-      <div className="relative group mb-4">
-        <div
-          className="text-xs font-mono text-neutral-500 truncate cursor-help"
-          title={wt.path}
-        >
-          {wt.path}
-        </div>
-        <div
-          className="hidden group-hover:block absolute bottom-full left-0 mb-1 z-10 max-w-[420px] bg-wt-panel border border-wt-border rounded px-2 py-1 shadow-lg text-xs font-mono text-neutral-200 break-all pointer-events-none"
-          role="tooltip"
-        >
-          {wt.path}
-        </div>
+      <div className="mb-4">
+        <Tooltip block label={<span className="font-mono break-all">{wt.path}</span>}>
+          <div className="text-xs font-mono text-neutral-500 truncate cursor-help">
+            {wt.path}
+          </div>
+        </Tooltip>
       </div>
       <div className="grid grid-cols-2 gap-2 text-xs mb-3">
         <Stat label="untracked" value={wt.untrackedCount} />
@@ -190,7 +207,7 @@ export function WorktreeCard({
 function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="bg-wt-bg/60 border border-wt-border rounded px-2 py-1.5">
-      <div className="text-neutral-500 text-[10px] uppercase tracking-wide">{label}</div>
+      <div className="text-neutral-500 text-[0.625rem] uppercase tracking-wide">{label}</div>
       <div className="font-mono text-neutral-100">{value}</div>
     </div>
   );
@@ -198,16 +215,38 @@ function Stat({ label, value }: { label: string; value: number | string }) {
 
 // Small colored sparkle badge indicating Claude Code presence. Tooltip carries
 // the IDE name (if any), the activity status, and last-seen relative time.
+//
+// When ≥2 Claudes are live in the same worktree, the badge flips to an
+// unmistakable orange + pulse + count. Two simultaneous Claudes can stomp on
+// each other's edits because each one reads/edits/writes files independently
+// with no awareness of the other — surfacing this is the whole point of the
+// presence display.
 function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
-  const colorClass = {
-    'live-ide': 'text-wt-claude-ide',
-    live: 'text-wt-claude-live',
-    recent: 'text-wt-claude-recent',
-    dormant: 'text-wt-claude-dormant',
-    none: 'text-wt-claude-dormant',
-  }[presence.status];
+  const isMultiLive = presence.liveSessionCount > 1;
+
+  const colorClass = isMultiLive
+    ? 'text-wt-claude-conflict'
+    : ({
+        'live-ide': 'text-wt-claude-ide',
+        live: 'text-wt-claude-live',
+        recent: 'text-wt-claude-recent',
+        dormant: 'text-wt-claude-dormant',
+        none: 'text-wt-claude-dormant',
+      }[presence.status]);
 
   const label = (() => {
+    if (isMultiLive) {
+      return (
+        <span>
+          <strong className="text-wt-claude-conflict">
+            ⚠ {presence.liveSessionCount} Claude sessions live in this worktree
+          </strong>
+          <br />
+          They can overwrite each other's edits — close all but one before
+          continuing work.
+        </span>
+      );
+    }
     const when = presence.lastActivity ? relativeTime(presence.lastActivity) : 'unknown';
     if (presence.status === 'live-ide') {
       return `Claude live in ${presence.ideName ?? 'IDE'} · ${when}`;
@@ -218,9 +257,20 @@ function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
   })();
 
   return (
-    <span title={label} className={`inline-flex items-center ${colorClass}`}>
-      <Sparkles className="w-4 h-4" />
-    </span>
+    <Tooltip label={label}>
+      <span
+        className={`relative inline-flex items-center ${colorClass} ${
+          isMultiLive ? 'animate-pulse' : ''
+        }`}
+      >
+        <Sparkles className="w-4 h-4" />
+        {isMultiLive && (
+          <span className="ml-0.5 text-[0.625rem] font-bold leading-none">
+            ×{presence.liveSessionCount}
+          </span>
+        )}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -254,7 +304,7 @@ function ClosedSessionsList({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-1 text-[11px] text-wt-claude-dormant hover:text-wt-claude-recent transition-colors"
+        className="w-full flex items-center gap-1 text-[0.6875rem] text-wt-claude-dormant hover:text-wt-claude-recent transition-colors"
       >
         <ChevronRight
           className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`}
@@ -277,7 +327,7 @@ function ClosedSessionsList({
             {sessions.map((s) => (
               <li
                 key={s.sessionId}
-                className="flex items-center gap-2 text-[11px] text-neutral-400"
+                className="flex items-center gap-2 text-[0.6875rem] text-neutral-400"
               >
                 <span className="font-mono text-neutral-500" title={s.sessionId}>
                   {s.sessionId.slice(0, 8)}

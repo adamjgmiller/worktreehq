@@ -26,6 +26,7 @@ interface AppConfig {
   refresh_interval_ms: number;
   fetch_interval_ms: number;
   last_repo_path?: string;
+  zoom_level?: number;
 }
 
 interface RepoInfo {
@@ -39,6 +40,7 @@ export function useRepoBootstrap() {
   const setTokenPresent = useRepoStore((s) => s.setTokenPresent);
   const setRefreshInterval = useRepoStore((s) => s.setRefreshInterval);
   const setFetchInterval = useRepoStore((s) => s.setFetchInterval);
+  const setZoomLevel = useRepoStore((s) => s.setZoomLevel);
   // Derive just the sorted-paths key so the watcher effect only re-runs when the
   // actual path SET changes — not on every refresh tick when other worktree
   // fields (branch name, commit count, etc.) churn.
@@ -85,6 +87,9 @@ export function useRepoBootstrap() {
         // documented 15s default whenever the field deserialized to 0.
         setRefreshInterval(cfg.refresh_interval_ms || 15_000);
         setFetchInterval(cfg.fetch_interval_ms ?? 60_000);
+        // Hydrate persisted zoom. The Rust side already clamps and falls back
+        // to 1.0 for malformed values, so we can trust whatever it returned.
+        if (typeof cfg.zoom_level === 'number') setZoomLevel(cfg.zoom_level);
         await hydratePrCache();
 
         const info = await invoke<RepoInfo>('resolve_repo', { path: cfg.last_repo_path ?? null });
@@ -132,7 +137,7 @@ export function useRepoBootstrap() {
       // keep firing `worktree-changed` events at a remounted hook.
       void stopWatching();
     };
-  }, [setRepo, setError, setTokenPresent, setRefreshInterval, setFetchInterval]);
+  }, [setRepo, setError, setTokenPresent, setRefreshInterval, setFetchInterval, setZoomLevel]);
 
   // Re-register the watcher on the Rust side whenever the set of worktree paths changes.
   // `start_watching` on its own replaces any prior watcher, so a second call reseats it.

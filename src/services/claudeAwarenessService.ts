@@ -71,7 +71,17 @@ export function joinClaudeState(
       byWorktreePath.get(wt.path) ?? byDirName.get(encodeProjectDirName(wt.path));
 
     if (!project || project.sessions.length === 0) {
-      out.set(wt.path, { status: 'none', inactiveSessions: [] });
+      // A lockfile without a project dir is rare but can happen mid-startup
+      // (IDE has the lock but no JSONL has been flushed yet). Count it as 1
+      // live agent so the badge isn't blank in that window.
+      const lock = lockByFolder.get(wt.path);
+      out.set(wt.path, {
+        status: lock ? 'live-ide' : 'none',
+        ideName: lock?.ide_name,
+        pid: lock?.pid,
+        inactiveSessions: [],
+        liveSessionCount: lock ? 1 : 0,
+      });
       continue;
     }
 
@@ -88,6 +98,16 @@ export function joinClaudeState(
     else if (age <= LIVE_WINDOW_MS) status = 'live';
     else if (age <= RECENT_WINDOW_MS) status = 'recent';
     else status = 'dormant';
+
+    // Count distinct live agents — JSONL sessions within LIVE_WINDOW_MS, plus
+    // the IDE lock when it exists. The lock may overlap with the newest
+    // session (the IDE writes its own JSONL too), so we only add 1 for the
+    // lock if the newest JSONL is itself outside the live window. This
+    // approximates "how many human-driven Claudes are touching this worktree
+    // right now" — the number we want to warn about, not the raw file count.
+    const liveJsonlCount = sessions.filter((s) => now - s.mtime_ms <= LIVE_WINDOW_MS).length;
+    const liveSessionCount =
+      liveJsonlCount + (lock && age > LIVE_WINDOW_MS ? 1 : 0);
 
     // A session counts as "currently active" only for live/live-ide. Otherwise
     // every session (including the most recent) goes into the closed list so
@@ -106,6 +126,7 @@ export function joinClaudeState(
       lastActivity: new Date(newest.mtime_ms).toISOString(),
       activeSessionId,
       inactiveSessions: inactive,
+      liveSessionCount,
     });
   }
   return out;

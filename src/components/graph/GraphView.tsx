@@ -44,7 +44,7 @@ export function GraphView() {
           : `${commits.length} commits`}
       </div>
       {truncated && (
-        <div className="mb-3 px-3 py-2 rounded border border-wt-border bg-wt-bg/60 text-[11px] text-neutral-400">
+        <div className="mb-3 px-3 py-2 rounded border border-wt-border bg-wt-bg/60 text-[0.6875rem] text-neutral-400">
           History truncated to the most recent {commits.length} commits on{' '}
           <span className="font-mono text-neutral-300">main</span>. Older commits exist but
           aren't rendered in the graph.

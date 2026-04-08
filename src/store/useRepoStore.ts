@@ -8,6 +8,15 @@ import type {
   ClaudePresence,
 } from '../types';
 
+// Zoom is clamped to [ZOOM_MIN, ZOOM_MAX] in the setter. Range matches the
+// Rust-side clamp in src-tauri/src/commands/config.rs and is intentionally
+// wider than the keyboard step (0.10) so the user can land on common stops
+// (75%, 100%, 125%, 150%) cleanly.
+export const ZOOM_MIN = 0.5;
+export const ZOOM_MAX = 2.0;
+export const ZOOM_STEP = 0.1;
+export const ZOOM_DEFAULT = 1.0;
+
 interface StoreState {
   repo: RepoState | null;
   worktrees: Worktree[];
@@ -27,6 +36,7 @@ interface StoreState {
   githubTokenSet: boolean;
   refreshIntervalMs: number;
   fetchIntervalMs: number;
+  zoomLevel: number;
 
   setRepo: (r: RepoState) => void;
   setWorktrees: (w: Worktree[]) => void;
@@ -41,7 +51,16 @@ interface StoreState {
   setTokenPresent: (v: boolean) => void;
   setRefreshInterval: (ms: number) => void;
   setFetchInterval: (ms: number) => void;
+  setZoomLevel: (z: number) => void;
   markRefreshed: () => void;
+}
+
+// Round to 2 decimals so floating-point drift from repeated +0.1 doesn't
+// produce zoom values like 1.0000000000000002 in the persisted config.
+function clampZoom(z: number): number {
+  if (!Number.isFinite(z)) return ZOOM_DEFAULT;
+  const clamped = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  return Math.round(clamped * 100) / 100;
 }
 
 export const useRepoStore = create<StoreState>((set) => ({
@@ -64,6 +83,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   // pointless once the watcher fires for the things that actually matter.
   refreshIntervalMs: 15_000,
   fetchIntervalMs: 60_000,
+  zoomLevel: ZOOM_DEFAULT,
 
   setRepo: (repo) => set({ repo }),
   setWorktrees: (worktrees) => set({ worktrees }),
@@ -79,5 +99,6 @@ export const useRepoStore = create<StoreState>((set) => ({
   setTokenPresent: (githubTokenSet) => set({ githubTokenSet }),
   setRefreshInterval: (refreshIntervalMs) => set({ refreshIntervalMs }),
   setFetchInterval: (fetchIntervalMs) => set({ fetchIntervalMs }),
+  setZoomLevel: (z) => set({ zoomLevel: clampZoom(z) }),
   markRefreshed: () => set({ lastRefresh: Date.now() }),
 }));

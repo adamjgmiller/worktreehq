@@ -42,16 +42,16 @@ export function SquashView() {
               <div className="flex items-center gap-2">
                 <span className="font-mono text-xs text-neutral-500">{shortSha(c.sha)}</span>
                 {m && (
-                  <span className="flex items-center gap-1 text-[10px] text-wt-squash">
+                  <span className="flex items-center gap-1 text-[0.625rem] text-wt-squash">
                     <Archive className="w-3 h-3" /> squash
                   </span>
                 )}
                 {c.prNumber && (
-                  <span className="text-[10px] text-wt-info font-mono">#{c.prNumber}</span>
+                  <span className="text-[0.625rem] text-wt-info font-mono">#{c.prNumber}</span>
                 )}
               </div>
               <div className="text-sm text-neutral-200 truncate">{c.subject}</div>
-              <div className="text-[10px] text-neutral-600">{relativeTime(c.date)}</div>
+              <div className="text-[0.625rem] text-neutral-600">{relativeTime(c.date)}</div>
             </button>
           );
         })}

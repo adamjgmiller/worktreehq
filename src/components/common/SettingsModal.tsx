@@ -10,6 +10,7 @@ interface AppConfigShape {
   refresh_interval_ms: number;
   fetch_interval_ms: number;
   last_repo_path?: string | null;
+  zoom_level?: number;
 }
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -86,6 +87,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           refresh_interval_ms: state.refreshIntervalMs,
           fetch_interval_ms: state.fetchIntervalMs,
           last_repo_path: state.repo?.path ?? null,
+          // Preserve the user's zoom across settings saves. Without this, every
+          // token save would silently reset zoom to the Rust serde default.
+          zoom_level: state.zoomLevel,
         },
       });
       initGithub(token);
@@ -135,7 +139,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             <button
               type="button"
               onClick={clearToken}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] uppercase tracking-wide text-neutral-500 hover:text-wt-conflict"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[0.6875rem] uppercase tracking-wide text-neutral-500 hover:text-wt-conflict"
             >
               clear
             </button>

@@ -179,6 +179,107 @@ describe('joinClaudeState', () => {
     expect(result.get(b.path)!.status).toBe('none');
   });
 
+  describe('liveSessionCount (multi-Claude warning)', () => {
+    it('is 0 for status=none', () => {
+      const presence = joinClaudeState(
+        { ide_locks: [], projects: [] },
+        [wt(worktreePath)],
+        NOW,
+      ).get(worktreePath)!;
+      expect(presence.liveSessionCount).toBe(0);
+    });
+
+    it('is 1 when one session is within the live window', () => {
+      const raw: ClaudeStateRaw = {
+        ide_locks: [],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [
+              { session_id: 'a', mtime_ms: NOW - 5_000 },
+              { session_id: 'b', mtime_ms: NOW - 3 * RECENT_WINDOW_MS },
+            ],
+          },
+        ],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.liveSessionCount).toBe(1);
+    });
+
+    it('is 2 when two sessions are both within the live window', () => {
+      const raw: ClaudeStateRaw = {
+        ide_locks: [],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [
+              { session_id: 'a', mtime_ms: NOW - 5_000 },
+              { session_id: 'b', mtime_ms: NOW - 30_000 },
+              { session_id: 'old', mtime_ms: NOW - 2 * RECENT_WINDOW_MS },
+            ],
+          },
+        ],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.liveSessionCount).toBe(2);
+      expect(presence.status).toBe('live');
+    });
+
+    it('counts an IDE lock as a separate live agent only when newest JSONL is stale', () => {
+      // Lock present + newest JSONL also within live window → don't double-count
+      // (the IDE writes its own JSONL, so the newest session IS the IDE).
+      const overlapping: ClaudeStateRaw = {
+        ide_locks: [{ pid: 1, ide_name: 'Cursor', workspace_folders: [worktreePath] }],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [{ session_id: 'a', mtime_ms: NOW - 5_000 }],
+          },
+        ],
+      };
+      const overlappingPresence = joinClaudeState(
+        overlapping,
+        [wt(worktreePath)],
+        NOW,
+      ).get(worktreePath)!;
+      expect(overlappingPresence.liveSessionCount).toBe(1);
+
+      // Lock present + newest JSONL outside live window → IDE counts as 1
+      // separate live agent (the user just opened the IDE; no flush yet).
+      const distinct: ClaudeStateRaw = {
+        ide_locks: [{ pid: 1, ide_name: 'Cursor', workspace_folders: [worktreePath] }],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [{ session_id: 'a', mtime_ms: NOW - LIVE_WINDOW_MS - 5_000 }],
+          },
+        ],
+      };
+      const distinctPresence = joinClaudeState(
+        distinct,
+        [wt(worktreePath)],
+        NOW,
+      ).get(worktreePath)!;
+      expect(distinctPresence.liveSessionCount).toBe(1);
+      expect(distinctPresence.status).toBe('live-ide');
+    });
+
+    it('counts an IDE lock as 1 when no project dir exists at all', () => {
+      // Mid-startup edge case: lock acquired before any JSONL is flushed.
+      const raw: ClaudeStateRaw = {
+        ide_locks: [{ pid: 1, ide_name: 'Cursor', workspace_folders: [worktreePath] }],
+        projects: [],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.liveSessionCount).toBe(1);
+      expect(presence.status).toBe('live-ide');
+    });
+  });
+
   it('inactive sessions are emitted newest-first regardless of input order', () => {
     const raw: ClaudeStateRaw = {
       ide_locks: [],

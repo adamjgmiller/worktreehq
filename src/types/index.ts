@@ -147,4 +147,11 @@ export interface ClaudePresence {
   lastActivity?: string; // ISO of newest session, if any
   activeSessionId?: string; // sessionId of the currently-live session, if any
   inactiveSessions: ClaudeSession[]; // closed sessions, newest-first
+  // Number of distinct Claude agents currently considered live in this
+  // worktree. ≥2 means the user has multiple Claude sessions writing to the
+  // same worktree at once — they can clobber each other's edits silently and
+  // the UI surfaces this as a warning. Counts JSONL sessions within
+  // LIVE_WINDOW_MS plus the IDE lock when present (and not already covered
+  // by the newest JSONL session).
+  liveSessionCount: number;
 }
