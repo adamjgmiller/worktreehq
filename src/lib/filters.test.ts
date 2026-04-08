@@ -32,6 +32,17 @@ describe('applyPreset', () => {
     expect(out).toContain('merged-squash');
     expect(out).not.toContain('has-wt');
   });
+  // Empty branches are NOT in safe-to-delete by default. They have no work,
+  // so deletion is technically safe — but the preset is conservative because
+  // a user often creates an empty branch precisely to start working in. If
+  // we ever want bulk-delete of empty branches, do it as a separate preset.
+  it('safe-to-delete excludes empty branches', () => {
+    const out = applyPreset(
+      [...branches, b({ name: 'fresh', mergeStatus: 'empty' })],
+      'safe-to-delete',
+    ).map((x) => x.name);
+    expect(out).not.toContain('fresh');
+  });
   it('stale only stale', () => {
     expect(applyPreset(branches, 'stale').map((x) => x.name)).toEqual(['stale']);
   });
