@@ -11,6 +11,10 @@ function branchColor(b: Branch): string {
       return '#3b82f6';
     case 'stale':
       return '#f59e0b';
+    case 'empty':
+      // Slate — matches the wt-active palette used by the empty pill, so the
+      // graph and the worktree card stay visually consistent.
+      return '#64748b';
     case 'unmerged':
     default:
       return '#10b981';

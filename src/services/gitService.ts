@@ -448,7 +448,13 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
         if (cached) {
           b.aheadOfMain = cached.aheadOfMain;
           b.behindMain = cached.behindMain;
-          if (cached.merged) b.mergeStatus = 'merged-normally';
+          if (cached.merged) {
+            b.mergeStatus = 'merged-normally';
+          } else if (cached.aheadOfMain === 0) {
+            // Mirror the empty-tag rule applied below to cold computes — the
+            // cache stores the raw counts, the empty derivation is stateless.
+            b.mergeStatus = 'empty';
+          }
           return;
         }
       }
@@ -494,7 +500,16 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
         mergeResult?.code === 0 && !mainFirstParentShas.has(b.lastCommitSha);
       b.aheadOfMain = aheadOfMain;
       b.behindMain = behindMain;
-      if (merged) b.mergeStatus = 'merged-normally';
+      if (merged) {
+        b.mergeStatus = 'merged-normally';
+      } else if (aheadOfMain === 0) {
+        // Branch has no commits of its own — either pointing exactly at main's
+        // tip (just-created via `git worktree add -b`) or lagging behind on
+        // main's first-parent line. Either way there is literally nothing to
+        // merge, so the bare "unmerged" pill is misleading. Tag it as `empty`
+        // so the UI can render a quiet "no work yet" hint instead.
+        b.mergeStatus = 'empty';
+      }
       // Only cache when both probes returned a usable answer. A partial
       // failure means we may have a stale 0/0/false; serving that from cache
       // would lock it in until the branch sha actually moves.

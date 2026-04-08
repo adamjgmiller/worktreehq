@@ -438,17 +438,18 @@ describe('listBranches sha-cache', () => {
   });
 
   // Regression for the "MERGED on a brand-new empty branch" bug. Before the
-  // fix, listBranches would call `merge-base --is-ancestor branch main`, see
-  // exit 0, and tag the branch `merged-normally`. But that exit code is also
-  // returned when the branch tip is itself a commit on main's first-parent
-  // line — which is true for any branch that was just created from main and
-  // hasn't received any commits yet. The user-visible symptom: a worktree
-  // freshly checked out on a new branch immediately renders MERGED in the
-  // WorktreeCard pill, before any work has been done on it.
+  // first fix (c93793c), listBranches would call `merge-base --is-ancestor
+  // branch main`, see exit 0, and tag the branch `merged-normally`. But that
+  // exit code is also returned when the branch tip is itself a commit on
+  // main's first-parent line — true for any branch that was just created
+  // from main and hasn't received any commits yet. That fix gated
+  // `merged-normally` on the branch tip NOT being in main's first-parent
+  // set, downgrading these branches to `unmerged`.
   //
-  // The fix gates `merged-normally` on the branch tip NOT being in main's
-  // first-parent sha set. This test seeds the mock so `feat/empty` shares
-  // main's tip sha and verifies it comes back as `unmerged`.
+  // The follow-up (this assertion) goes one step further: a brand-new branch
+  // pointing at main's tip has zero commits of its own, so `unmerged` is
+  // also misleading — there's nothing to merge. We tag these as `'empty'`
+  // and the WorktreeCard renders a quiet slate "no work yet" pill.
   it('does not mark a branch as merged when its tip sits on main first-parent', async () => {
     // feat/empty has the same sha as main (e.g. just created via
     // `git worktree add ../bug-fix -b feat/empty main`). feat/real has
@@ -499,7 +500,7 @@ describe('listBranches sha-cache', () => {
     const result = await listBranches('/repo', 'main');
     const empty = result.find((b) => b.name === 'feat/empty');
     const real = result.find((b) => b.name === 'feat/real');
-    expect(empty?.mergeStatus).toBe('unmerged');
+    expect(empty?.mergeStatus).toBe('empty');
     expect(real?.mergeStatus).toBe('merged-normally');
   });
 });

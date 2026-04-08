@@ -1,4 +1,9 @@
-export type MergeStatus = 'merged-normally' | 'squash-merged' | 'unmerged' | 'stale';
+export type MergeStatus =
+  | 'merged-normally'
+  | 'squash-merged'
+  | 'unmerged'
+  | 'empty'
+  | 'stale';
 export type WorktreeStatus = 'clean' | 'dirty' | 'conflict' | 'diverged';
 export type InProgressOp = 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect';
 export type ChecksStatus = 'success' | 'failure' | 'pending' | 'none';

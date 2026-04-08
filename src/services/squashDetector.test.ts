@@ -51,6 +51,14 @@ describe('isStale', () => {
     const old = new Date(Date.now() - 40 * 86400_000).toISOString();
     expect(isStale({ ...base, lastCommitDate: old, mergeStatus: 'merged-normally' })).toBe(false);
   });
+  // An `'empty'` branch has no commits of its own — its lastCommitDate
+  // reflects whatever main was at when the branch was created. Aging that
+  // into `'stale'` would surface a "consider pruning" warning on a branch
+  // the user just created and may not have started using yet.
+  it('false if branch is empty (no commits of its own)', () => {
+    const old = new Date(Date.now() - 40 * 86400_000).toISOString();
+    expect(isStale({ ...base, lastCommitDate: old, mergeStatus: 'empty' })).toBe(false);
+  });
 });
 
 describe('detectSquashMerges: cherry-check cache', () => {

@@ -81,6 +81,17 @@ describe('branchDisposition — clean worktree (no contradiction)', () => {
     expect(d?.className).toContain('border-wt-clean');
   });
 
+  it('empty + clean → plain "empty" with slate accent', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'empty' }),
+      mkWorktree({ status: 'clean' }),
+    );
+    expect(d?.label).toBe('empty');
+    expect(d?.className).toContain('border-wt-active');
+    expect(d?.className).not.toContain('border-wt-clean');
+    expect(d?.tooltip).toMatch(/no commits of its own/);
+  });
+
   it('stale + clean → plain "stale"', () => {
     const d = callDisp(
       mkBranch({ mergeStatus: 'stale' }),
@@ -88,6 +99,73 @@ describe('branchDisposition — clean worktree (no contradiction)', () => {
     );
     expect(d?.label).toBe('stale');
     expect(d?.className).toContain('border-wt-dirty');
+  });
+});
+
+// `empty` is a commit-history label, but the moment the worktree shows any
+// uncommitted activity the label is misleading — there IS work happening,
+// just not committed yet. The disposition layer demotes empty→unmerged so
+// the WorktreeCard pill matches the user's mental model. BranchRow (which
+// has no worktree context) still renders the raw `empty` from the data layer.
+describe('branchDisposition — empty + worktree activity demotes to unmerged', () => {
+  it('empty + untracked file → "unmerged"', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'empty' }),
+      mkWorktree({ status: 'dirty', untrackedCount: 1 }),
+    );
+    expect(d?.label).toBe('unmerged');
+    expect(d?.className).toContain('border-wt-clean');
+  });
+
+  it('empty + modified file → "unmerged"', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'empty' }),
+      mkWorktree({ status: 'dirty', modifiedCount: 1 }),
+    );
+    expect(d?.label).toBe('unmerged');
+  });
+
+  it('empty + staged file → "unmerged"', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'empty' }),
+      mkWorktree({ status: 'dirty', stagedCount: 1 }),
+    );
+    expect(d?.label).toBe('unmerged');
+  });
+
+  it('empty + conflict → "unmerged"', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'empty' }),
+      mkWorktree({ status: 'conflict', hasConflicts: true }),
+    );
+    expect(d?.label).toBe('unmerged');
+  });
+
+  it('empty + in-progress rebase → "unmerged"', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'empty' }),
+      mkWorktree({ status: 'clean', inProgress: 'rebase' }),
+    );
+    expect(d?.label).toBe('unmerged');
+  });
+
+  it('empty + clean stays "empty"', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'empty' }),
+      mkWorktree({ status: 'clean' }),
+    );
+    expect(d?.label).toBe('empty');
+  });
+
+  // Stash count is intentionally not part of the activity check — see comment
+  // in worktreeHasActivity. A stash on an otherwise-pristine empty branch
+  // shouldn't make the pill claim work is in flight.
+  it('empty + stash only → still "empty"', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'empty' }),
+      mkWorktree({ status: 'clean', stashCount: 2 }),
+    );
+    expect(d?.label).toBe('empty');
   });
 });
 

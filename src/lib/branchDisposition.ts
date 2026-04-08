@@ -51,18 +51,30 @@ export function branchDisposition(
 
   if (!branch) return null;
 
-  const baseLabel = mergeStatusLabel(branch.mergeStatus);
+  // `empty` reflects the branch's commit history (no commits of its own), but
+  // the moment the worktree shows ANY uncommitted activity — untracked files,
+  // modifications, staged changes, conflicts, or an in-progress op — the
+  // "empty" label is misleading because real work IS happening in the tree,
+  // just not yet committed. Demote to `unmerged` so the pill matches the
+  // user's mental model of "this branch has work in flight." We deliberately
+  // do NOT mutate the input Branch; this is a display-only override and
+  // BranchRow (which has no worktree context) keeps showing the raw `empty`.
+  const displayStatus: MergeStatus =
+    branch.mergeStatus === 'empty' && worktreeHasActivity(worktree)
+      ? 'unmerged'
+      : branch.mergeStatus;
+
+  const baseLabel = mergeStatusLabel(displayStatus);
   const isMerged =
-    branch.mergeStatus === 'merged-normally' ||
-    branch.mergeStatus === 'squash-merged';
+    displayStatus === 'merged-normally' || displayStatus === 'squash-merged';
 
   const contradiction = isMerged ? mergedContradiction(worktree) : null;
 
   if (!contradiction) {
     return {
       label: baseLabel,
-      className: mergeStatusClass(branch.mergeStatus),
-      tooltip: defaultTooltip(branch.mergeStatus),
+      className: mergeStatusClass(displayStatus),
+      tooltip: defaultTooltip(displayStatus),
     };
   }
 
@@ -71,9 +83,23 @@ export function branchDisposition(
     // Swap only the border to a dirty accent. Keeping bg/text on the merged
     // palette preserves "this is still the merged pill" while the orange
     // outline says "read the suffix before you delete this".
-    className: dirtyAccentClass(branch.mergeStatus as 'merged-normally' | 'squash-merged'),
+    className: dirtyAccentClass(displayStatus as 'merged-normally' | 'squash-merged'),
     tooltip: contradiction.tooltip,
   };
+}
+
+// "Has the user touched the worktree at all?" — the trigger for demoting an
+// `empty` branch's pill to `unmerged`. We treat any uncommitted edit, conflict,
+// or in-progress op as activity. Stash count is intentionally NOT included:
+// stashes can outlive their original branch context and a stash on an
+// otherwise-pristine empty branch shouldn't make it look in-flight.
+function worktreeHasActivity(wt: Worktree): boolean {
+  if (wt.inProgress) return true;
+  if (wt.hasConflicts) return true;
+  if (wt.untrackedCount > 0 || wt.modifiedCount > 0 || wt.stagedCount > 0) {
+    return true;
+  }
+  return false;
 }
 
 interface Contradiction {
@@ -139,6 +165,8 @@ function defaultTooltip(s: MergeStatus): string {
       return 'Branch was squash-merged into main (patch-equivalent commits are present). Worktree is clean — safe to remove.';
     case 'unmerged':
       return 'Branch has commits not yet in main.';
+    case 'empty':
+      return "Branch has no commits of its own — it points at main. Nothing to merge yet.";
     case 'stale':
       return 'Branch is unmerged and has been idle for at least 30 days — consider pruning.';
   }

@@ -9,6 +9,11 @@ import type { MergeStatus, WorktreeStatus } from '../types';
 // don't appear in `listBranches`, so callers pass `mergeStatus` undefined for
 // them and we treat that as "no info → in-progress" unless `isPrimary` is
 // set.
+//
+// `empty` (branch has no commits of its own — pointing at main's tip or
+// lagging on its first-parent line) falls through to the same slate accent
+// as `unmerged`: visually quiet, "no work yet" hint, never green because
+// nothing has actually landed.
 export function worktreeStatusClass(
   s: WorktreeStatus,
   mergeStatus?: MergeStatus,
@@ -39,6 +44,8 @@ export function mergeStatusLabel(s: MergeStatus): string {
       return 'merged (squash)';
     case 'unmerged':
       return 'unmerged';
+    case 'empty':
+      return 'empty';
     case 'stale':
       return 'stale';
   }
@@ -52,6 +59,12 @@ export function mergeStatusClass(s: MergeStatus): string {
       return 'bg-wt-squash/15 text-wt-squash border-wt-squash/40';
     case 'unmerged':
       return 'bg-wt-clean/15 text-wt-clean border-wt-clean/40';
+    case 'empty':
+      // Slate `wt-active` palette — same family as the card border in the
+      // empty/non-merged state, so the pill and the border agree visually.
+      // Deliberately lower contrast than `unmerged` (which carries actual
+      // work) to keep the dashboard scan honest.
+      return 'bg-wt-active/15 text-wt-active border-wt-active/40';
     case 'stale':
       return 'bg-wt-dirty/15 text-wt-dirty border-wt-dirty/40';
   }
