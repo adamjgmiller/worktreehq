@@ -276,7 +276,37 @@ export function mapMergeable(m: string | undefined | null): boolean | null {
   return null;
 }
 
-// Paginate every open PR so large repos aren't capped at 100.
+// TTL cache for the paginated open-PR list. Without this, the 5s refresh
+// loop fully re-paginated `pulls.list` every tick — on a repo with hundreds
+// of open PRs that's hundreds of REST calls per minute against the token's
+// 5,000/hr budget. The cache stores the *unfiltered* list (every open PR for
+// the repo, regardless of branch set) so callers with different branch sets
+// can share the same entry. The fetch loop calls `invalidateOpenPrListCache`
+// after a successful `git fetch --all --prune` so newly-pushed branches show
+// up promptly.
+type OpenPrListEntry = Omit<PRInfo, 'state'>;
+interface OpenPrListCacheEntry {
+  at: number;
+  prs: OpenPrListEntry[];
+}
+const openPrListCache = new Map<string, OpenPrListCacheEntry>();
+const OPEN_PR_LIST_TTL_MS = 60_000;
+
+function openPrListCacheKey(owner: string, repo: string): string {
+  return `${owner}/${repo}`;
+}
+
+export function invalidateOpenPrListCache(owner?: string, repo?: string): void {
+  if (owner && repo) openPrListCache.delete(openPrListCacheKey(owner, repo));
+  else openPrListCache.clear();
+}
+
+export function _getOpenPrListCacheKeysForTests(): string[] {
+  return Array.from(openPrListCache.keys());
+}
+
+// Paginate every open PR so large repos aren't capped at 100. Caches the
+// unfiltered result for OPEN_PR_LIST_TTL_MS — see the cache notes above.
 export async function listOpenPRsForBranches(
   owner: string,
   repo: string,
@@ -285,27 +315,40 @@ export async function listOpenPRsForBranches(
   const out = new Map<string, PRInfo>();
   if (!octokit || branchNames.length === 0) return out;
   const wanted = new Set(branchNames);
-  try {
-    const all = await octokit.paginate(octokit.pulls.list, {
-      owner,
-      repo,
-      state: 'open',
-      per_page: 100,
-    });
-    for (const p of all) {
-      if (wanted.has(p.head.ref)) {
-        out.set(p.head.ref, {
-          number: p.number,
-          title: p.title,
-          state: 'open',
-          headRef: p.head.ref,
-          url: p.html_url,
-          isDraft: p.draft ?? false,
-        });
-      }
+
+  const key = openPrListCacheKey(owner, repo);
+  const now = Date.now();
+  const hit = openPrListCache.get(key);
+  let prs: OpenPrListEntry[];
+  if (hit && now - hit.at < OPEN_PR_LIST_TTL_MS) {
+    prs = hit.prs;
+  } else {
+    try {
+      const all = await octokit.paginate(octokit.pulls.list, {
+        owner,
+        repo,
+        state: 'open',
+        per_page: 100,
+      });
+      prs = all.map((p) => ({
+        number: p.number,
+        title: p.title,
+        headRef: p.head.ref,
+        url: p.html_url,
+        isDraft: p.draft ?? false,
+      }));
+      openPrListCache.set(key, { at: now, prs });
+    } catch {
+      // On failure, fall back to whatever stale entry we have rather than
+      // dropping PR info on transient network errors.
+      prs = hit?.prs ?? [];
     }
-  } catch {
-    /* ignore */
+  }
+
+  for (const p of prs) {
+    if (wanted.has(p.headRef)) {
+      out.set(p.headRef, { ...p, state: 'open' });
+    }
   }
   return out;
 }

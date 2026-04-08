@@ -31,7 +31,7 @@ export function WorktreesView() {
     try {
       await createWorktree(repo.path, v.path, v.branch, v.newBranch);
       setCreateOpen(false);
-      await refreshOnce();
+      await refreshOnce({ userInitiated: true });
     } catch (e: any) {
       setError(e?.message ?? String(e));
     }
@@ -42,13 +42,13 @@ export function WorktreesView() {
     if (!confirm(`Remove worktree ${wt.path}?`)) return;
     try {
       await removeWorktree(repo.path, wt.path, false);
-      await refreshOnce();
+      await refreshOnce({ userInitiated: true });
     } catch (e: any) {
       // Retry with --force only if the first attempt failed.
       if (confirm(`Remove failed: ${e?.message ?? e}\n\nForce remove?`)) {
         try {
           await removeWorktree(repo.path, wt.path, true);
-          await refreshOnce();
+          await refreshOnce({ userInitiated: true });
         } catch (e2: any) {
           setError(e2?.message ?? String(e2));
         }
@@ -60,7 +60,7 @@ export function WorktreesView() {
     if (!repo) return;
     try {
       await pruneWorktrees(repo.path);
-      await refreshOnce();
+      await refreshOnce({ userInitiated: true });
     } catch (e: any) {
       setError(e?.message ?? String(e));
     }

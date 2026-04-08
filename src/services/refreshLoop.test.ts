@@ -17,10 +17,9 @@ vi.mock('./gitService', () => ({
   listWorktrees: vi.fn(),
   listBranches: vi.fn(),
   listMainCommits: vi.fn(),
-  countMainCommits: vi.fn(),
   listTags: vi.fn(),
-  getRemoteUrl: vi.fn(),
   fetchAllPrune: vi.fn(),
+  snapshotRemoteRefs: vi.fn(),
 }));
 
 vi.mock('./squashDetector', () => ({
@@ -30,6 +29,7 @@ vi.mock('./squashDetector', () => ({
 vi.mock('./githubService', () => ({
   listOpenPRsForBranches: vi.fn(),
   batchFetchPRs: vi.fn(),
+  invalidateOpenPrListCache: vi.fn(),
 }));
 
 vi.mock('./claudeAwarenessService', () => ({
@@ -53,6 +53,7 @@ function resetStore() {
     squashMappings: [],
     claudePresence: new Map(),
     loading: false,
+    userRefreshing: false,
     fetching: false,
     error: null,
     lastRefresh: 0,
@@ -65,11 +66,14 @@ beforeEach(() => {
 
   asMock(git.listWorktrees).mockResolvedValue([]);
   asMock(git.listBranches).mockResolvedValue([]);
-  asMock(git.listMainCommits).mockResolvedValue([]);
-  asMock(git.countMainCommits).mockResolvedValue(0);
+  asMock(git.listMainCommits).mockResolvedValue({ commits: [], total: 0 });
   asMock(git.listTags).mockResolvedValue([]);
-  asMock(git.getRemoteUrl).mockResolvedValue({ owner: null, name: null });
   asMock(git.fetchAllPrune).mockResolvedValue(undefined);
+  // Default: every snapshot call returns a different string so the runFetchOnce
+  // diff check always sees a change and fires the chained refresh. Tests that
+  // exercise the skip-when-unchanged branch override this per-test.
+  let snapCounter = 0;
+  asMock(git.snapshotRemoteRefs).mockImplementation(async () => `snap-${snapCounter++}\n`);
   asMock(github.listOpenPRsForBranches).mockResolvedValue(new Map());
   asMock(github.batchFetchPRs).mockResolvedValue(new Map());
   asMock(squash.detectSquashMerges).mockResolvedValue({
@@ -132,15 +136,57 @@ describe('refreshOnce re-entrancy guard', () => {
   });
 
   it('propagates mainCommitsTotal to the store for the truncation indicator', async () => {
-    asMock(git.listMainCommits).mockResolvedValueOnce([
-      { sha: 'a', subject: 'one', date: '', prNumber: undefined },
-    ]);
-    asMock(git.countMainCommits).mockResolvedValueOnce(1234);
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [{ sha: 'a', subject: 'one', date: '', prNumber: undefined }],
+      total: 1234,
+    });
 
     await refreshOnce();
 
     expect(useRepoStore.getState().mainCommits).toHaveLength(1);
     expect(useRepoStore.getState().mainCommitsTotal).toBe(1234);
+  });
+});
+
+describe('refreshOnce userInitiated flag', () => {
+  it('flips userRefreshing on and off when userInitiated is true', async () => {
+    let release: (v: unknown) => void = () => {};
+    asMock(git.listWorktrees).mockImplementation(
+      () => new Promise((r) => { release = r; }),
+    );
+
+    const p = refreshOnce({ userInitiated: true });
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+
+    release([]);
+    await p;
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
+  });
+
+  it('leaves userRefreshing false for background ticks', async () => {
+    await refreshOnce();
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
+  });
+
+  it('joining an in-flight background refresh still animates the spinner', async () => {
+    let release: (v: unknown) => void = () => {};
+    asMock(git.listWorktrees).mockImplementation(
+      () => new Promise((r) => { release = r; }),
+    );
+
+    // Kick off a background refresh (userRefreshing stays false).
+    const bg = refreshOnce();
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
+
+    // User clicks the button — same in-flight promise, but spinner should
+    // animate for the duration so the click has a visible effect.
+    const user = refreshOnce({ userInitiated: true });
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+    expect(bg).toBe(user);
+
+    release([]);
+    await Promise.all([bg, user]);
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
   });
 });
 
@@ -166,10 +212,15 @@ describe('runFetchOnce', () => {
   });
 
   it('dedupes concurrent fetches via the in-flight flag', async () => {
+    // Construct the held promise eagerly so `release` is captured the moment
+    // the promise exists — not lazily inside the mock implementation, where
+    // ordering depends on exactly when `fetchAllPrune` gets awaited inside
+    // `runFetchOnce`. The previous form was brittle: any new await added
+    // before `fetchAllPrune` (e.g. the snapshotRemoteRefs call) would race
+    // the test's `release()` and wedge the timeout.
     let release: () => void = () => {};
-    asMock(git.fetchAllPrune).mockImplementation(
-      () => new Promise<void>((r) => { release = r; }),
-    );
+    const heldPromise = new Promise<void>((r) => { release = r; });
+    asMock(git.fetchAllPrune).mockReturnValue(heldPromise);
 
     const p1 = runFetchOnce();
     const p2 = runFetchOnce(); // should short-circuit on fetchInFlight
@@ -185,6 +236,84 @@ describe('runFetchOnce', () => {
 
     await expect(runFetchOnce()).resolves.toBeUndefined();
     expect(useRepoStore.getState().fetching).toBe(false);
+  });
+});
+
+describe('runFetchOnce skip-when-unchanged', () => {
+  it('background tick skips the chained refresh when the remote ref snapshot is unchanged', async () => {
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+
+    await runFetchOnce();
+
+    expect(asMock(git.fetchAllPrune)).toHaveBeenCalledTimes(1);
+    // Chained refresh should NOT have run, so listWorktrees was not called
+    // (the only refreshOnce-side mock that's tied to it).
+    expect(asMock(git.listWorktrees)).not.toHaveBeenCalled();
+    // lastRefresh must NOT advance on a no-op fetch — bumping it would
+    // dishonestly tell the user a refresh happened when nothing did. The
+    // polling tick is the source of truth for the "updated X ago" indicator.
+    expect(useRepoStore.getState().lastRefresh).toBe(0);
+    // PR list cache must NOT be invalidated when nothing moved — otherwise
+    // we'd negate half the value of the open-PR list cache.
+    expect(asMock(github.invalidateOpenPrListCache)).not.toHaveBeenCalled();
+  });
+
+  it('user-initiated fetch always chains a refresh, even on unchanged refs', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+
+    await runFetchOnce({ userInitiated: true });
+
+    // The skip path is bypassed for user-initiated fetches because the user
+    // may be trying to surface PR-state-only changes that don't move refs.
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(1);
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+  });
+
+  it('user-initiated fetch flips userRefreshing during the chained refresh', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    let release: (v: unknown) => void = () => {};
+    asMock(git.listWorktrees).mockImplementation(
+      () => new Promise((r) => { release = r; }),
+    );
+
+    const p = runFetchOnce({ userInitiated: true });
+    // Yield so runFetchOnce gets past its synchronous prefix and into the
+    // chained refreshOnce, which is where userRefreshing flips on.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+
+    release([]);
+    await p;
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
+  });
+
+  it('invalidates the open-PR list cache when refs do change', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    // Default mock alternates strings, so before != after.
+
+    await runFetchOnce();
+
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(1);
+  });
+
+  it('still triggers a refresh on snapshot failure (empty string fallback)', async () => {
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('');
+
+    await runFetchOnce();
+
+    // Empty strings on both sides — the skip path requires both to be
+    // truthy to engage, so we err on the side of refreshing.
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -9,13 +9,15 @@ vi.mock('./tauriBridge', () => ({
 import { readPrCacheFile } from './tauriBridge';
 const readPrCacheFileMock = readPrCacheFile as unknown as ReturnType<typeof vi.fn>;
 
-// Mock Octokit with a configurable graphql method per test.
+// Mock Octokit with shared graphql + paginate methods so tests can configure
+// them per-case. Mirrors the hoisting pattern used elsewhere in the file.
 const graphqlMock = vi.fn();
+const paginateMock = vi.fn();
 vi.mock('@octokit/rest', () => ({
   Octokit: vi.fn().mockImplementation(() => ({
     graphql: graphqlMock,
     pulls: { list: vi.fn(), get: vi.fn() },
-    paginate: vi.fn(),
+    paginate: paginateMock,
   })),
 }));
 
@@ -27,6 +29,8 @@ import {
   initGithub,
   hydratePrCache,
   getPR,
+  listOpenPRsForBranches,
+  invalidateOpenPrListCache,
   _clearPrCacheForTests,
   _getPrCacheKeysForTests,
 } from './githubService';
@@ -230,3 +234,70 @@ describe('hydratePrCache: on-disk TTL for open PRs', () => {
     expect(keys).toContain('o/r#3');
   });
 });
+
+describe('listOpenPRsForBranches caching', () => {
+  beforeEach(() => {
+    invalidateOpenPrListCache();
+    paginateMock.mockReset();
+    initGithub('test-token');
+  });
+
+  // Build a fake `pulls.list` paginated response.
+  const fakePr = (n: number, ref: string) => ({
+    number: n,
+    title: `PR ${n}`,
+    head: { ref },
+    html_url: `https://github.com/o/r/pull/${n}`,
+    draft: false,
+  });
+
+  it('serves a second call from cache without re-paginating', async () => {
+    paginateMock.mockResolvedValue([fakePr(1, 'feat/a'), fakePr(2, 'feat/b')]);
+
+    const a = await listOpenPRsForBranches('o', 'r', ['feat/a', 'feat/b']);
+    const b = await listOpenPRsForBranches('o', 'r', ['feat/a', 'feat/b']);
+
+    expect(a.size).toBe(2);
+    expect(b.size).toBe(2);
+    expect(paginateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('filters cached results by the current branch set on each call', async () => {
+    paginateMock.mockResolvedValue([fakePr(1, 'feat/a'), fakePr(2, 'feat/b')]);
+
+    const all = await listOpenPRsForBranches('o', 'r', ['feat/a', 'feat/b']);
+    const onlyA = await listOpenPRsForBranches('o', 'r', ['feat/a']);
+
+    expect(all.size).toBe(2);
+    expect(onlyA.size).toBe(1);
+    expect(onlyA.get('feat/a')?.number).toBe(1);
+    // Still only one underlying paginate call.
+    expect(paginateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-paginates after invalidate', async () => {
+    paginateMock.mockResolvedValueOnce([fakePr(1, 'feat/a')]);
+    paginateMock.mockResolvedValueOnce([fakePr(1, 'feat/a'), fakePr(2, 'feat/b')]);
+
+    await listOpenPRsForBranches('o', 'r', ['feat/a', 'feat/b']);
+    invalidateOpenPrListCache('o', 'r');
+    const after = await listOpenPRsForBranches('o', 'r', ['feat/a', 'feat/b']);
+
+    expect(after.size).toBe(2);
+    expect(paginateMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to a stale entry when a refresh fetch throws', async () => {
+    paginateMock.mockResolvedValueOnce([fakePr(1, 'feat/a')]);
+    paginateMock.mockRejectedValueOnce(new Error('rate limited'));
+
+    await listOpenPRsForBranches('o', 'r', ['feat/a']);
+    invalidateOpenPrListCache('o', 'r');
+    // Cache is empty after invalidation, but the next call's paginate
+    // throws. The function should swallow it and return an empty map
+    // (rather than crashing the refresh loop).
+    const out = await listOpenPRsForBranches('o', 'r', ['feat/a']);
+    expect(out.size).toBe(0);
+  });
+});
+

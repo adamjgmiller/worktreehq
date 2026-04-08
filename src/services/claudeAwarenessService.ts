@@ -11,9 +11,10 @@ import type {
   Worktree,
 } from '../types';
 
-// Liveness thresholds. Tuned to the 5s refresh loop: `live` needs to be wider
-// than one poll interval or a session will flicker between live and recent
-// between ticks.
+// Liveness thresholds. `live` needs to be wider than the refresh interval
+// or a session will flicker between live and recent between ticks; 60s
+// gives us comfortable headroom over even the old 5s default and the new
+// 15s default.
 export const LIVE_WINDOW_MS = 60_000; // 1 min
 export const RECENT_WINDOW_MS = 10 * 60_000; // 10 min
 
@@ -110,6 +111,42 @@ export function joinClaudeState(
   return out;
 }
 
+// Fingerprint-based memo cache for fetchClaudePresence. We pass the last
+// projects fingerprint back to Rust on each call; if it still matches, Rust
+// returns `unchanged: true` with empty `projects` (skipping JSONL header
+// reads) but ALWAYS-fresh `ide_locks` (so crashed-IDE detection still works
+// via pid_is_alive). The TS side merges the fresh ide_locks with the cached
+// projects data and re-joins against the current wall clock — that way the
+// live/recent/dormant status fields update as time passes even when no
+// underlying mtimes have moved, instead of being frozen at the last full
+// read's value.
+//
+// We cache the LAST FULL `raw` (not the joined map) so the re-join sees the
+// real project sessions data. Returning the previously joined map directly
+// would freeze status fields and is the bug the re-join was added to fix.
+const CLAUDE_FORCE_REFRESH_MS = 30_000;
+let cachedFingerprint: string | null = null;
+let cachedRaw: ClaudeStateRaw | null = null;
+let cachedWorktreeKey: string | null = null;
+let cachedAt = 0;
+
+// Test seam: clear the cache between tests so behavior is deterministic.
+export function _resetClaudePresenceCacheForTests(): void {
+  cachedFingerprint = null;
+  cachedRaw = null;
+  cachedWorktreeKey = null;
+  cachedAt = 0;
+}
+
+function worktreeKey(worktrees: Worktree[]): string {
+  // Order-stable join — the cache hit is sensitive to the worktree set, not
+  // their iteration order. Path is the only field the join uses for keying.
+  return worktrees
+    .map((w) => w.path)
+    .sort()
+    .join('\u0001');
+}
+
 /**
  * Convenience wrapper: fetches raw state via the Tauri bridge, then joins.
  * Returns an empty map if the bridge is unavailable (dev preview / tests) so
@@ -119,8 +156,36 @@ export async function fetchClaudePresence(
   worktrees: Worktree[],
 ): Promise<Map<string, ClaudePresence>> {
   try {
-    const raw = await readClaudeState();
-    return joinClaudeState(raw, worktrees);
+    const wtKey = worktreeKey(worktrees);
+    const now = Date.now();
+    const canUseCache =
+      cachedFingerprint !== null &&
+      cachedWorktreeKey === wtKey &&
+      now - cachedAt < CLAUDE_FORCE_REFRESH_MS;
+    const expected = canUseCache ? cachedFingerprint ?? undefined : undefined;
+
+    const raw = await readClaudeState(expected);
+    if (raw.unchanged && cachedRaw && canUseCache) {
+      // Rust confirmed the projects haven't moved. Combine the fresh
+      // ide_locks (always re-read so crashed-IDE detection works) with the
+      // cached projects data, then re-join against the current `now` so
+      // live/recent/dormant transitions fire on time. Don't bump cachedAt —
+      // that timestamp tracks the last *full* read, not the last cache hit,
+      // so the force-refresh window remains accurate.
+      const merged: ClaudeStateRaw = {
+        ide_locks: raw.ide_locks,
+        projects: cachedRaw.projects,
+        fingerprint: raw.fingerprint,
+        unchanged: false,
+      };
+      return joinClaudeState(merged, worktrees);
+    }
+    const presence = joinClaudeState(raw, worktrees);
+    cachedFingerprint = raw.fingerprint || null;
+    cachedRaw = raw;
+    cachedWorktreeKey = wtKey;
+    cachedAt = now;
+    return presence;
   } catch {
     return new Map();
   }

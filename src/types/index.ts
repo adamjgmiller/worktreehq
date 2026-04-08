@@ -115,6 +115,16 @@ export interface ClaudeProjectDirRaw {
 export interface ClaudeStateRaw {
   ide_locks: ClaudeIdeLockRaw[];
   projects: ClaudeProjectDirRaw[];
+  // Cheap mtime fingerprint of the dirs we walked. The TS side passes this
+  // back on the next call so the Rust side can short-circuit JSONL header
+  // reads + lockfile parses when nothing has moved. Optional in the type so
+  // pure-join tests can construct raw state literals without the field, but
+  // the Rust command always populates it.
+  fingerprint?: string;
+  // True when `expected_fingerprint` matched the current state. In that case
+  // ide_locks/projects are empty and the caller should reuse its cached
+  // joined-presence map.
+  unchanged?: boolean;
 }
 
 // Joined per-worktree view used by the UI.

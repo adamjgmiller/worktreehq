@@ -5,7 +5,10 @@ import { relativeTime } from '../lib/format';
 
 export function RepoBar({ onSettings }: { onSettings: () => void }) {
   const repo = useRepoStore((s) => s.repo);
-  const loading = useRepoStore((s) => s.loading);
+  // Bind spinner to `userRefreshing` instead of `loading` so it only animates
+  // on explicit user refreshes — the background poll tick would otherwise
+  // keep it spinning most of the time.
+  const userRefreshing = useRepoStore((s) => s.userRefreshing);
   const fetching = useRepoStore((s) => s.fetching);
   const lastRefresh = useRepoStore((s) => s.lastRefresh);
   const tokenSet = useRepoStore((s) => s.githubTokenSet);
@@ -29,7 +32,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
         {lastRefresh ? `updated ${relativeTime(new Date(lastRefresh).toISOString())}` : 'never'}
       </div>
       <button
-        onClick={runFetchOnce}
+        onClick={() => void runFetchOnce({ userInitiated: true })}
         disabled={fetching}
         className="p-1.5 rounded hover:bg-wt-border disabled:opacity-50"
         aria-label="fetch"
@@ -38,12 +41,12 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
         <Download className={`w-4 h-4 ${fetching ? 'animate-pulse' : ''}`} />
       </button>
       <button
-        onClick={refreshOnce}
-        disabled={loading}
+        onClick={() => void refreshOnce({ userInitiated: true })}
+        disabled={userRefreshing}
         className="p-1.5 rounded hover:bg-wt-border disabled:opacity-50"
         aria-label="refresh"
       >
-        <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+        <RefreshCw className={`w-4 h-4 ${userRefreshing ? 'animate-spin' : ''}`} />
       </button>
       <div
         className={`flex items-center gap-1 text-xs ${tokenSet ? 'text-wt-clean' : 'text-wt-dirty'}`}

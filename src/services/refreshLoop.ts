@@ -3,13 +3,16 @@ import {
   listWorktrees,
   listBranches,
   listMainCommits,
-  countMainCommits,
   listTags,
-  getRemoteUrl,
   fetchAllPrune,
+  snapshotRemoteRefs,
 } from './gitService';
 import { detectSquashMerges } from './squashDetector';
-import { batchFetchPRs, listOpenPRsForBranches } from './githubService';
+import {
+  batchFetchPRs,
+  invalidateOpenPrListCache,
+  listOpenPRsForBranches,
+} from './githubService';
 import { fetchClaudePresence } from './claudeAwarenessService';
 
 let running = false;
@@ -29,6 +32,13 @@ let fetchInFlight = false;
 // (RepoBar onClick, BranchesView post-delete).
 let refreshInFlight: Promise<void> | null = null;
 
+export interface RefreshOptions {
+  // When true, flips the store `userRefreshing` flag so the RepoBar spinner
+  // animates. Background ticks leave it false so the spinner doesn't spin
+  // on every heartbeat — the user only sees it when they asked for a refresh.
+  userInitiated?: boolean;
+}
+
 async function runRefreshOnce(): Promise<void> {
   const {
     repo,
@@ -45,14 +55,18 @@ async function runRefreshOnce(): Promise<void> {
   setLoading(true);
   setError(null);
   try {
-    const [wts, branches, mainCommits, mainCommitsTotal, tags, remote] = await Promise.all([
+    // Remote owner/name is resolved once at bootstrap and stashed on
+    // `repo`; no per-tick subprocess for it. countMainCommits is folded
+    // into listMainCommits (returns `{ commits, total }`). listTags is
+    // now short-TTL cached inside gitService.
+    const [wts, branches, mainCommitsResult, tags] = await Promise.all([
       listWorktrees(repo.path),
       listBranches(repo.path, repo.defaultBranch),
       listMainCommits(repo.path, repo.defaultBranch),
-      countMainCommits(repo.path, repo.defaultBranch),
       listTags(repo.path),
-      getRemoteUrl(repo.path),
     ]);
+    const { commits: mainCommits, total: mainCommitsTotal } = mainCommitsResult;
+    const remote = { owner: repo.owner, name: repo.name };
 
     // Attach worktree paths to branches
     const wtByBranch = new Map(wts.map((w) => [w.branch, w.path]));
@@ -115,11 +129,32 @@ async function runRefreshOnce(): Promise<void> {
 }
 
 // Public entry point. If a refresh is already running, await its completion
-// instead of launching a parallel one.
-export function refreshOnce(): Promise<void> {
-  if (refreshInFlight) return refreshInFlight;
+// instead of launching a parallel one. Callers that want the RepoBar spinner
+// to animate (button clicks, post-mutation refreshes) pass
+// `{ userInitiated: true }`; the automatic poll tick + watcher events do not.
+//
+// Note: if a user-initiated refresh lands on top of an in-flight background
+// refresh, we still flip the userRefreshing flag for the duration so the
+// click has a visible effect.
+export function refreshOnce(opts?: RefreshOptions): Promise<void> {
+  const userInitiated = opts?.userInitiated === true;
+  if (userInitiated) {
+    useRepoStore.getState().setUserRefreshing(true);
+  }
+  const existing = refreshInFlight;
+  if (existing) {
+    if (userInitiated) {
+      void existing.finally(() => {
+        useRepoStore.getState().setUserRefreshing(false);
+      });
+    }
+    return existing;
+  }
   refreshInFlight = runRefreshOnce().finally(() => {
     refreshInFlight = null;
+    if (userInitiated) {
+      useRepoStore.getState().setUserRefreshing(false);
+    }
   });
   return refreshInFlight;
 }
@@ -145,16 +180,42 @@ export function stopRefreshLoop(): void {
 // Run a single fetch + refresh now, flipping the store's `fetching` flag so the
 // RepoBar can show an indicator. Safe to call while a fetch is already in flight —
 // subsequent concurrent calls are dropped.
-export async function runFetchOnce(): Promise<void> {
+//
+// We snapshot `for-each-ref refs/remotes` before and after the fetch. For
+// background ticks (no `userInitiated`), if the snapshot is unchanged we
+// skip the chained refresh and the open-PR cache invalidation entirely —
+// turning a quiet 60s tick from "fetch + ~250 git subprocesses + GraphQL
+// batch + Claude scan" into "fetch + 2 for-each-refs". For user-initiated
+// fetches we ALWAYS chain a refresh and invalidate the open-PR cache,
+// because the user may be trying to surface PR-state changes (close,
+// merge-without-merge, draft toggle) that don't move any remote ref. The
+// userInitiated flag also propagates to refreshOnce so the spinner animates.
+export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   if (fetchInFlight) return;
   const { repo, setFetching } = useRepoStore.getState();
   if (!repo) return;
+  const userInitiated = opts?.userInitiated === true;
   fetchInFlight = true;
   setFetching(true);
   try {
+    const before = await snapshotRemoteRefs(repo.path);
     await fetchAllPrune(repo.path);
-    // Fetch changed remote refs on disk; trigger a tick so the UI reflects it.
-    await refreshOnce();
+    const after = await snapshotRemoteRefs(repo.path);
+    const refsChanged = !(before && after && before === after);
+    if (!refsChanged && !userInitiated) {
+      // Background skip path — local state hasn't changed in any way the
+      // pipeline would surface. Don't bump lastRefresh: the polling tick
+      // is the source of truth for the "updated X ago" indicator, and
+      // bumping it here would lie about a no-op fetch.
+      return;
+    }
+    if (repo.owner && repo.name) {
+      invalidateOpenPrListCache(repo.owner, repo.name);
+    }
+    // Fetch changed remote refs on disk (or this is a user-initiated fetch
+    // and we want guaranteed visible feedback); trigger a refresh so the UI
+    // reflects the new state.
+    await refreshOnce(opts);
   } catch {
     /* best-effort: a failing fetch is logged via refreshOnce's own error path */
   } finally {
