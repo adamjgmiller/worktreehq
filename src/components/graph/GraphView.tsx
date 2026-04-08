@@ -19,6 +19,7 @@ function branchColor(b: Branch): string {
 
 export function GraphView() {
   const commits = useRepoStore((s) => s.mainCommits);
+  const total = useRepoStore((s) => s.mainCommitsTotal);
   const mappings = useRepoStore((s) => s.squashMappings);
   const branches = useRepoStore((s) => s.branches);
   const bySha = new Map(mappings.map((m) => [m.squashCommitSha, m]));
@@ -32,12 +33,23 @@ export function GraphView() {
   const topPad = 40;
   const rowH = 48;
   const height = topPad + commits.length * rowH + 20;
+  const truncated = total > commits.length;
 
   return (
     <div className="p-6 overflow-auto h-full">
       <div className="text-xs text-neutral-500 uppercase tracking-wide mb-3">
-        main (first-parent) · {commits.length} commits
+        main (first-parent) ·{' '}
+        {truncated
+          ? `showing most recent ${commits.length} of ${total} commits`
+          : `${commits.length} commits`}
       </div>
+      {truncated && (
+        <div className="mb-3 px-3 py-2 rounded border border-wt-border bg-wt-bg/60 text-[11px] text-neutral-400">
+          History truncated to the most recent {commits.length} commits on{' '}
+          <span className="font-mono text-neutral-300">main</span>. Older commits exist but
+          aren't rendered in the graph.
+        </div>
+      )}
       <svg width="100%" height={height} className="font-mono">
         <line x1={lineX} y1={topPad} x2={lineX} y2={height - 20} stroke="#3f3f46" strokeWidth={2} />
         {commits.map((c, i) => {

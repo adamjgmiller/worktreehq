@@ -3,6 +3,7 @@ import {
   listWorktrees,
   listBranches,
   listMainCommits,
+  countMainCommits,
   listTags,
   getRemoteUrl,
   fetchAllPrune,
@@ -44,10 +45,11 @@ async function runRefreshOnce(): Promise<void> {
   setLoading(true);
   setError(null);
   try {
-    const [wts, branches, mainCommits, tags, remote] = await Promise.all([
+    const [wts, branches, mainCommits, mainCommitsTotal, tags, remote] = await Promise.all([
       listWorktrees(repo.path),
       listBranches(repo.path, repo.defaultBranch),
       listMainCommits(repo.path, repo.defaultBranch),
+      countMainCommits(repo.path, repo.defaultBranch),
       listTags(repo.path),
       getRemoteUrl(repo.path),
     ]);
@@ -101,7 +103,7 @@ async function runRefreshOnce(): Promise<void> {
 
     setWorktrees(wts);
     setBranches(detect.updatedBranches);
-    setMainCommits(mainCommits);
+    setMainCommits(mainCommits, mainCommitsTotal);
     setSquashMappings(detect.mappings);
     setClaudePresence(presence);
     markRefreshed();

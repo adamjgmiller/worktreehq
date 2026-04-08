@@ -23,6 +23,9 @@ notify = "6"
 anyhow = "1"
 thiserror = "1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

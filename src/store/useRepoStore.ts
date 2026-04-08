@@ -13,6 +13,7 @@ interface StoreState {
   worktrees: Worktree[];
   branches: Branch[];
   mainCommits: MainCommit[];
+  mainCommitsTotal: number;
   squashMappings: SquashMapping[];
   claudePresence: Map<string, ClaudePresence>;
   loading: boolean;
@@ -26,7 +27,7 @@ interface StoreState {
   setRepo: (r: RepoState) => void;
   setWorktrees: (w: Worktree[]) => void;
   setBranches: (b: Branch[]) => void;
-  setMainCommits: (c: MainCommit[]) => void;
+  setMainCommits: (c: MainCommit[], total?: number) => void;
   setSquashMappings: (s: SquashMapping[]) => void;
   setClaudePresence: (p: Map<string, ClaudePresence>) => void;
   setLoading: (v: boolean) => void;
@@ -43,6 +44,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   worktrees: [],
   branches: [],
   mainCommits: [],
+  mainCommitsTotal: 0,
   squashMappings: [],
   claudePresence: new Map(),
   loading: false,
@@ -56,7 +58,8 @@ export const useRepoStore = create<StoreState>((set) => ({
   setRepo: (repo) => set({ repo }),
   setWorktrees: (worktrees) => set({ worktrees }),
   setBranches: (branches) => set({ branches }),
-  setMainCommits: (mainCommits) => set({ mainCommits }),
+  setMainCommits: (mainCommits, total) =>
+    set({ mainCommits, mainCommitsTotal: total ?? mainCommits.length }),
   setSquashMappings: (squashMappings) => set({ squashMappings }),
   setClaudePresence: (claudePresence) => set({ claudePresence }),
   setLoading: (loading) => set({ loading }),
