@@ -58,6 +58,31 @@ fn claude_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude"))
 }
 
+// Check whether a process with the given PID is still running. Used to filter
+// out stale IDE lockfiles left behind by crashed editors — without this, a
+// crashed IDE reports `live-ide` status forever. On Unix we use `kill(pid, 0)`:
+// returns 0 if we can signal the process (it exists and we have permission),
+// or -1 with ESRCH if it doesn't exist. EPERM means the process exists but we
+// can't signal it — still "alive" for our purposes. On Windows we currently
+// trust the lockfile (Claude Code is predominantly used on macOS/Linux).
+#[cfg(unix)]
+fn pid_is_alive(pid: i64) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let pid = pid as libc::pid_t;
+    let ret = unsafe { libc::kill(pid, 0) };
+    if ret == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: i64) -> bool {
+    true
+}
+
 fn mtime_ms(path: &Path) -> u64 {
     fs::metadata(path)
         .and_then(|m| m.modified())
@@ -87,6 +112,11 @@ fn read_ide_locks(claude: &Path) -> Vec<IdeLock> {
             continue;
         };
         let Some(pid) = raw.pid else { continue };
+        // Skip stale lockfiles — a crashed IDE leaves these behind and the
+        // frontend would otherwise report `live-ide` indefinitely.
+        if !pid_is_alive(pid) {
+            continue;
+        }
         out.push(IdeLock {
             pid,
             ide_name: raw.ide_name,
