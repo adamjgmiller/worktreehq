@@ -11,6 +11,7 @@ export interface LastCommit {
 export interface Worktree {
   path: string;
   branch: string;
+  upstream?: string;
   isPrimary: boolean;
   head: string;
   uncommittedCount: number;

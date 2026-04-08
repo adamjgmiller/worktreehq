@@ -80,6 +80,10 @@ export async function listWorktrees(repo: string): Promise<Worktree[]> {
       behind = parseInt(abm[1], 10);
       ahead = parseInt(abm[2], 10);
     }
+    const upstreamRaw = (
+      await tryRun(e.path, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
+    ).trim();
+    const upstream = upstreamRaw || undefined;
     const logLine = (
       await tryRun(e.path, ['log', '-1', '--format=%H%x09%s%x09%cI%x09%an'])
     ).trim();
@@ -91,6 +95,7 @@ export async function listWorktrees(repo: string): Promise<Worktree[]> {
     out.push({
       path: e.path,
       branch: e.branch || '(detached)',
+      upstream,
       isPrimary,
       head: e.head,
       uncommittedCount: uncommitted,
