@@ -1,15 +1,33 @@
 import type { MergeStatus, WorktreeStatus } from '../types';
 
-export function worktreeStatusClass(s: WorktreeStatus): string {
+// Layered priority: dirty/conflict/diverged are urgent filesystem signals and
+// always win over the merge-state layer (you'd rather see "uncommitted work"
+// than "old work landed"). Only `clean` worktrees fall through to the
+// merge-state split, where green now means "branch has actually landed in
+// main" rather than "filesystem is tidy". Primary worktree (main itself) is
+// merged-by-definition and stays green when clean; detached/main branches
+// don't appear in `listBranches`, so callers pass `mergeStatus` undefined for
+// them and we treat that as "no info → in-progress" unless `isPrimary` is
+// set.
+export function worktreeStatusClass(
+  s: WorktreeStatus,
+  mergeStatus?: MergeStatus,
+  isPrimary?: boolean,
+): string {
   switch (s) {
-    case 'clean':
-      return 'border-wt-clean/60 bg-wt-clean/5';
-    case 'dirty':
-      return 'border-wt-dirty/60 bg-wt-dirty/5';
     case 'conflict':
       return 'border-wt-conflict/70 bg-wt-conflict/10';
+    case 'dirty':
+      return 'border-wt-dirty/60 bg-wt-dirty/5';
     case 'diverged':
       return 'border-wt-info/60 bg-wt-info/5';
+    case 'clean': {
+      if (isPrimary) return 'border-wt-clean/60 bg-wt-clean/5';
+      if (mergeStatus === 'merged-normally' || mergeStatus === 'squash-merged') {
+        return 'border-wt-clean/60 bg-wt-clean/5';
+      }
+      return 'border-wt-active/60 bg-wt-active/5';
+    }
   }
 }
 

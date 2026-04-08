@@ -18,6 +18,13 @@ export default {
           conflict: '#ef4444',
           info: '#3b82f6',
           squash: '#a855f7',
+          // Slate. Used as the worktree-card border when the working tree is
+          // clean but the branch hasn't yet landed in main (normal OR squash
+          // merge). Deliberately quiet — green is reserved for "actually
+          // merged", so a dashboard scan immediately reveals what's safe to
+          // delete vs what's still parked in flight. See worktreeStatusClass
+          // in src/lib/colors.ts for the layered priority.
+          active: '#64748b',
           // Claude Code awareness badge colors. Two live variants so we can
           // distinguish IDE-attached from CLI-only sessions at a glance.
           'claude-ide': '#38bdf8', // sky — IDE-attached live session

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FileEdit,
@@ -12,9 +13,10 @@ import {
   Check,
   GitBranch,
   MoreVertical,
+  ExternalLink,
 } from 'lucide-react';
 import type { ClaudePresence, Worktree, InProgressOp } from '../../types';
-import { worktreeStatusClass } from '../../lib/colors';
+import { mergeStatusClass, mergeStatusLabel, worktreeStatusClass } from '../../lib/colors';
 import { relativeTime, shortSha, aheadBehind } from '../../lib/format';
 import { resumeCommand } from '../../services/claudeAwarenessService';
 import { useRepoStore } from '../../store/useRepoStore';
@@ -39,6 +41,25 @@ export function WorktreeCard({
   onPrune?: () => void;
 }) {
   const presence = useRepoStore((s) => s.claudePresence.get(wt.path));
+  // Join the worktree to its branch entry so we can render lifecycle state
+  // (merge status, ahead-of-main, PR) on the card. The data already exists
+  // in the store; the type split between Worktree (filesystem) and Branch
+  // (lifecycle) just meant the WorktreeCard never read it. Detached HEADs
+  // and main itself aren't in the branches list, so this can be undefined —
+  // the badge row only renders when it's defined.
+  const branchInfo = useRepoStore((s) =>
+    s.branches.find((b) => b.name === wt.branch),
+  );
+  const defaultBranch = useRepoStore((s) => s.repo?.defaultBranch ?? 'main');
+  // "Effectively merged" — used to drive both the green border and the
+  // solid-vs-ring status icon. The primary worktree (and any worktree on
+  // the default branch) is merged-by-definition; otherwise we trust the
+  // squash detector's verdict on Branch.mergeStatus.
+  const isOnDefaultBranch = wt.isPrimary || wt.branch === defaultBranch;
+  const isMerged =
+    isOnDefaultBranch ||
+    branchInfo?.mergeStatus === 'merged-normally' ||
+    branchInfo?.mergeStatus === 'squash-merged';
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   // Close the action menu on outside click or Escape. Without this the menu
@@ -61,11 +82,22 @@ export function WorktreeCard({
       document.removeEventListener('keydown', onKey);
     };
   }, [menuOpen]);
+  // Solid-dot vs ring is the visual analogue of the new green semantic:
+  // a solid green dot means "clean AND merged into main", a slate ring
+  // means "clean but the work hasn't landed yet". The other three states
+  // (dirty/conflict/diverged) are filesystem-urgent and don't change shape.
   const statusIconMap = {
-    clean: {
-      icon: <Circle className="w-4 h-4 text-wt-clean" fill="currentColor" />,
-      label: 'Clean — no uncommitted changes',
-    },
+    clean: isMerged
+      ? {
+          icon: <Circle className="w-4 h-4 text-wt-clean" fill="currentColor" />,
+          label: isOnDefaultBranch
+            ? 'Clean — on the default branch'
+            : 'Clean and merged into main',
+        }
+      : {
+          icon: <Circle className="w-4 h-4 text-wt-active" />,
+          label: 'Clean — work not yet merged into main',
+        },
     dirty: {
       icon: <FileEdit className="w-4 h-4 text-wt-dirty" />,
       label: 'Dirty — modified, staged, or untracked files present',
@@ -87,7 +119,11 @@ export function WorktreeCard({
       animate={{ opacity: 1 }}
       initial={{ opacity: 0, y: 4 }}
       transition={{ duration: 0.2 }}
-      className={`rounded-xl border-2 p-5 min-w-[18.75rem] bg-wt-panel ${worktreeStatusClass(wt.status)}`}
+      className={`rounded-xl border-2 p-5 min-w-[18.75rem] bg-wt-panel ${worktreeStatusClass(
+        wt.status,
+        branchInfo?.mergeStatus,
+        isOnDefaultBranch,
+      )}`}
     >
       <div className="flex items-start gap-2 mb-3">
         <Tooltip label={statusIconEntry.label}>
@@ -110,6 +146,47 @@ export function WorktreeCard({
               <span className="text-neutral-600 italic">↳ (no upstream)</span>
             )}
           </div>
+          {branchInfo && (
+            // Lifecycle row: merge status + ahead-of-default + PR. Only renders
+            // when we have a Branch entry to join against, so detached HEADs
+            // and the default-branch worktree (filtered out by listBranches)
+            // skip it cleanly. The "vs main" label is deliberately distinct
+            // from the upstream-relative ahead/behind stat below — they answer
+            // different questions and conflating them was the original
+            // confusion that motivated this row.
+            <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+              <span
+                className={clsx(
+                  'px-1.5 py-0.5 text-[0.5625rem] font-mono border rounded uppercase tracking-wide',
+                  mergeStatusClass(branchInfo.mergeStatus),
+                )}
+              >
+                {mergeStatusLabel(branchInfo.mergeStatus)}
+              </span>
+              {(branchInfo.aheadOfMain > 0 || branchInfo.behindMain > 0) && (
+                <Tooltip
+                  label={`${branchInfo.aheadOfMain} ahead, ${branchInfo.behindMain} behind ${defaultBranch}`}
+                >
+                  <span className="font-mono text-[0.625rem] text-neutral-400 cursor-help">
+                    {aheadBehind(branchInfo.aheadOfMain, branchInfo.behindMain)} vs{' '}
+                    {defaultBranch}
+                  </span>
+                </Tooltip>
+              )}
+              {branchInfo.pr && (
+                <a
+                  href={branchInfo.pr.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-0.5 text-[0.625rem] font-mono text-wt-info hover:underline"
+                  title={branchInfo.pr.title}
+                >
+                  #{branchInfo.pr.number}
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              )}
+            </div>
+          )}
         </div>
         {presence && (presence.status !== 'none' || presence.liveSessionCount > 0) && (
           <ClaudeBadge presence={presence} />
