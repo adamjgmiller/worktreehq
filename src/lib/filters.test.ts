@@ -46,6 +46,28 @@ describe('applyPreset', () => {
   });
 });
 
+describe('applyPreset: mine', () => {
+  const branches: Branch[] = [
+    b({ name: 'ada-branch', authorEmail: 'ada@example.com' }),
+    b({ name: 'grace-branch', authorEmail: 'grace@example.com' }),
+    b({ name: 'unknown-branch' }),
+    b({ name: 'ada-upper', authorEmail: 'ADA@Example.com' }),
+  ];
+
+  it('matches the current user email case-insensitively', () => {
+    const out = applyPreset(branches, 'mine', { userEmail: 'ada@example.com' }).map((x) => x.name);
+    expect(out).toEqual(['ada-branch', 'ada-upper']);
+  });
+  it('returns empty when no user email is supplied', () => {
+    expect(applyPreset(branches, 'mine').length).toBe(0);
+    expect(applyPreset(branches, 'mine', { userEmail: '' }).length).toBe(0);
+  });
+  it('ignores branches with no recorded authorEmail', () => {
+    const out = applyPreset(branches, 'mine', { userEmail: 'someone-else@example.com' });
+    expect(out.map((x) => x.name)).toEqual([]);
+  });
+});
+
 describe('searchBranches', () => {
   const bs = [b({ name: 'feat/login' }), b({ name: 'chore/deps' })];
   it('matches by name', () => {

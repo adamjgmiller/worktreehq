@@ -8,12 +8,20 @@ pub struct AppConfig {
     pub github_token: String,
     #[serde(default = "default_interval")]
     pub refresh_interval_ms: u64,
+    #[serde(default = "default_fetch_interval")]
+    pub fetch_interval_ms: u64,
     #[serde(default)]
     pub last_repo_path: Option<String>,
 }
 
 fn default_interval() -> u64 {
     5000
+}
+
+// 0 disables the auto-fetch loop. Default 60s keeps remote state reasonably fresh
+// without hammering origin on every refresh tick.
+fn default_fetch_interval() -> u64 {
+    60_000
 }
 
 fn config_path() -> AppResult<PathBuf> {
@@ -32,6 +40,7 @@ pub fn read_config() -> AppResult<AppConfig> {
         return Ok(AppConfig {
             github_token: env_token,
             refresh_interval_ms: default_interval(),
+            fetch_interval_ms: default_fetch_interval(),
             last_repo_path: None,
         });
     }
@@ -45,6 +54,7 @@ pub fn read_config() -> AppResult<AppConfig> {
     if cfg.refresh_interval_ms == 0 {
         cfg.refresh_interval_ms = default_interval();
     }
+    // Note: fetch_interval_ms == 0 is a valid "disabled" signal and is preserved as-is.
     Ok(cfg)
 }
 

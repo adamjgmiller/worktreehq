@@ -1,8 +1,59 @@
 import clsx from 'clsx';
-import type { Branch } from '../../types';
+import type { Branch, ChecksStatus, ReviewDecision } from '../../types';
 import { mergeStatusClass, mergeStatusLabel } from '../../lib/colors';
 import { relativeTime, aheadBehind, shortSha } from '../../lib/format';
-import { HardDrive, Cloud, Briefcase, ExternalLink } from 'lucide-react';
+import {
+  HardDrive,
+  Cloud,
+  Briefcase,
+  ExternalLink,
+  Check,
+  X as XIcon,
+  Clock,
+  MessageSquare,
+  ThumbsUp,
+} from 'lucide-react';
+
+const checksStyles: Record<Exclude<ChecksStatus, 'none'>, { cls: string; label: string }> = {
+  success: { cls: 'text-wt-clean', label: 'checks passing' },
+  failure: { cls: 'text-wt-conflict', label: 'checks failing' },
+  pending: { cls: 'text-wt-dirty', label: 'checks pending' },
+};
+
+function ChecksDot({ status }: { status: ChecksStatus }) {
+  if (!status || status === 'none') return null;
+  const s = checksStyles[status];
+  return (
+    <span title={s.label} className={clsx('inline-block w-2 h-2 rounded-full', {
+      'bg-wt-clean': status === 'success',
+      'bg-wt-conflict': status === 'failure',
+      'bg-wt-dirty': status === 'pending',
+    })} />
+  );
+}
+
+function ReviewIcon({ decision }: { decision: ReviewDecision }) {
+  if (!decision) return null;
+  if (decision === 'approved') {
+    return (
+      <span title="approved" className="text-wt-clean">
+        <ThumbsUp className="w-3 h-3" />
+      </span>
+    );
+  }
+  if (decision === 'changes_requested') {
+    return (
+      <span title="changes requested" className="text-wt-conflict">
+        <MessageSquare className="w-3 h-3" />
+      </span>
+    );
+  }
+  return (
+    <span title="review required" className="text-neutral-500">
+      <Clock className="w-3 h-3" />
+    </span>
+  );
+}
 
 export function BranchRow({
   branch,
@@ -63,15 +114,37 @@ export function BranchRow({
       </td>
       <td className="px-3 py-3 text-xs">
         {branch.pr ? (
-          <a
-            href={branch.pr.url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-wt-info hover:underline inline-flex items-center gap-1"
-          >
-            #{branch.pr.number}
-            <ExternalLink className="w-3 h-3" />
-          </a>
+          <div className="flex items-center gap-2">
+            <a
+              href={branch.pr.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-wt-info hover:underline inline-flex items-center gap-1"
+            >
+              #{branch.pr.number}
+              <ExternalLink className="w-3 h-3" />
+            </a>
+            {branch.pr.isDraft && (
+              <span
+                title="draft"
+                className="px-1.5 py-0.5 text-[9px] font-mono border border-neutral-600 text-neutral-400 rounded uppercase"
+              >
+                draft
+              </span>
+            )}
+            <ChecksDot status={branch.pr.checksStatus ?? 'none'} />
+            <ReviewIcon decision={branch.pr.reviewDecision ?? null} />
+            {branch.pr.mergeable === false && (
+              <span title="conflicts with base" className="text-wt-conflict">
+                <XIcon className="w-3 h-3" />
+              </span>
+            )}
+            {branch.pr.mergeable === true && !branch.pr.isDraft && (
+              <span title="mergeable" className="text-wt-clean">
+                <Check className="w-3 h-3" />
+              </span>
+            )}
+          </div>
         ) : (
           <span className="text-neutral-600">—</span>
         )}

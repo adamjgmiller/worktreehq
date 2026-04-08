@@ -10,11 +10,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   if (!open) return null;
   const save = async () => {
     try {
+      const state = useRepoStore.getState();
       await invoke('write_config', {
         cfg: {
           github_token: token,
-          refresh_interval_ms: useRepoStore.getState().refreshIntervalMs,
-          last_repo_path: useRepoStore.getState().repo?.path ?? null,
+          refresh_interval_ms: state.refreshIntervalMs,
+          fetch_interval_ms: state.fetchIntervalMs,
+          last_repo_path: state.repo?.path ?? null,
         },
       });
       initGithub(token);

@@ -1,4 +1,4 @@
-import { Trash2 } from 'lucide-react';
+import { Archive, Trash2 } from 'lucide-react';
 import type { DeleteMode } from './ConfirmDeleteDialog';
 
 export function BulkActionBar({
@@ -15,6 +15,13 @@ export function BulkActionBar({
         <span className="font-mono text-wt-info">{count}</span> selected
       </div>
       <div className="flex-1" />
+      <button
+        onClick={() => onAction('archive-and-delete')}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-clean/15 border border-wt-clean/50 text-wt-clean rounded hover:bg-wt-clean/25"
+        title="Create archive/<branch> tags, then delete local + remote"
+      >
+        <Archive className="w-3.5 h-3.5" /> Archive + delete
+      </button>
       <button
         onClick={() => onAction('local')}
         className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-wt-border rounded hover:bg-wt-border"

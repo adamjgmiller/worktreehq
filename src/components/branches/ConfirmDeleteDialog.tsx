@@ -2,7 +2,14 @@ import { useState } from 'react';
 import type { Branch } from '../../types';
 import { AlertTriangle, X } from 'lucide-react';
 
-export type DeleteMode = 'local' | 'remote' | 'both';
+export type DeleteMode = 'local' | 'remote' | 'both' | 'archive-and-delete';
+
+const modeHeadline: Record<DeleteMode, string> = {
+  local: 'local',
+  remote: 'remote',
+  both: 'local + remote',
+  'archive-and-delete': 'archive + local + remote',
+};
 
 export function ConfirmDeleteDialog({
   branches,
@@ -31,16 +38,22 @@ export function ConfirmDeleteDialog({
           </button>
         </div>
         <p className="text-sm text-neutral-400 mb-3">
-          The following refs will be removed ({mode}):
+          The following refs will be removed ({modeHeadline[mode]}):
         </p>
         <div className="flex-1 overflow-auto border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4">
           {branches.map((b) => (
             <div key={b.name}>
+              {mode === 'archive-and-delete' && <div>tag:   archive/{b.name}</div>}
               {mode !== 'remote' && b.hasLocal && <div>local:  {b.name}</div>}
               {mode !== 'local' && b.hasRemote && <div>remote: origin/{b.name}</div>}
             </div>
           ))}
         </div>
+        {mode === 'archive-and-delete' && (
+          <p className="text-xs text-neutral-500 mb-3">
+            Archive tags preserve the original commits so Squash Archaeology can recover them later.
+          </p>
+        )}
         {requiresType && (
           <div className="mb-3">
             <label className="text-xs text-neutral-400">

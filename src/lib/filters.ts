@@ -1,11 +1,22 @@
 import type { Branch } from '../types';
 
-export type FilterPreset = 'all' | 'safe-to-delete' | 'stale' | 'active' | 'orphaned';
+export type FilterPreset = 'all' | 'mine' | 'safe-to-delete' | 'stale' | 'active' | 'orphaned';
 
-export function applyPreset(branches: Branch[], preset: FilterPreset): Branch[] {
+// `mine` is resolved by passing the current user's git email through to the filter —
+// we keep the fn pure so tests don't have to stub gitService.
+export function applyPreset(
+  branches: Branch[],
+  preset: FilterPreset,
+  ctx: { userEmail?: string } = {},
+): Branch[] {
   switch (preset) {
     case 'all':
       return branches;
+    case 'mine': {
+      const email = ctx.userEmail?.trim().toLowerCase();
+      if (!email) return [];
+      return branches.filter((b) => b.authorEmail?.trim().toLowerCase() === email);
+    }
     case 'safe-to-delete':
       return branches.filter(
         (b) =>

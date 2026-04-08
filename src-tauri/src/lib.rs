@@ -20,6 +20,9 @@ pub fn run() {
             commands::watcher::start_watching,
             commands::watcher::stop_watching,
             commands::claude_state::read_claude_state,
+            commands::fs_probe::path_exists,
+            commands::pr_cache::read_pr_cache,
+            commands::pr_cache::write_pr_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

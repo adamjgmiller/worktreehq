@@ -3,6 +3,7 @@ import type { FilterPreset } from '../../lib/filters';
 
 const presets: Array<{ key: FilterPreset; label: string }> = [
   { key: 'all', label: 'All' },
+  { key: 'mine', label: 'Mine' },
   { key: 'safe-to-delete', label: 'Safe to delete' },
   { key: 'stale', label: 'Stale' },
   { key: 'active', label: 'Active' },
