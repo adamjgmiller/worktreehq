@@ -43,6 +43,14 @@ pub struct ProjectDir {
 pub struct ClaudeState {
     pub ide_locks: Vec<IdeLock>,
     pub projects: Vec<ProjectDir>,
+    // A cheap mtime-based fingerprint of the dirs we walk. The TS side
+    // passes the previous fingerprint back on the next call; if it still
+    // matches, we set `unchanged = true` and return empty vecs to signal
+    // that the caller should reuse its cached joined-presence map. The
+    // walk is unavoidable (we need stats either way) but the JSONL header
+    // reads + lockfile JSON parses + pid checks are skipped on unchanged.
+    pub fingerprint: String,
+    pub unchanged: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,8 +219,69 @@ fn read_projects(claude: &Path) -> Vec<ProjectDir> {
     out
 }
 
+// Cheap fingerprint of everything we'd read in a full scan. Walks the same
+// directories as `read_ide_locks` + `read_projects` but only collects
+// `(path, mtime)` pairs — no JSON parses, no JSONL header reads, no pid
+// checks. The result is sorted + concatenated so any change in:
+//   * the set of IDE lockfiles or their mtimes
+//   * the set of project dirs
+//   * the newest session mtime in any project dir
+// produces a different string. Stale-IDE detection (a crashed editor whose
+// lockfile mtime never moves) is the one case the fingerprint can't catch
+// on its own — the TS caller forces a full read every CLAUDE_FORCE_REFRESH_MS
+// to compensate.
+fn compute_fingerprint(claude: &Path) -> String {
+    let mut entries: Vec<String> = Vec::new();
+
+    // ide/ — one (filename, mtime) per .lock file
+    let ide = claude.join("ide");
+    if let Ok(dir_entries) = fs::read_dir(&ide) {
+        for entry in dir_entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("lock") {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            entries.push(format!("lock:{}:{}", name, mtime_ms(&path)));
+        }
+    }
+
+    // projects/ — one (dirname, newest_session_mtime) per project dir
+    let projects = claude.join("projects");
+    if let Ok(dir_entries) = fs::read_dir(&projects) {
+        for entry in dir_entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let Ok(files) = fs::read_dir(&path) else { continue };
+            let mut newest: u64 = 0;
+            for f in files.flatten() {
+                let fpath = f.path();
+                if fpath.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let m = mtime_ms(&fpath);
+                if m > newest {
+                    newest = m;
+                }
+            }
+            if newest > 0 {
+                entries.push(format!("proj:{}:{}", dir_name, newest));
+            }
+        }
+    }
+
+    entries.sort();
+    entries.join("|")
+}
+
 #[tauri::command]
-pub fn read_claude_state() -> AppResult<ClaudeState> {
+pub fn read_claude_state(expected_fingerprint: Option<String>) -> AppResult<ClaudeState> {
     let Some(claude) = claude_dir() else {
         return Err(AppError::Msg("no home dir".into()));
     };
@@ -220,12 +289,31 @@ pub fn read_claude_state() -> AppResult<ClaudeState> {
         return Ok(ClaudeState {
             ide_locks: Vec::new(),
             projects: Vec::new(),
+            fingerprint: String::new(),
+            unchanged: false,
         });
     }
     // Touch _ so unix metadata warnings don't fire on non-unix.
     let _ = SystemTime::now();
+
+    let fingerprint = compute_fingerprint(&claude);
+    if let Some(expected) = expected_fingerprint {
+        if !expected.is_empty() && expected == fingerprint {
+            // Short-circuit: skip the JSONL header reads and the lockfile
+            // JSON parses. The TS caller will reuse its cached presence map.
+            return Ok(ClaudeState {
+                ide_locks: Vec::new(),
+                projects: Vec::new(),
+                fingerprint,
+                unchanged: true,
+            });
+        }
+    }
+
     Ok(ClaudeState {
         ide_locks: read_ide_locks(&claude),
         projects: read_projects(&claude),
+        fingerprint,
+        unchanged: false,
     })
 }

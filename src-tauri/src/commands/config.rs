@@ -14,8 +14,12 @@ pub struct AppConfig {
     pub last_repo_path: Option<String>,
 }
 
+// 15s default. The filesystem watcher (scoped to .git/) covers the immediacy
+// case for actual git changes, so the poll loop is just a safety net for
+// things `notify` misses (mostly remote PR state). 5s was wasteful — every
+// tick re-ran the full read pipeline.
 fn default_interval() -> u64 {
-    5000
+    15_000
 }
 
 // 0 disables the auto-fetch loop. Default 60s keeps remote state reasonably fresh

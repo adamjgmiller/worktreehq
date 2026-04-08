@@ -58,7 +58,11 @@ export const useRepoStore = create<StoreState>((set) => ({
   error: null,
   lastRefresh: 0,
   githubTokenSet: false,
-  refreshIntervalMs: 5000,
+  // 15s default. The watcher (scoped to .git/) covers the immediacy case
+  // for actual git changes, so the poll loop just needs to be a safety net.
+  // 5s was both wasteful (re-running the full pipeline 12×/min) and
+  // pointless once the watcher fires for the things that actually matter.
+  refreshIntervalMs: 15_000,
   fetchIntervalMs: 60_000,
 
   setRepo: (repo) => set({ repo }),

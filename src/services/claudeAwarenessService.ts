@@ -11,9 +11,10 @@ import type {
   Worktree,
 } from '../types';
 
-// Liveness thresholds. Tuned to the 5s refresh loop: `live` needs to be wider
-// than one poll interval or a session will flicker between live and recent
-// between ticks.
+// Liveness thresholds. `live` needs to be wider than the refresh interval
+// or a session will flicker between live and recent between ticks; 60s
+// gives us comfortable headroom over even the old 5s default and the new
+// 15s default.
 export const LIVE_WINDOW_MS = 60_000; // 1 min
 export const RECENT_WINDOW_MS = 10 * 60_000; // 10 min
 
@@ -110,6 +111,38 @@ export function joinClaudeState(
   return out;
 }
 
+// Fingerprint-based memo cache for fetchClaudePresence. We pass the last
+// fingerprint back to Rust on each call; if the projects/lockfiles haven't
+// moved AND the worktree set hasn't changed, Rust returns `unchanged: true`
+// (skipping JSONL header reads + lockfile parses) and we serve the previously
+// joined presence map without re-running joinClaudeState.
+//
+// Stale-IDE detection caveat: a crashed editor whose lockfile mtime never
+// moves can't be detected by the fingerprint alone, so we force a full read
+// every CLAUDE_FORCE_REFRESH_MS regardless of whether the fingerprint matches.
+const CLAUDE_FORCE_REFRESH_MS = 30_000;
+let cachedFingerprint: string | null = null;
+let cachedPresence: Map<string, ClaudePresence> | null = null;
+let cachedWorktreeKey: string | null = null;
+let cachedAt = 0;
+
+// Test seam: clear the cache between tests so behavior is deterministic.
+export function _resetClaudePresenceCacheForTests(): void {
+  cachedFingerprint = null;
+  cachedPresence = null;
+  cachedWorktreeKey = null;
+  cachedAt = 0;
+}
+
+function worktreeKey(worktrees: Worktree[]): string {
+  // Order-stable join — the cache hit is sensitive to the worktree set, not
+  // their iteration order. Path is the only field the join uses for keying.
+  return worktrees
+    .map((w) => w.path)
+    .sort()
+    .join('\u0001');
+}
+
 /**
  * Convenience wrapper: fetches raw state via the Tauri bridge, then joins.
  * Returns an empty map if the bridge is unavailable (dev preview / tests) so
@@ -119,8 +152,28 @@ export async function fetchClaudePresence(
   worktrees: Worktree[],
 ): Promise<Map<string, ClaudePresence>> {
   try {
-    const raw = await readClaudeState();
-    return joinClaudeState(raw, worktrees);
+    const wtKey = worktreeKey(worktrees);
+    const now = Date.now();
+    const canUseCache =
+      cachedFingerprint !== null &&
+      cachedWorktreeKey === wtKey &&
+      now - cachedAt < CLAUDE_FORCE_REFRESH_MS;
+    const expected = canUseCache ? cachedFingerprint ?? undefined : undefined;
+
+    const raw = await readClaudeState(expected);
+    if (raw.unchanged && cachedPresence && canUseCache) {
+      // Rust confirmed the state is identical to last call's; serve the
+      // cached join result. Don't bump cachedAt — that timestamp tracks the
+      // last *full* read, not the last cache hit, so the force-refresh
+      // window remains accurate.
+      return cachedPresence;
+    }
+    const presence = joinClaudeState(raw, worktrees);
+    cachedFingerprint = raw.fingerprint || null;
+    cachedPresence = presence;
+    cachedWorktreeKey = wtKey;
+    cachedAt = now;
+    return presence;
   } catch {
     return new Map();
   }

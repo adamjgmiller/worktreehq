@@ -29,8 +29,12 @@ export async function gitExec(repoPath: string, args: string[]): Promise<GitExec
   return invoke<GitExecResult>('git_exec', { repoPath, args });
 }
 
-export async function readClaudeState(): Promise<ClaudeStateRaw> {
-  return invoke<ClaudeStateRaw>('read_claude_state');
+export async function readClaudeState(
+  expectedFingerprint?: string,
+): Promise<ClaudeStateRaw> {
+  return invoke<ClaudeStateRaw>('read_claude_state', {
+    expectedFingerprint: expectedFingerprint ?? null,
+  });
 }
 
 // Plain filesystem existence check. Used to probe in-progress-operation marker files

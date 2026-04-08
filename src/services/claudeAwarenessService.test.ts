@@ -1,12 +1,22 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('./tauriBridge', () => ({
+  readClaudeState: vi.fn(),
+}));
+
 import {
   encodeProjectDirName,
   joinClaudeState,
   resumeCommand,
   LIVE_WINDOW_MS,
   RECENT_WINDOW_MS,
+  fetchClaudePresence,
+  _resetClaudePresenceCacheForTests,
 } from './claudeAwarenessService';
+import { readClaudeState } from './tauriBridge';
 import type { ClaudeStateRaw, Worktree } from '../types';
+
+const readClaudeStateMock = readClaudeState as unknown as ReturnType<typeof vi.fn>;
 
 function wt(path: string, branch = 'feat/x'): Worktree {
   return {
@@ -192,3 +202,105 @@ describe('joinClaudeState', () => {
     ]);
   });
 });
+
+describe('fetchClaudePresence fingerprint cache', () => {
+  beforeEach(() => {
+    _resetClaudePresenceCacheForTests();
+    readClaudeStateMock.mockReset();
+  });
+
+  const wtPath = '/Users/adam/proj';
+  const dirName = encodeProjectDirName(wtPath);
+  const worktrees = [wt(wtPath)];
+
+  function buildRaw(opts: { fingerprint: string; mtime: number }): ClaudeStateRaw {
+    return {
+      ide_locks: [],
+      projects: [
+        {
+          dir_name: dirName,
+          worktree_path: wtPath,
+          sessions: [{ session_id: 's', mtime_ms: opts.mtime }],
+        },
+      ],
+      fingerprint: opts.fingerprint,
+      unchanged: false,
+    };
+  }
+
+  it('passes the previous fingerprint back to readClaudeState on subsequent calls', async () => {
+    readClaudeStateMock.mockResolvedValueOnce(
+      buildRaw({ fingerprint: 'fp-1', mtime: Date.now() }),
+    );
+    readClaudeStateMock.mockResolvedValueOnce({
+      ide_locks: [],
+      projects: [],
+      fingerprint: 'fp-1',
+      unchanged: true,
+    });
+
+    await fetchClaudePresence(worktrees);
+    await fetchClaudePresence(worktrees);
+
+    expect(readClaudeStateMock).toHaveBeenCalledTimes(2);
+    // First call: no expected fingerprint (cold cache).
+    expect(readClaudeStateMock.mock.calls[0]?.[0]).toBeUndefined();
+    // Second call: passes the prior fingerprint.
+    expect(readClaudeStateMock.mock.calls[1]?.[0]).toBe('fp-1');
+  });
+
+  it('serves the cached presence when Rust returns unchanged=true', async () => {
+    const mtime = Date.now();
+    readClaudeStateMock.mockResolvedValueOnce(buildRaw({ fingerprint: 'fp-1', mtime }));
+    readClaudeStateMock.mockResolvedValueOnce({
+      ide_locks: [],
+      projects: [],
+      fingerprint: 'fp-1',
+      unchanged: true,
+    });
+
+    const first = await fetchClaudePresence(worktrees);
+    const second = await fetchClaudePresence(worktrees);
+
+    // Strict identity: the cached map is reused, not re-joined.
+    expect(second).toBe(first);
+  });
+
+  it('re-joins when Rust returns a different fingerprint', async () => {
+    const mtime = Date.now();
+    readClaudeStateMock.mockResolvedValueOnce(buildRaw({ fingerprint: 'fp-1', mtime }));
+    readClaudeStateMock.mockResolvedValueOnce(
+      buildRaw({ fingerprint: 'fp-2', mtime: mtime + 5_000 }),
+    );
+
+    const first = await fetchClaudePresence(worktrees);
+    const second = await fetchClaudePresence(worktrees);
+
+    expect(second).not.toBe(first);
+  });
+
+  it('does not pass expected fingerprint when the worktree set has changed', async () => {
+    const mtime = Date.now();
+    readClaudeStateMock.mockResolvedValueOnce(buildRaw({ fingerprint: 'fp-1', mtime }));
+    readClaudeStateMock.mockResolvedValueOnce(buildRaw({ fingerprint: 'fp-1', mtime }));
+
+    await fetchClaudePresence([wt('/path/a')]);
+    await fetchClaudePresence([wt('/path/b')]);
+
+    // Second call's worktree set differs → expected should be undefined so
+    // Rust always does the full read regardless of fingerprint match.
+    expect(readClaudeStateMock.mock.calls[1]?.[0]).toBeUndefined();
+  });
+
+  it('returns an empty map and does not poison the cache on bridge failure', async () => {
+    readClaudeStateMock.mockRejectedValueOnce(new Error('bridge down'));
+    const result = await fetchClaudePresence(worktrees);
+    expect(result.size).toBe(0);
+
+    // Next call should still cold-start (no expected fingerprint passed).
+    readClaudeStateMock.mockResolvedValueOnce(buildRaw({ fingerprint: 'fp-1', mtime: Date.now() }));
+    await fetchClaudePresence(worktrees);
+    expect(readClaudeStateMock.mock.calls[1]?.[0]).toBeUndefined();
+  });
+});
+
