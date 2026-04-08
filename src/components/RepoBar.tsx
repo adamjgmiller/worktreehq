@@ -1,6 +1,7 @@
-import { RefreshCw, Settings, Github, Download } from 'lucide-react';
+import { RefreshCw, Settings, Github, Download, FolderOpen } from 'lucide-react';
 import { useRepoStore } from '../store/useRepoStore';
 import { refreshOnce, runFetchOnce } from '../services/refreshLoop';
+import { pickAndLoadRepo } from '../services/repoSelect';
 import { relativeTime } from '../lib/format';
 
 export function RepoBar({ onSettings }: { onSettings: () => void }) {
@@ -14,6 +15,14 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
   const tokenSet = useRepoStore((s) => s.githubTokenSet);
   return (
     <div className="flex items-center gap-4 px-6 py-3 border-b border-wt-border bg-wt-panel">
+      <button
+        onClick={() => void pickAndLoadRepo()}
+        title="Open another repository"
+        aria-label="open repo"
+        className="p-1.5 rounded hover:bg-wt-border text-neutral-400"
+      >
+        <FolderOpen className="w-4 h-4" />
+      </button>
       <div className="text-sm">
         <span className="text-neutral-500">repo</span>{' '}
         <span className="font-mono">{repo?.path ?? '—'}</span>
