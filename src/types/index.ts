@@ -28,6 +28,13 @@ export interface Worktree {
   inProgress?: InProgressOp;
   lastCommit: LastCommit;
   status: WorktreeStatus;
+  // Set when `git worktree list --porcelain` reported a `prunable` line for
+  // this entry — git's bookkeeping under .git/worktrees/<name>/ still exists
+  // but the worktree directory no longer does. The string is git's reason
+  // text. UI branches on this to render an orphaned-card variant; all the
+  // numeric fields above are forced to 0 because they're meaningless for a
+  // ghost.
+  prunable?: string;
 }
 
 export interface PRInfo {
@@ -115,6 +122,13 @@ export interface ClaudeProjectDirRaw {
 export interface ClaudeStateRaw {
   ide_locks: ClaudeIdeLockRaw[];
   projects: ClaudeProjectDirRaw[];
+  // Absolute cwd paths of every running `claude` process. Lets joinClaudeState
+  // distinguish "session is closed" from "session is alive but idle waiting
+  // for input". The Rust side always re-reads this regardless of fingerprint
+  // match (same as ide_locks). Optional in the type so pure-join tests can
+  // construct raw state literals without the field; the Rust command always
+  // populates it.
+  live_worktree_cwds?: string[];
   // Cheap mtime fingerprint of the dirs we walked. The TS side passes this
   // back on the next call so the Rust side can short-circuit JSONL header
   // reads + lockfile parses when nothing has moved. Optional in the type so
@@ -131,6 +145,7 @@ export interface ClaudeStateRaw {
 export type ClaudePresenceStatus =
   | 'live-ide' // IDE lockfile currently references this worktree
   | 'live' // newest JSONL mtime within LIVE_WINDOW_MS
+  | 'idle' // process running in this worktree but JSONL hasn't been touched recently
   | 'recent' // newest JSONL mtime within RECENT_WINDOW_MS
   | 'dormant' // has sessions but none are recent
   | 'none'; // no project dir at all

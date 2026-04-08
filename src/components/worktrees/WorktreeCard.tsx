@@ -14,6 +14,7 @@ import {
   GitBranch,
   MoreVertical,
   ExternalLink,
+  Trash2,
 } from 'lucide-react';
 import type { ClaudePresence, Worktree, InProgressOp } from '../../types';
 import { mergeStatusClass, mergeStatusLabel, worktreeStatusClass } from '../../lib/colors';
@@ -35,11 +36,23 @@ export function WorktreeCard({
   wt,
   onRemove,
   onPrune,
+  onPruneOrphan,
 }: {
   wt: Worktree;
   onRemove?: (wt: Worktree) => void;
   onPrune?: () => void;
+  onPruneOrphan?: () => void;
 }) {
+  // Orphaned branch: bookkeeping survives but the directory doesn't. Branch
+  // out before reading any per-worktree store state — none of it would be
+  // meaningful for a ghost, and most of the normal card render would either
+  // crash or paint dishonest "all good" indicators (clean status, 0/0
+  // ahead/behind, green border via PR #16's merge-status logic). The
+  // OrphanedCard variant uses the same outer motion shape so the layout
+  // animation between states is smooth when the user clicks Prune.
+  if (wt.prunable) {
+    return <OrphanedCard wt={wt} onPruneOrphan={onPruneOrphan} onRemove={onRemove} />;
+  }
   const presence = useRepoStore((s) => s.claudePresence.get(wt.path));
   // Join the worktree to its branch entry so we can render lifecycle state
   // (merge status, ahead-of-main, PR) on the card. The data already exists
@@ -274,9 +287,86 @@ export function WorktreeCard({
         </div>
       </div>
       {presence && presence.inactiveSessions.length > 0 && (
-        <ClosedSessionsList worktreePath={wt.path} sessions={presence.inactiveSessions} />
+        <PastSessionsList worktreePath={wt.path} sessions={presence.inactiveSessions} />
       )}
       <Notepad worktreePath={wt.path} />
+    </motion.div>
+  );
+}
+
+// Orphaned variant: bookkeeping survives but the directory doesn't. Renders
+// with an amber border + AlertTriangle so it's visually distinct from a tidy
+// worktree (which would be the misleading default if we let the normal card
+// render against a missing path). The "Prune this orphan" button bypasses
+// git's 3h grace period via --expire=now because explicit user action should
+// always win over the heuristic.
+function OrphanedCard({
+  wt,
+  onPruneOrphan,
+  onRemove,
+}: {
+  wt: Worktree;
+  onPruneOrphan?: () => void;
+  onRemove?: (wt: Worktree) => void;
+}) {
+  return (
+    <motion.div
+      layout
+      animate={{ opacity: 1 }}
+      initial={{ opacity: 0, y: 4 }}
+      transition={{ duration: 0.2 }}
+      className="rounded-xl border-2 p-5 min-w-[18.75rem] bg-wt-panel border-wt-dirty/70 bg-wt-dirty/5"
+    >
+      <div className="flex items-start gap-2 mb-3">
+        <Tooltip label="Orphaned — git's bookkeeping points at a directory that no longer exists">
+          <div className="mt-0.5">
+            <AlertTriangle className="w-4 h-4 text-wt-dirty" />
+          </div>
+        </Tooltip>
+        <div className="flex-1 min-w-0">
+          <div className="font-mono text-sm text-neutral-100 truncate" title={wt.branch}>
+            {wt.branch}
+          </div>
+          <div className="font-mono text-[0.6875rem] text-wt-dirty uppercase tracking-wide mt-0.5">
+            orphaned worktree
+          </div>
+        </div>
+        {onRemove && (
+          <Tooltip label="Remove the worktree entry from git's bookkeeping">
+            <button
+              onClick={() => onRemove(wt)}
+              className="p-1 rounded hover:bg-wt-border"
+              aria-label="remove orphaned worktree"
+            >
+              <MoreVertical className="w-4 h-4 text-neutral-400" />
+            </button>
+          </Tooltip>
+        )}
+      </div>
+      <div className="mb-3 flex items-start gap-1.5 px-2 py-1.5 rounded border border-wt-dirty/60 bg-wt-dirty/10 text-wt-dirty text-[0.6875rem] font-mono">
+        <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+        <div className="min-w-0">
+          <div className="font-bold tracking-wider">DIRECTORY REMOVED</div>
+          <div className="text-wt-dirty/80 mt-0.5 break-words">{wt.prunable}</div>
+        </div>
+      </div>
+      <div className="mb-3">
+        <Tooltip block label={<span className="font-mono break-all">{wt.path}</span>}>
+          <div className="text-xs font-mono text-neutral-500 truncate cursor-help">
+            {wt.path}
+          </div>
+        </Tooltip>
+      </div>
+      {onPruneOrphan && (
+        <button
+          onClick={onPruneOrphan}
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs bg-wt-dirty/15 border border-wt-dirty/50 text-wt-dirty rounded hover:bg-wt-dirty/25"
+          title="Run `git worktree prune --expire=now` to clean up this entry"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+          Prune this orphan
+        </button>
+      )}
     </motion.div>
   );
 }
@@ -306,6 +396,12 @@ function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
     : ({
         'live-ide': 'text-wt-claude-ide',
         live: 'text-wt-claude-live',
+        // Idle reuses the recent/amber color to convey "alive but not
+        // currently working". Distinct from `recent` only in semantics:
+        // recent = JSONL touched recently but no process detected;
+        // idle = process running, JSONL not touched recently. The badge
+        // tooltip is what tells them apart.
+        idle: 'text-wt-claude-recent',
         recent: 'text-wt-claude-recent',
         dormant: 'text-wt-claude-dormant',
         none: 'text-wt-claude-dormant',
@@ -329,6 +425,7 @@ function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
       return `Claude live in ${presence.ideName ?? 'IDE'} · ${when}`;
     }
     if (presence.status === 'live') return `Claude live · ${when}`;
+    if (presence.status === 'idle') return `Claude idle (process running) · last activity ${when}`;
     if (presence.status === 'recent') return `Claude recent · ${when}`;
     return `Claude dormant · last active ${when}`;
   })();
@@ -351,10 +448,16 @@ function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
   );
 }
 
-// Default-collapsed expandable list of closed Claude sessions for this
+// Default-collapsed expandable list of past Claude sessions for this
 // worktree. Each row shows the session id (short) + relative time and a
 // button that copies a `claude --resume <id>` command to the clipboard.
-function ClosedSessionsList({
+//
+// Labeled "past" rather than "closed" because we can't *definitively* prove
+// any individual session is closed — the running-process detection only
+// tells us whether ANY claude is running in the worktree, and we attribute
+// it to the most-recent JSONL. Sessions that fall into this list MAY have
+// a long-idle process attached that we can't disambiguate.
+function PastSessionsList({
   worktreePath,
   sessions,
 }: {
@@ -388,7 +491,7 @@ function ClosedSessionsList({
         />
         <Sparkles className="w-3 h-3" />
         <span className="uppercase tracking-wide">
-          {sessions.length} closed Claude {sessions.length === 1 ? 'session' : 'sessions'}
+          {sessions.length} past Claude {sessions.length === 1 ? 'session' : 'sessions'}
         </span>
       </button>
       <AnimatePresence initial={false}>

@@ -11,6 +11,7 @@ import { detectSquashMerges } from './squashDetector';
 import {
   batchFetchPRs,
   invalidateOpenPrListCache,
+  invalidatePrCacheForRepo,
   listOpenPRsForBranches,
 } from './githubService';
 import { fetchClaudePresence } from './claudeAwarenessService';
@@ -220,6 +221,15 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     }
     if (repo.owner && repo.name) {
       invalidateOpenPrListCache(repo.owner, repo.name);
+      // For user-initiated fetches, ALSO drop the per-PR detail cache.
+      // squashDetector pass 1 reads it via batchFetchPRs and would otherwise
+      // serve a freshly-merged PR as `state: 'open'` for up to 5 minutes,
+      // defeating the whole point of the user clicking refresh after a
+      // merge. Background ticks skip this — they're fine letting the
+      // 5-minute TTL roll naturally.
+      if (userInitiated) {
+        invalidatePrCacheForRepo(repo.owner, repo.name);
+      }
     }
     // Fetch changed remote refs on disk (or this is a user-initiated fetch
     // and we want guaranteed visible feedback); trigger a refresh so the UI

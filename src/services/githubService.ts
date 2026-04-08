@@ -79,6 +79,26 @@ export function _clearPrCacheForTests() {
   hydrated = false;
 }
 
+// Drop every cached per-PR entry for a single repo. Called from
+// `runFetchOnce` on user-initiated fetches so that a PR the user just merged
+// (or closed, or marked draft) on github.com is re-fetched immediately
+// instead of being served from the 5-minute TTL. The companion
+// `invalidateOpenPrListCache` already handles the open-PR list; this fills
+// the gap for the per-PR detail fetched by squashDetector pass 1.
+export function invalidatePrCacheForRepo(owner: string, repo: string): void {
+  const prefix = `${owner}/${repo}#`;
+  let removed = 0;
+  for (const k of Array.from(prCache.keys())) {
+    if (k.startsWith(prefix)) {
+      prCache.delete(k);
+      removed++;
+    }
+  }
+  // Persist only when something actually changed — avoids a redundant disk
+  // write on the (common) case where the cache had no entries for this repo.
+  if (removed > 0) schedulePersist();
+}
+
 // Test-only: snapshot the in-memory cache keys. Used to verify hydration
 // behavior without going through getPR, which applies its own TTL on top.
 export function _getPrCacheKeysForTests(): string[] {
