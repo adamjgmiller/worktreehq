@@ -37,6 +37,12 @@ interface StoreState {
   refreshIntervalMs: number;
   fetchIntervalMs: number;
   zoomLevel: number;
+  // MRU list of repo paths the user has opened, most-recent first. Mirrors
+  // the persisted `recent_repo_paths` field in config.toml. Lives in the
+  // store (rather than being read from config on each dropdown open) so the
+  // RecentReposMenu re-renders instantly after a switch — otherwise the
+  // user would see a one-tick flash of stale ordering.
+  recentRepoPaths: string[];
 
   setRepo: (r: RepoState) => void;
   setWorktrees: (w: Worktree[]) => void;
@@ -52,6 +58,7 @@ interface StoreState {
   setRefreshInterval: (ms: number) => void;
   setFetchInterval: (ms: number) => void;
   setZoomLevel: (z: number) => void;
+  setRecentRepoPaths: (paths: string[]) => void;
   markRefreshed: () => void;
 }
 
@@ -84,6 +91,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   refreshIntervalMs: 15_000,
   fetchIntervalMs: 60_000,
   zoomLevel: ZOOM_DEFAULT,
+  recentRepoPaths: [],
 
   setRepo: (repo) => set({ repo }),
   setWorktrees: (worktrees) => set({ worktrees }),
@@ -100,5 +108,6 @@ export const useRepoStore = create<StoreState>((set) => ({
   setRefreshInterval: (refreshIntervalMs) => set({ refreshIntervalMs }),
   setFetchInterval: (fetchIntervalMs) => set({ fetchIntervalMs }),
   setZoomLevel: (z) => set({ zoomLevel: clampZoom(z) }),
+  setRecentRepoPaths: (recentRepoPaths) => set({ recentRepoPaths }),
   markRefreshed: () => set({ lastRefresh: Date.now() }),
 }));

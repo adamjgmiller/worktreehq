@@ -21,7 +21,25 @@ interface AppConfigShape {
   refresh_interval_ms: number;
   fetch_interval_ms: number;
   last_repo_path?: string | null;
+  recent_repo_paths?: string[];
   zoom_level?: number;
+}
+
+// Cap on the persisted recent-repos list. Eight is enough to comfortably
+// cover a "what am I working on this week" set without the dropdown growing
+// unwieldy. The cap lives in TS because the policy (dedupe + cap + bump) all
+// lives here; the Rust side just stores whatever it's handed.
+export const RECENT_REPOS_MAX = 8;
+
+// Pure transform: produce the next MRU list when `path` is opened.
+// - Dedupes (case-sensitive — paths are case-sensitive on macOS in practice
+//   for git repos and we don't want to silently merge two distinct entries).
+// - Bumps `path` to position 0.
+// - Caps the result at RECENT_REPOS_MAX.
+export function bumpRecent(prev: readonly string[], path: string): string[] {
+  const filtered = prev.filter((p) => p !== path);
+  filtered.unshift(path);
+  return filtered.slice(0, RECENT_REPOS_MAX);
 }
 
 // Open the system directory picker. Returns the selected path or null.
@@ -41,7 +59,8 @@ export async function pickDirectory(): Promise<string | null> {
 // On success persists the path to config so next launch reuses it.
 // On failure sets the store error and leaves the prior repo in place.
 export async function loadRepoAtPath(candidate: string): Promise<boolean> {
-  const { setRepo, setError } = useRepoStore.getState();
+  const { setRepo, setError, setRecentRepoPaths, recentRepoPaths } =
+    useRepoStore.getState();
   try {
     const info = await invoke<RepoInfo>('resolve_repo', { path: candidate });
     if (!info.is_git) {
@@ -57,14 +76,22 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
       name: remote.name,
     });
     setError(null);
-    // Persist last_repo_path. Read the current config first so we don't
-    // clobber other fields.
+    // Update the in-memory MRU list immediately so the dropdown re-renders
+    // before the config write resolves. The store is the source of truth
+    // for the UI; the config write below mirrors it for persistence.
+    const nextRecents = bumpRecent(recentRepoPaths, info.path);
+    setRecentRepoPaths(nextRecents);
+    // Persist. Read the current config first so we don't clobber other fields.
+    // We write BOTH `recent_repo_paths` and `last_repo_path` (kept in sync as
+    // recents[0]) so an older binary that only knows about `last_repo_path`
+    // still resolves to the same repo on launch.
     try {
       const cfg = await invoke<AppConfigShape>('read_config');
       await invoke('write_config', {
         cfg: {
           ...cfg,
-          last_repo_path: info.path,
+          last_repo_path: nextRecents[0] ?? info.path,
+          recent_repo_paths: nextRecents,
         },
       });
     } catch {
@@ -76,6 +103,29 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
   } catch (e: any) {
     setError(`Could not load repo: ${e?.message ?? e}`);
     return false;
+  }
+}
+
+// Remove a path from the recents list. Used by the per-row dismiss button in
+// the dropdown — typically for entries whose underlying directory has moved
+// or been deleted. Updates the store and persists in the same read-modify-
+// write pattern as loadRepoAtPath. Best-effort persistence.
+export async function removeFromRecents(path: string): Promise<void> {
+  const { setRecentRepoPaths, recentRepoPaths } = useRepoStore.getState();
+  const next = recentRepoPaths.filter((p) => p !== path);
+  if (next.length === recentRepoPaths.length) return;
+  setRecentRepoPaths(next);
+  try {
+    const cfg = await invoke<AppConfigShape>('read_config');
+    await invoke('write_config', {
+      cfg: {
+        ...cfg,
+        last_repo_path: next[0] ?? null,
+        recent_repo_paths: next,
+      },
+    });
+  } catch {
+    /* persistence is best-effort; the in-memory list is already updated */
   }
 }
 
