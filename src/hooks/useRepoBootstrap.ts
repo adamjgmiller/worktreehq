@@ -20,6 +20,9 @@ const WATCHER_MIN_INTERVAL_MS = 2000;
 
 interface AppConfig {
   github_token: string;
+  // True once the user has explicitly set or cleared the token via Settings;
+  // suppresses the GITHUB_TOKEN env fallback so explicit clears stick.
+  github_token_explicitly_set?: boolean;
   refresh_interval_ms: number;
   fetch_interval_ms: number;
   last_repo_path?: string;
