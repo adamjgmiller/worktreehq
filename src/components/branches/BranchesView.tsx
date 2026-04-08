@@ -49,8 +49,12 @@ export function BranchesView() {
   }, [repo]);
 
   const filtered = useMemo(
-    () => searchBranches(applyPreset(branches, preset, { userEmail }), search),
-    [branches, preset, search, userEmail],
+    () =>
+      searchBranches(
+        applyPreset(branches, preset, { userEmail, defaultBranch: repo?.defaultBranch }),
+        search,
+      ),
+    [branches, preset, search, userEmail, repo?.defaultBranch],
   );
   const selectedBranches = filtered.filter((b) => selection.has(b.name));
 

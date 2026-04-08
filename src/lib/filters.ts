@@ -7,8 +7,10 @@ export type FilterPreset = 'all' | 'mine' | 'safe-to-delete' | 'stale' | 'active
 export function applyPreset(
   branches: Branch[],
   preset: FilterPreset,
-  ctx: { userEmail?: string } = {},
+  ctx: { userEmail?: string; defaultBranch?: string } = {},
 ): Branch[] {
+  const isDefault = (b: Branch) =>
+    !!ctx.defaultBranch && b.name === ctx.defaultBranch;
   switch (preset) {
     case 'all':
       return branches;
@@ -21,16 +23,19 @@ export function applyPreset(
       return branches.filter(
         (b) =>
           (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged') &&
-          !b.worktreePath,
+          !b.worktreePath &&
+          !isDefault(b),
       );
     case 'stale':
-      return branches.filter((b) => b.mergeStatus === 'stale');
+      return branches.filter((b) => b.mergeStatus === 'stale' && !isDefault(b));
     case 'active':
       return branches.filter(
         (b) => !!b.worktreePath || (b.pr && b.pr.state === 'open'),
       );
     case 'orphaned':
-      return branches.filter((b) => b.hasLocal && (b.upstreamGone || !b.hasRemote));
+      return branches.filter(
+        (b) => b.hasLocal && (b.upstreamGone || !b.hasRemote) && !isDefault(b),
+      );
   }
 }
 
