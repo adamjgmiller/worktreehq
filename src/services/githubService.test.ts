@@ -6,6 +6,8 @@ vi.mock('./tauriBridge', () => ({
   readPrCacheFile: vi.fn().mockResolvedValue(''),
   writePrCacheFile: vi.fn().mockResolvedValue(undefined),
 }));
+import { readPrCacheFile } from './tauriBridge';
+const readPrCacheFileMock = readPrCacheFile as unknown as ReturnType<typeof vi.fn>;
 
 // Mock Octokit with a configurable graphql method per test.
 const graphqlMock = vi.fn();
@@ -23,7 +25,10 @@ import {
   mapReviewDecision,
   batchFetchPRs,
   initGithub,
+  hydratePrCache,
+  getPR,
   _clearPrCacheForTests,
+  _getPrCacheKeysForTests,
 } from './githubService';
 
 describe('mapChecksStatus', () => {
@@ -121,5 +126,107 @@ describe('batchFetchPRs: chunking', () => {
 
     expect(graphqlMock).toHaveBeenCalledTimes(1);
     expect(result.size).toBe(30);
+  });
+});
+
+describe('hydratePrCache: on-disk TTL for open PRs', () => {
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    readPrCacheFileMock.mockReset();
+    initGithub('test-token');
+  });
+
+  // Build a persisted-cache JSON blob with three entries: one fresh open, one
+  // stale open, and one stale merged. Hydration should drop only the stale
+  // open entry.
+  const buildDiskCache = () => {
+    const now = Date.now();
+    const EIGHT_DAYS = 8 * 24 * 60 * 60 * 1000;
+    const ONE_HOUR = 60 * 60 * 1000;
+    return JSON.stringify({
+      version: 1,
+      entries: {
+        'o/r#1': {
+          at: now - ONE_HOUR,
+          pr: {
+            number: 1,
+            title: 'fresh-open',
+            state: 'open',
+            headRef: 'feat/fresh',
+            url: '',
+          },
+        },
+        'o/r#2': {
+          at: now - EIGHT_DAYS,
+          pr: {
+            number: 2,
+            title: 'stale-open',
+            state: 'open',
+            headRef: 'feat/stale',
+            url: '',
+          },
+        },
+        'o/r#3': {
+          at: now - EIGHT_DAYS,
+          pr: {
+            number: 3,
+            title: 'stale-merged',
+            state: 'merged',
+            headRef: 'feat/old-merged',
+            url: '',
+          },
+        },
+      },
+    });
+  };
+
+  it('keeps fresh open-PR entries and drops stale ones', async () => {
+    readPrCacheFileMock.mockResolvedValueOnce(buildDiskCache());
+    await hydratePrCache();
+    const keys = _getPrCacheKeysForTests();
+    // Fresh open + stale merged survive; stale open is dropped.
+    expect(keys).toContain('o/r#1');
+    expect(keys).not.toContain('o/r#2');
+    expect(keys).toContain('o/r#3');
+  });
+
+  it('serves entries written recently enough to be within getPR TTL', async () => {
+    // Separate from the hydration-filter tests: this one proves that a hydrated
+    // entry within getPR's own 5-min TTL_MS is actually served from memory
+    // without touching the API. Uses a 1-second-old timestamp so the 5-min
+    // getPR TTL is satisfied in addition to the 7-day hydration TTL.
+    const now = Date.now();
+    const freshBlob = JSON.stringify({
+      version: 1,
+      entries: {
+        'o/r#1': {
+          at: now - 1000,
+          pr: {
+            number: 1,
+            title: 'fresh-open',
+            state: 'open',
+            headRef: 'feat/fresh',
+            url: '',
+          },
+        },
+      },
+    });
+    readPrCacheFileMock.mockResolvedValueOnce(freshBlob);
+    await hydratePrCache();
+    const pr = await getPR('o', 'r', 1);
+    expect(pr?.title).toBe('fresh-open');
+    expect(graphqlMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps stale merged-PR entries because their fields are immutable', async () => {
+    readPrCacheFileMock.mockResolvedValueOnce(buildDiskCache());
+    await hydratePrCache();
+    // Merged PRs are preserved across hydration regardless of age. Inspect
+    // the cache map directly — getPR would still re-fetch due to its
+    // own in-memory TTL_MS, which is an orthogonal concern from the
+    // hydration-time filter this test covers.
+    const keys = _getPrCacheKeysForTests();
+    expect(keys).toContain('o/r#3');
   });
 });

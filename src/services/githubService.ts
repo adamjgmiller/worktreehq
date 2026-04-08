@@ -31,6 +31,11 @@ interface PersistedCache {
 let hydrated = false;
 let persistDebounce: ReturnType<typeof setTimeout> | null = null;
 
+// Entries older than this for OPEN PRs are dropped on hydration — their
+// checks/reviews/mergeable fields may have drifted on GitHub while the app
+// was closed. Merged PRs are kept forever because their fields are immutable.
+const STALE_OPEN_PR_MS = 7 * 24 * 60 * 60 * 1000;
+
 // One-time load from disk. Callers can await this at startup, but we also lazy-load
 // on the first cache hit so tests that never initialize don't hang.
 export async function hydratePrCache(): Promise<void> {
@@ -41,7 +46,13 @@ export async function hydratePrCache(): Promise<void> {
   try {
     const parsed: PersistedCache = JSON.parse(raw);
     if (parsed.version !== 1 || !parsed.entries) return;
+    const now = Date.now();
     for (const [k, v] of Object.entries(parsed.entries)) {
+      // Drop stale open-PR entries on hydration. Merged PRs are kept forever
+      // since their fields don't change once merged; treating them as fresh
+      // lets a long-idle laptop reopen the app with its cache intact.
+      const isOpen = v.pr?.state === 'open';
+      if (isOpen && now - v.at > STALE_OPEN_PR_MS) continue;
       prCache.set(k, v);
     }
   } catch {
@@ -66,6 +77,12 @@ function cacheKey(owner: string, repo: string, n: number) {
 export function _clearPrCacheForTests() {
   prCache.clear();
   hydrated = false;
+}
+
+// Test-only: snapshot the in-memory cache keys. Used to verify hydration
+// behavior without going through getPR, which applies its own TTL on top.
+export function _getPrCacheKeysForTests(): string[] {
+  return Array.from(prCache.keys());
 }
 
 // Kept as the single-PR fallback for cache misses outside the batch path.
