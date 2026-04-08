@@ -15,11 +15,16 @@ import {
   MoreVertical,
   ExternalLink,
   Trash2,
+  ArrowDownToLine,
+  Loader2,
 } from 'lucide-react';
 import type { ClaudePresence, Worktree, InProgressOp } from '../../types';
-import { mergeStatusClass, mergeStatusLabel, worktreeStatusClass } from '../../lib/colors';
+import { worktreeStatusClass } from '../../lib/colors';
+import { branchDisposition, type BranchDispositionAction } from '../../lib/branchDisposition';
 import { relativeTime, shortSha, aheadBehind } from '../../lib/format';
 import { resumeCommand } from '../../services/claudeAwarenessService';
+import { pullFastForward } from '../../services/gitService';
+import { refreshOnce } from '../../services/refreshLoop';
 import { useRepoStore } from '../../store/useRepoStore';
 import { Tooltip } from '../common/Tooltip';
 import { Notepad } from './Notepad';
@@ -64,6 +69,12 @@ export function WorktreeCard({
     s.branches.find((b) => b.name === wt.branch),
   );
   const defaultBranch = useRepoStore((s) => s.repo?.defaultBranch ?? 'main');
+  const setError = useRepoStore((s) => s.setError);
+  // Composite pill that respects BOTH the branch's commit-history merge
+  // status and the worktree's filesystem state, and replaces the lineage
+  // label entirely on the default branch with an "on main" hint that warns
+  // about local work. See src/lib/branchDisposition.ts for the full mapping.
+  const disposition = branchDisposition(branchInfo, wt, defaultBranch);
   // "Effectively merged" — used to drive both the green border and the
   // solid-vs-ring status icon. The primary worktree (and any worktree on
   // the default branch) is merged-by-definition; otherwise we trust the
@@ -159,24 +170,31 @@ export function WorktreeCard({
               <span className="text-neutral-600 italic">↳ (no upstream)</span>
             )}
           </div>
-          {branchInfo && (
-            // Lifecycle row: merge status + ahead-of-default + PR. Only renders
-            // when we have a Branch entry to join against, so detached HEADs
-            // and the default-branch worktree (filtered out by listBranches)
-            // skip it cleanly. The "vs main" label is deliberately distinct
-            // from the upstream-relative ahead/behind stat below — they answer
-            // different questions and conflating them was the original
-            // confusion that motivated this row.
+          {disposition && (
+            // Lifecycle row: composite disposition pill + optional inline
+            // action + ahead-of-default + PR. Skips cleanly for detached
+            // HEADs (no disposition). The ahead-of-default and PR badges
+            // still require a branchInfo entry — the disposition can be
+            // present without one (default-branch worktree in a fresh repo).
             <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-              <span
-                className={clsx(
-                  'px-1.5 py-0.5 text-[0.5625rem] font-mono border rounded uppercase tracking-wide',
-                  mergeStatusClass(branchInfo.mergeStatus),
-                )}
-              >
-                {mergeStatusLabel(branchInfo.mergeStatus)}
-              </span>
-              {(branchInfo.aheadOfMain > 0 || branchInfo.behindMain > 0) && (
+              <Tooltip label={disposition.tooltip}>
+                <span
+                  className={clsx(
+                    'px-1.5 py-0.5 text-[0.5625rem] font-mono border rounded uppercase tracking-wide cursor-help',
+                    disposition.className,
+                  )}
+                >
+                  {disposition.label}
+                </span>
+              </Tooltip>
+              {disposition.action && (
+                <DispositionActionButton
+                  action={disposition.action}
+                  worktreePath={wt.path}
+                  onError={setError}
+                />
+              )}
+              {branchInfo && (branchInfo.aheadOfMain > 0 || branchInfo.behindMain > 0) && (
                 <Tooltip
                   label={`${branchInfo.aheadOfMain} ahead, ${branchInfo.behindMain} behind ${defaultBranch}`}
                 >
@@ -186,7 +204,7 @@ export function WorktreeCard({
                   </span>
                 </Tooltip>
               )}
-              {branchInfo.pr && (
+              {branchInfo?.pr && (
                 <a
                   href={branchInfo.pr.url}
                   target="_blank"
@@ -377,6 +395,60 @@ function Stat({ label, value }: { label: string; value: number | string }) {
       <div className="text-neutral-500 text-[0.625rem] uppercase tracking-wide">{label}</div>
       <div className="font-mono text-neutral-100">{value}</div>
     </div>
+  );
+}
+
+// Inline action button rendered next to the disposition pill when the
+// disposition exposes one. Currently only kind === 'pull-default-branch'
+// (fast-forward main from origin), but the discriminated-union shape leaves
+// room for more without changing the call site. Errors surface via the
+// store's setError; success triggers a user-initiated refresh so the new
+// ahead/behind state is reflected immediately instead of waiting for the
+// next polling tick.
+function DispositionActionButton({
+  action,
+  worktreePath,
+  onError,
+}: {
+  action: BranchDispositionAction;
+  worktreePath: string;
+  onError: (msg: string | null) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const handleClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    onError(null);
+    try {
+      if (action.kind === 'pull-default-branch') {
+        await pullFastForward(worktreePath);
+      }
+      await refreshOnce({ userInitiated: true });
+    } catch (e: any) {
+      onError(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Tooltip label={action.ariaLabel}>
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={busy}
+        aria-label={action.ariaLabel}
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[0.5625rem] font-mono uppercase tracking-wide rounded border border-wt-info/40 bg-wt-info/10 text-wt-info hover:bg-wt-info/20 disabled:opacity-50 disabled:cursor-wait transition-colors"
+      >
+        {busy ? (
+          <Loader2 className="w-2.5 h-2.5 animate-spin" />
+        ) : (
+          <ArrowDownToLine className="w-2.5 h-2.5" />
+        )}
+        {action.label}
+      </button>
+    </Tooltip>
   );
 }
 

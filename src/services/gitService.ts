@@ -632,6 +632,17 @@ export async function fetchAllPrune(repo: string): Promise<void> {
   await run(repo, ['fetch', '--all', '--prune']);
 }
 
+// Fast-forward the currently-checked-out default branch from its upstream.
+// Used by the WorktreeCard's inline "Pull" button on the main worktree when
+// it's behind origin/main. We use `--ff-only` so the operation refuses to
+// merge — if the branch isn't strictly behind (e.g., it diverged between
+// the disposition computation and the click) the user gets a clear stderr
+// instead of an unexpected merge commit. `run()` (not tryRun) so failures
+// surface to the caller for setError().
+export async function pullFastForward(worktreePath: string): Promise<void> {
+  await run(worktreePath, ['pull', '--ff-only']);
+}
+
 // A deterministic single-string fingerprint of every remote ref in the repo,
 // used by `runFetchOnce` to skip the chained refresh when `git fetch` didn't
 // actually pull anything new. Cheap (one for-each-ref subprocess) and
