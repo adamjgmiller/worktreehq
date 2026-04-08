@@ -2,6 +2,18 @@ import type { Branch, MainCommit, SquashMapping, PRInfo } from '../types';
 import { batchFetchPRs } from './githubService';
 import { cherryCheck } from './gitService';
 
+// Cache cherry-check results by (branch head sha, main head sha). Lives for
+// the process lifetime — no TTL needed because the key is content-addressed:
+// if either sha moves, the key changes and the entry misses. Saves a
+// subprocess spawn per still-unmerged branch on every refresh when nothing
+// has changed, which dominates cost on repos with 100+ stale branches.
+const cherryCache = new Map<string, boolean>();
+
+// Exported for tests only.
+export function _clearCherryCacheForTests() {
+  cherryCache.clear();
+}
+
 export interface DetectInput {
   repoPath: string;
   defaultBranch: string;
@@ -83,17 +95,33 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
     }
   }
 
-  // Fallback: cherry-based patch-id check for remaining unmerged
-  for (const b of branchIndex.values()) {
-    if (b.mergeStatus !== 'unmerged') continue;
-    if (b.aheadOfMain === 0) continue;
-    try {
-      const ref = b.hasLocal ? b.name : `origin/${b.name}`;
-      const squashed = await cherryCheck(input.repoPath, input.defaultBranch, ref);
-      if (squashed) b.mergeStatus = 'squash-merged';
-    } catch {
-      /* ignore */
-    }
+  // Fallback: cherry-based patch-id check for remaining unmerged. Parallelized
+  // because each cherry-check is independent and subprocess-bound, and cached
+  // by (branch sha, main sha) so steady-state refreshes skip the subprocess
+  // entirely when nothing has moved.
+  const cherryCandidates = Array.from(branchIndex.values()).filter(
+    (b) => b.mergeStatus === 'unmerged' && b.aheadOfMain > 0,
+  );
+  const mainSha = mainCommits[0]?.sha ?? '';
+  const cherryResults = await Promise.all(
+    cherryCandidates.map(async (b) => {
+      const key = `${b.name}@${b.lastCommitSha}|${mainSha}`;
+      const cached = cherryCache.get(key);
+      if (cached !== undefined) return [b, cached] as const;
+      try {
+        const ref = b.hasLocal ? b.name : `origin/${b.name}`;
+        const squashed = await cherryCheck(input.repoPath, input.defaultBranch, ref);
+        cherryCache.set(key, squashed);
+        return [b, squashed] as const;
+      } catch {
+        // Don't cache failures — they may be transient (e.g. a ref race during
+        // rebase). Retry on the next refresh.
+        return [b, false] as const;
+      }
+    }),
+  );
+  for (const [b, squashed] of cherryResults) {
+    if (squashed) b.mergeStatus = 'squash-merged';
   }
 
   // Stale rule
