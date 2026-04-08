@@ -4,20 +4,11 @@ import { useRepoStore } from '../../store/useRepoStore';
 import { WorktreeCard } from './WorktreeCard';
 import { EmptyState } from '../common/EmptyState';
 import { CreateWorktreeDialog, type CreateWorktreeValue } from './CreateWorktreeDialog';
+import { RemoveWorktreeDialog } from './RemoveWorktreeDialog';
 import { createWorktree, removeWorktree, pruneWorktrees } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
+import { pickDirectory } from '../../services/repoSelect';
 import type { Worktree } from '../../types';
-
-async function pickDirectory(): Promise<string | null> {
-  try {
-    const mod = await import('@tauri-apps/plugin-dialog');
-    const result = await mod.open({ directory: true, multiple: false });
-    if (typeof result === 'string') return result;
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 export function WorktreesView() {
   const worktrees = useRepoStore((s) => s.worktrees);
@@ -25,6 +16,7 @@ export function WorktreesView() {
   const repo = useRepoStore((s) => s.repo);
   const setError = useRepoStore((s) => s.setError);
   const [createOpen, setCreateOpen] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<Worktree | null>(null);
 
   async function handleCreate(v: CreateWorktreeValue) {
     if (!repo) return;
@@ -37,23 +29,17 @@ export function WorktreesView() {
     }
   }
 
-  async function handleRemove(wt: Worktree) {
-    if (!repo) return;
-    if (!confirm(`Remove worktree ${wt.path}?`)) return;
-    try {
-      await removeWorktree(repo.path, wt.path, false);
-      await refreshOnce({ userInitiated: true });
-    } catch (e: any) {
-      // Retry with --force only if the first attempt failed.
-      if (confirm(`Remove failed: ${e?.message ?? e}\n\nForce remove?`)) {
-        try {
-          await removeWorktree(repo.path, wt.path, true);
-          await refreshOnce({ userInitiated: true });
-        } catch (e2: any) {
-          setError(e2?.message ?? String(e2));
-        }
-      }
-    }
+  function handleRemove(wt: Worktree) {
+    setRemoveTarget(wt);
+  }
+
+  async function handleConfirmRemove(opts: { force: boolean }) {
+    if (!repo || !removeTarget) return;
+    // Throws on failure so the dialog's local error path can render the
+    // git stderr inline. The dialog clears its busy state on the throw.
+    await removeWorktree(repo.path, removeTarget.path, opts.force);
+    setRemoveTarget(null);
+    await refreshOnce({ userInitiated: true });
   }
 
   async function handlePrune() {
@@ -77,7 +63,14 @@ export function WorktreesView() {
         </button>
       </div>
       {worktrees.length === 0 ? (
-        <EmptyState title="No worktrees yet" hint="Add one via the New worktree button above." />
+        // A valid git repo always has at least the primary worktree, so an
+        // empty list here means listWorktrees failed (or hasn't completed
+        // yet). Frame the empty state accordingly instead of suggesting the
+        // user add one with the button.
+        <EmptyState
+          title="No worktrees loaded"
+          hint="Either the repo isn't readable yet or `git worktree list` failed. Check the error banner above."
+        />
       ) : (
         <div className="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {worktrees.map((w) => (
@@ -92,6 +85,13 @@ export function WorktreesView() {
           onCancel={() => setCreateOpen(false)}
           onConfirm={handleCreate}
           onPickDirectory={pickDirectory}
+        />
+      )}
+      {removeTarget && (
+        <RemoveWorktreeDialog
+          worktree={removeTarget}
+          onCancel={() => setRemoveTarget(null)}
+          onConfirm={handleConfirmRemove}
         />
       )}
     </div>

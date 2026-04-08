@@ -32,7 +32,9 @@ Rust-side check (faster than a full `tauri build`): `cd src-tauri && cargo check
 
 The Rust backend is intentionally thin. There is **one** generic command, `git_exec(repo_path, args[])` (`src-tauri/src/commands/git_exec.rs`), that invokes the system `git` binary as a subprocess via `std::process::Command` and returns `{stdout, stderr, code}`. Every git operation in the app — listing worktrees, computing ahead/behind, cherry-checks, branch deletes — is a TypeScript function in `src/services/gitService.ts` that builds on `git_exec`.
 
-**Implication for new work:** when adding a new git operation, add a TS function in `gitService.ts`. Do **not** add a new `#[tauri::command]` for it. The only Rust commands that exist are for things git can't do: filesystem watching (`watcher.rs`), config persistence (`config.rs`), repo root resolution (`repo.rs`), and notepads (`notepads.rs`).
+**Implication for new work:** when adding a new git operation, add a TS function in `gitService.ts`. Do **not** add a new `#[tauri::command]` for it. The only Rust commands that exist are for things git can't do: filesystem watching (`watcher.rs`), config persistence (`config.rs`), repo root resolution (`repo.rs`), notepads (`notepads.rs`), Claude IDE state polling (`claude_state.rs`), the on-disk PR cache (`pr_cache.rs`), and a tiny `path_exists` probe (`fs_probe.rs`).
+
+`git_exec` deliberately scrubs the subprocess environment before invoking git: `GIT_TERMINAL_PROMPT=0` (so a fetch against an unreachable HTTPS remote can't hang waiting for credentials — there's no TTY), `GIT_PAGER=cat`, `LC_ALL=C` (parsers in `gitService.ts` implicitly assume English output), `GIT_OPTIONAL_LOCKS=0`, and removes inherited `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`. Don't reach around this if you're shelling out from elsewhere — and if you ever add a second Rust subprocess command, mirror these or you'll reintroduce the credential-prompt-hang failure mode.
 
 ### Frontend data flow
 
@@ -42,20 +44,25 @@ useRepoBootstrap (hook)
   → invoke('resolve_repo')          # finds .git root walking up from cwd
   → getDefaultBranch (gitService)
   → setRepo() in zustand store
-  → startRefreshLoop()              # polling tick, default 5s
+  → startRefreshLoop()              # polling tick, default 15s
 
 refreshLoop.refreshOnce()  (src/services/refreshLoop.ts)
   ├── listWorktrees()       ─┐
   ├── listBranches()         │ all in parallel via Promise.all
   ├── listMainCommits()      │
-  ├── listTags()             │
-  └── getRemoteUrl()        ─┘
+  └── listTags()            ─┘
   → listOpenPRsForBranches() (Octokit)
   → detectSquashMerges()    # the squash-detection algorithm
   → store setters → React re-renders
 ```
 
 State lives in a single Zustand store (`src/store/useRepoStore.ts`). React components subscribe via selectors. There is no router; tabs are local component state in `App.tsx`.
+
+Runtime repo switching (e.g. the "Pick a repository…" affordance and the
+folder-icon button in `RepoBar`) goes through `src/services/repoSelect.ts`,
+which wraps the directory picker, `resolve_repo`, the gitService bootstrap
+calls, and config persistence. Use `pickAndLoadRepo()` for new entry points
+rather than reproducing the dance.
 
 ### Squash-merge detection (the core domain logic)
 
@@ -73,7 +80,7 @@ When changing merge-status logic, both passes need to stay consistent or branche
 
 ### Persistence locations
 
-- App config: `~/.config/worktreehq/config.toml` (TOML; fields: `github_token`, `refresh_interval_ms`, `last_repo_path`). `GITHUB_TOKEN` env var is used as fallback when the file is empty.
+- App config: `~/.config/worktreehq/config.toml` (TOML; fields: `github_token`, `github_token_explicitly_set`, `refresh_interval_ms`, `fetch_interval_ms`, `last_repo_path`). `GITHUB_TOKEN` env var is used as a fallback when `github_token` is empty AND `github_token_explicitly_set` is false. The flag flips to true the first time the user saves via `SettingsModal`, so an explicit clear is respected even when the env var is exported in the user's shell — without it the env would silently re-populate the token on every launch.
 - Per-worktree notepads: `~/.config/worktreehq/notepads.json` (JSON map keyed by worktree path). Writes go through a single-process `Mutex` plus atomic rename via `.tmp` file in `src-tauri/src/commands/notepads.rs` because rapid keystroke saves can otherwise interleave a read-modify-write.
 
 ### Polling + filesystem watcher
@@ -92,7 +99,11 @@ The 5s polling loop is the source of truth for refreshes. The Rust `notify`-base
 ## Conventions worth knowing
 
 - New git operations go in `gitService.ts`, not in new Rust commands.
-- Use `tryRun()` (returns empty string on failure) vs `run()` (throws) deliberately: most read paths use `tryRun` so a single failing repo command doesn't blank the whole UI; destructive ops (`deleteLocalBranch`, etc.) use `run` so failures surface.
-- When adding a Rust command, register it in **both** `src-tauri/src/commands/mod.rs` and the `invoke_handler![]` macro in `src-tauri/src/lib.rs`, and add a TS wrapper in `tauriBridge.ts` or the relevant service.
+- Use `tryRun()` (returns empty string on failure) vs `run()` (throws on **any** non-zero exit code, with stderr/stdout/exit code in the message) deliberately: most read paths use `tryRun` so a single failing repo command doesn't blank the whole UI; destructive ops (`deleteLocalBranch`, etc.) use `run` so failures surface.
+- `listBranches` only considers `origin/*` remote refs. The rest of the app hard-codes `origin` for delete/push paths, so a non-origin remote ref isn't actionable; matching it as a branch would also collide on the stripped name across remotes. If you ever add multi-remote support, this filter is the place to start.
+- The refresh loop does **not** clear `store.error` at the start of each tick — only after a successful pipeline. Errors set by user actions (`createWorktree`, `removeWorktree`, prune, etc.) need to survive across the next 15s poll. If you need to reset the error from a non-refresh code path, call `setError(null)` explicitly.
+- When adding a Rust command, register it in **both** `src-tauri/src/commands/mod.rs` and the `invoke_handler![]` macro in `src-tauri/src/lib.rs`, and add a TS wrapper in `tauriBridge.ts` or the relevant service. Don't leave dead stub commands in `invoke_handler!` — they're load-bearing surface in the IPC schema and silently confuse callers.
+- Lock guards on shared `Mutex` state (notepads, watcher) use `.unwrap_or_else(|p| p.into_inner())` so a poisoned mutex doesn't crash the app.
 - The frontend tests mock at the service layer, not at `invoke`. Look at `src/services/squashDetector.test.ts` for the pattern.
 - Tailwind theme uses custom tokens prefixed `wt-` (`wt-bg`, `wt-dirty`, etc.) defined in `tailwind.config.js`. Use those instead of raw color classes so the dark theme stays consistent.
+- Destructive UI dialogs (`ConfirmDeleteDialog`, `RemoveWorktreeDialog`) follow a shared shape: Escape closes, backdrop click closes, focus lands on Cancel, anything irreversible (remote-touching delete, force-removing a dirty worktree) requires typed confirmation. New destructive flows should match.

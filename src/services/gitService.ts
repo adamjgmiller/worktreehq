@@ -3,8 +3,13 @@ import type { Worktree, Branch, MainCommit, WorktreeStatus, InProgressOp } from 
 
 async function run(repo: string, args: string[]): Promise<string> {
   const r = await gitExec(repo, args);
-  if (r.code !== 0 && r.stderr) {
-    throw new Error(`git ${args.join(' ')}: ${r.stderr.trim()}`);
+  // Throw on ANY non-zero exit. Previously we only threw when stderr was
+  // populated, which silently masked failures from git commands that exit
+  // non-zero with no stderr (e.g. some `branch -d` paths) — destructive ops
+  // would appear to succeed when they hadn't.
+  if (r.code !== 0) {
+    const detail = r.stderr.trim() || r.stdout.trim() || `exited ${r.code}`;
+    throw new Error(`git ${args.join(' ')}: ${detail}`);
   }
   return r.stdout;
 }
@@ -40,7 +45,11 @@ let cachedUserEmail: { repo: string; email: string } | null = null;
 export async function getUserEmail(repo: string): Promise<string> {
   if (cachedUserEmail && cachedUserEmail.repo === repo) return cachedUserEmail.email;
   const out = (await tryRun(repo, ['config', '--get', 'user.email'])).trim();
-  cachedUserEmail = { repo, email: out };
+  // Only memoize a successful lookup. If `git config` transiently fails (or
+  // user.email genuinely isn't set), retry on the next call rather than
+  // caching the empty string and locking the "mine" filter into "no matches"
+  // for the rest of the session.
+  if (out) cachedUserEmail = { repo, email: out };
   return out;
 }
 
@@ -289,14 +298,18 @@ export function _clearBranchAbCacheForTests(): void {
 }
 
 export async function listBranches(repo: string, defaultBranch: string): Promise<Branch[]> {
+  // iso8601-strict emits the `T` separator (2026-01-01T00:00:00+00:00). Plain
+  // iso8601 uses a space separator that some strict ECMAScript Date parsers
+  // reject as NaN — which silently broke `isStale` (the NaN guard returns
+  // false, so affected branches never aged into the stale bucket).
   const localRaw = await tryRun(repo, [
     'for-each-ref',
-    '--format=%(refname:short)%09%(objectname)%09%(committerdate:iso8601)%09%(upstream:track)%09%(authoremail)',
+    '--format=%(refname:short)%09%(objectname)%09%(committerdate:iso8601-strict)%09%(upstream:track)%09%(authoremail)',
     'refs/heads',
   ]);
   const remoteRaw = await tryRun(repo, [
     'for-each-ref',
-    '--format=%(refname:short)%09%(objectname)%09%(committerdate:iso8601)%09%(authoremail)',
+    '--format=%(refname:short)%09%(objectname)%09%(committerdate:iso8601-strict)%09%(authoremail)',
     'refs/remotes',
   ]);
   const branches = new Map<string, Branch>();
@@ -319,7 +332,12 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
   for (const line of remoteRaw.split('\n').filter(Boolean)) {
     const [refShort, sha, date, email] = line.split('\t');
     if (!refShort || refShort.endsWith('/HEAD')) continue;
-    const name = refShort.replace(/^[^/]+\//, '');
+    // Only consider origin/* refs. Other remotes (upstream, fork, etc.) would
+    // collide on the stripped branch name and silently overwrite each other —
+    // and the rest of the app hard-codes `origin` for delete/push paths
+    // anyway, so a non-origin entry isn't actionable.
+    if (!refShort.startsWith('origin/')) continue;
+    const name = refShort.slice('origin/'.length);
     const existing = branches.get(name);
     if (existing) {
       existing.hasRemote = true;

@@ -6,6 +6,13 @@ use std::path::PathBuf;
 pub struct AppConfig {
     #[serde(default)]
     pub github_token: String,
+    // When true, the user has explicitly set (or cleared) github_token via
+    // Settings, so read_config must NOT fall back to the GITHUB_TOKEN env var
+    // — even when github_token is empty. Without this flag the user couldn't
+    // ever unset their token from the UI: every read_config would silently
+    // re-populate it from the env on next launch.
+    #[serde(default)]
+    pub github_token_explicitly_set: bool,
     #[serde(default = "default_interval")]
     pub refresh_interval_ms: u64,
     #[serde(default = "default_fetch_interval")]
@@ -40,9 +47,13 @@ fn config_path() -> AppResult<PathBuf> {
 pub fn read_config() -> AppResult<AppConfig> {
     let p = config_path()?;
     if !p.exists() {
+        // No config yet → fall back to GITHUB_TOKEN if present. The user
+        // hasn't made an explicit choice yet so the legacy env behavior is
+        // the right default for first-run UX.
         let env_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
         return Ok(AppConfig {
             github_token: env_token,
+            github_token_explicitly_set: false,
             refresh_interval_ms: default_interval(),
             fetch_interval_ms: default_fetch_interval(),
             last_repo_path: None,
@@ -50,7 +61,10 @@ pub fn read_config() -> AppResult<AppConfig> {
     }
     let text = std::fs::read_to_string(&p).map_err(AppError::Io)?;
     let mut cfg: AppConfig = toml::from_str(&text)?;
-    if cfg.github_token.is_empty() {
+    // Env fallback only fires when the user has NOT explicitly set the token
+    // via Settings. This lets a user clear their token from the UI even when
+    // GITHUB_TOKEN is exported in their shell.
+    if cfg.github_token.is_empty() && !cfg.github_token_explicitly_set {
         if let Ok(t) = std::env::var("GITHUB_TOKEN") {
             cfg.github_token = t;
         }

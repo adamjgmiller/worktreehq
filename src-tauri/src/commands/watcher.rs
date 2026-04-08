@@ -31,7 +31,7 @@ pub fn start_watching(
         }
     }
 
-    let mut slot = state.0.lock().unwrap();
+    let mut slot = state.0.lock().unwrap_or_else(|p| p.into_inner());
     *slot = Some(watcher);
     let _ = app;
     Ok(())
@@ -39,7 +39,7 @@ pub fn start_watching(
 
 #[tauri::command]
 pub fn stop_watching(state: State<'_, WatcherState>) -> AppResult<()> {
-    let mut slot = state.0.lock().unwrap();
+    let mut slot = state.0.lock().unwrap_or_else(|p| p.into_inner());
     *slot = None;
     Ok(())
 }

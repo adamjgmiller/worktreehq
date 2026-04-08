@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   FileEdit,
@@ -39,6 +39,27 @@ export function WorktreeCard({
 }) {
   const presence = useRepoStore((s) => s.claudePresence.get(wt.path));
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // Close the action menu on outside click or Escape. Without this the menu
+  // sticks open until the user clicks the three-dot button again — and on
+  // a screen with multiple cards, every card can have its menu open at once.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointer = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
   const statusIcon = {
     clean: <Circle className="w-4 h-4 text-wt-clean" fill="currentColor" />,
     dirty: <FileEdit className="w-4 h-4 text-wt-dirty" />,
@@ -81,7 +102,7 @@ export function WorktreeCard({
           </span>
         )}
         {(onRemove || onPrune) && (
-          <div className="relative">
+          <div className="relative" ref={menuRef}>
             <button
               onClick={() => setMenuOpen((v) => !v)}
               className="p-1 rounded hover:bg-wt-border"

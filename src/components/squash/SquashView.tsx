@@ -8,6 +8,7 @@ import { Archive } from 'lucide-react';
 export function SquashView() {
   const commits = useRepoStore((s) => s.mainCommits);
   const mappings = useRepoStore((s) => s.squashMappings);
+  const tokenSet = useRepoStore((s) => s.githubTokenSet);
   const [selected, setSelected] = useState<string | null>(null);
   const mapBySha = new Map(mappings.map((m) => [m.squashCommitSha, m]));
 
@@ -17,7 +18,15 @@ export function SquashView() {
   const detail = selected ? mapBySha.get(selected) : null;
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full flex-col">
+      {!tokenSet && (
+        <div className="px-4 py-2 bg-wt-dirty/10 border-b border-wt-dirty/40 text-xs text-wt-dirty">
+          No GitHub token configured — squash archaeology relies on PR metadata
+          and will be empty for every commit. Add a token in Settings to enable
+          squash detection.
+        </div>
+      )}
+      <div className="flex flex-1 overflow-hidden">
       <div className="w-1/2 overflow-auto border-r border-wt-border">
         {commits.map((c) => {
           const m = mapBySha.get(c.sha);
@@ -53,6 +62,7 @@ export function SquashView() {
         ) : (
           <EmptyState title="Select a commit" hint="Click a squash commit to see archaeology." />
         )}
+      </div>
       </div>
     </div>
   );

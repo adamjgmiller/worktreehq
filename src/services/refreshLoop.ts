@@ -53,7 +53,12 @@ async function runRefreshOnce(): Promise<void> {
   } = useRepoStore.getState();
   if (!repo) return;
   setLoading(true);
-  setError(null);
+  // Note: do NOT setError(null) here. User-initiated mutations
+  // (createWorktree, removeWorktree, prune, etc.) report errors via the
+  // store, and clearing on every poll tick made those errors flash and
+  // disappear before the user could read them. Errors are now cleared only
+  // on a successful refresh (below) or by explicit user dismissal in the
+  // banner.
   try {
     // Remote owner/name is resolved once at bootstrap and stashed on
     // `repo`; no per-tick subprocess for it. countMainCommits is folded
@@ -121,6 +126,10 @@ async function runRefreshOnce(): Promise<void> {
     setSquashMappings(detect.mappings);
     setClaudePresence(presence);
     markRefreshed();
+    // Clear any prior pipeline error now that this tick succeeded. We don't
+    // clear at the START of the tick because user-action errors (set by
+    // WorktreesView etc.) need to survive across the next poll.
+    setError(null);
   } catch (e) {
     setError(e instanceof Error ? e.message : String(e));
   } finally {

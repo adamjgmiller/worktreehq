@@ -81,10 +81,19 @@ export function BranchesView() {
     for (const b of selectedBranches) {
       let localRejectedAsSquash = false;
       try {
-        if (mode === 'archive-and-delete' && b.hasLocal) {
-          await tagBranch(repo.path, b.name, archiveTagNameFor(b.name));
-        }
         if (deletesLocal && b.hasLocal) {
+          // Tag-then-delete: tag FIRST so the archive points at the live tip,
+          // but only if the branch actually looks deletable. For non-squash,
+          // non-merged branches we'd otherwise create an orphan archive tag
+          // (delete fails → tag remains pointing at a still-live branch).
+          // squash-merged branches are expected to fail -d and route to the
+          // force-delete follow-up dialog, so the tag IS desired in that case.
+          const shouldTag =
+            mode === 'archive-and-delete' &&
+            (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged');
+          if (shouldTag) {
+            await tagBranch(repo.path, b.name, archiveTagNameFor(b.name));
+          }
           try {
             // Never auto-force: git -d refuses unmerged branches and that's a feature.
             // Squash-merged rejections route to the force-delete follow-up dialog.
