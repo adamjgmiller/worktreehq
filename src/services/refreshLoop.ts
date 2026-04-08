@@ -107,8 +107,8 @@ async function runRefreshOnce(): Promise<void> {
     setSquashMappings(detect.mappings);
     setClaudePresence(presence);
     markRefreshed();
-  } catch (e: any) {
-    setError(e?.message ?? String(e));
+  } catch (e) {
+    setError(e instanceof Error ? e.message : String(e));
   } finally {
     setLoading(false);
   }
