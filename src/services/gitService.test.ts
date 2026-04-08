@@ -355,10 +355,11 @@ describe('listBranches sha-cache', () => {
     const callsAfterFirst = gitExecMock.mock.calls.length;
     await listBranches('/repo', 'main');
     const callsAfterSecond = gitExecMock.mock.calls.length;
-    // Second call still issues 2 for-each-ref calls (those aren't cached
-    // here — only per-branch ahead/behind+ancestor are). So the diff is
-    // exactly 2, with zero per-branch subprocess work.
-    expect(callsAfterSecond - callsAfterFirst).toBe(2);
+    // Second call still issues 2 for-each-ref calls plus the first-parent
+    // rev-list (none of those three are cached here — only per-branch
+    // ahead/behind+ancestor are). So the diff is exactly 3, with zero
+    // per-branch subprocess work.
+    expect(callsAfterSecond - callsAfterFirst).toBe(3);
   });
 
   it('does NOT cache transient subprocess failures', async () => {
@@ -406,14 +407,15 @@ describe('listBranches sha-cache', () => {
     // Second call with the same shas. main's per-branch probes were cached
     // on the first call (succeeded), so they don't re-run. feat/a's per-branch
     // probes were NOT cached (rev-list threw), so they DO re-run. The diff
-    // should be exactly: 2 for-each-ref + 2 per-branch for feat/a = 4.
+    // should be exactly: 2 for-each-ref + 1 first-parent rev-list + 2 per-branch
+    // for feat/a = 5.
     //
     // If failures WERE cached (the bug this test guards against), feat/a
-    // would also be served from cache and the diff would be just 2.
+    // would also be served from cache and the diff would be just 3.
     await listBranches('/repo', 'main');
     const callsAfterSecond = gitExecMock.mock.calls.length;
 
-    expect(callsAfterSecond - callsAfterFirst).toBe(4);
+    expect(callsAfterSecond - callsAfterFirst).toBe(5);
 
     // Sanity: confirm one of the new calls is the feat/a rev-list retry.
     const featARevListCalls = gitExecMock.mock.calls.filter(
@@ -433,6 +435,72 @@ describe('listBranches sha-cache', () => {
     // main itself also gets a per-branch pair, but main and main share the same key
     // across both calls, so main's second call hits the cache.
     expect(gitExecMock.mock.calls.length - initialCalls).toBeGreaterThanOrEqual(4);
+  });
+
+  // Regression for the "MERGED on a brand-new empty branch" bug. Before the
+  // fix, listBranches would call `merge-base --is-ancestor branch main`, see
+  // exit 0, and tag the branch `merged-normally`. But that exit code is also
+  // returned when the branch tip is itself a commit on main's first-parent
+  // line — which is true for any branch that was just created from main and
+  // hasn't received any commits yet. The user-visible symptom: a worktree
+  // freshly checked out on a new branch immediately renders MERGED in the
+  // WorktreeCard pill, before any work has been done on it.
+  //
+  // The fix gates `merged-normally` on the branch tip NOT being in main's
+  // first-parent sha set. This test seeds the mock so `feat/empty` shares
+  // main's tip sha and verifies it comes back as `unmerged`.
+  it('does not mark a branch as merged when its tip sits on main first-parent', async () => {
+    // feat/empty has the same sha as main (e.g. just created via
+    // `git worktree add ../bug-fix -b feat/empty main`). feat/real has
+    // committed work, sits off main's first-parent line, AND is an ancestor
+    // of main (i.e. it was merge-merged for real).
+    gitExecMock.mockImplementation(async (_repo: string, args: string[]) => {
+      if (args[0] === 'for-each-ref' && args.includes('refs/heads')) {
+        return {
+          stdout:
+            'main\tmainsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>\n' +
+            'feat/empty\tmainsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>\n' +
+            'feat/real\trealsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args[0] === 'for-each-ref' && args.includes('refs/remotes')) {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      // The new first-parent rev-list call: `rev-list main --first-parent`.
+      // No --left-right, no --count — just the bare ref. mainsha is the only
+      // first-parent commit; realsha was brought in via a merge so it is NOT
+      // in this set even though it IS an ancestor of main.
+      if (
+        args[0] === 'rev-list' &&
+        args[1] === 'main' &&
+        args.includes('--first-parent') &&
+        !args.includes('--count') &&
+        !args.includes('--left-right')
+      ) {
+        return { stdout: 'mainsha\nprevsha\nolder\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'rev-list') {
+        // Per-branch ahead/behind probe. Both branches have 0 ahead — the
+        // empty one trivially, the real one because all its commits already
+        // landed on main via the merge.
+        return { stdout: '0\t0\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'merge-base') {
+        // Both feat/empty and feat/real are ancestors of main; the bug was
+        // treating both as merged. With the fix, feat/empty is excluded
+        // because its tip (mainsha) is in main's first-parent set.
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await listBranches('/repo', 'main');
+    const empty = result.find((b) => b.name === 'feat/empty');
+    const real = result.find((b) => b.name === 'feat/real');
+    expect(empty?.mergeStatus).toBe('unmerged');
+    expect(real?.mergeStatus).toBe('merged-normally');
   });
 });
 

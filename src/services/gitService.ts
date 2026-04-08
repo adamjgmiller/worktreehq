@@ -410,6 +410,32 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
   // ahead/behind relative to main is potentially stale and must be recomputed.
   const mainSha = branches.get(defaultBranch)?.lastCommitSha ?? '';
 
+  // Build the set of first-parent shas on the default branch. We need this to
+  // distinguish "branch tip is just a snapshot of main's history" from "branch
+  // was merge-merged into main", because `merge-base --is-ancestor` returns
+  // true for BOTH cases and the bare check would mis-tag the former.
+  //
+  // Concretely, three things make `is-ancestor` return true:
+  //   (a) branch tip == main's tip, or sits on main's first-parent line at
+  //       some earlier commit (the branch literally has no commits of its own,
+  //       so there's nothing to merge — calling it MERGED in the UI is wrong
+  //       because the user hasn't done any work on it yet)
+  //   (b) branch tip is the second parent of a merge commit on main (a real
+  //       merge-merged branch — this IS the case `merged-normally` is for)
+  //   (c) branch was squash-merged (squashDetector handles this separately)
+  //
+  // The set includes case (a) and excludes case (b), so we treat is-ancestor
+  // as proof of merge ONLY when the branch tip is NOT in the set. The set is
+  // computed once per refresh from a single rev-list call rather than probed
+  // per-branch. The first-parent chain is fully determined by main's tip, so
+  // the per-branch cache key (which already includes mainSha) stays valid.
+  const firstParentRaw = await tryRun(repo, [
+    'rev-list',
+    defaultBranch,
+    '--first-parent',
+  ]);
+  const mainFirstParentShas = new Set(firstParentRaw.split('\n').filter(Boolean));
+
   // ahead/behind vs default + merged check, in parallel — cached by
   // (branch sha, main sha, ref) so the steady-state refresh skips the
   // subprocess pair entirely when nothing has moved.
@@ -458,7 +484,14 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
       // don't cache it.
       const mergeBaseSucceeded =
         mergeResult !== null && (mergeResult.code === 0 || mergeResult.code === 1);
-      const merged = mergeResult?.code === 0;
+      // Only treat is-ancestor as "merged" when the branch tip is NOT itself a
+      // first-parent commit on main. See the mainFirstParentShas comment above
+      // for the full rationale — without this guard, an empty branch freshly
+      // created from main (or a branch that's just lagging behind main on the
+      // first-parent line) gets mis-tagged `merged-normally` and renders as
+      // MERGED in the WorktreeCard pill before any work has been done on it.
+      const merged =
+        mergeResult?.code === 0 && !mainFirstParentShas.has(b.lastCommitSha);
       b.aheadOfMain = aheadOfMain;
       b.behindMain = behindMain;
       if (merged) b.mergeStatus = 'merged-normally';
