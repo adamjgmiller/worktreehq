@@ -37,6 +37,27 @@ export async function readClaudeState(
   });
 }
 
+// Reads the first human-typed prompt from the worktree's oldest Claude
+// session JSONL. Used by the notepad autofill on first mount of an empty,
+// never-touched notepad. Returns null when there's no Claude session for the
+// worktree, no qualifying user record in the first ~200 lines of any
+// session, or the bridge isn't available — all benign cases that just leave
+// the notepad empty.
+export async function readClaudeFirstPrompt(
+  worktreePath: string,
+  maxChars: number,
+): Promise<string | null> {
+  try {
+    const result = await invoke<string | null>('read_claude_first_prompt', {
+      worktreePath,
+      maxChars,
+    });
+    return result ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Plain filesystem existence check. Used to probe in-progress-operation marker files
 // (MERGE_HEAD, rebase-merge/, …) and the on-disk PR cache file.
 export async function pathExists(path: string): Promise<boolean> {
