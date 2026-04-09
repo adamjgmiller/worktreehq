@@ -5,7 +5,13 @@ import { WorktreeCard } from './WorktreeCard';
 import { EmptyState } from '../common/EmptyState';
 import { CreateWorktreeDialog, type CreateWorktreeValue } from './CreateWorktreeDialog';
 import { RemoveWorktreeDialog } from './RemoveWorktreeDialog';
-import { createWorktree, removeWorktree, pruneWorktrees } from '../../services/gitService';
+import {
+  createWorktree,
+  removeWorktree,
+  pruneWorktrees,
+  deleteLocalBranch,
+  deleteRemoteBranch,
+} from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
 import { pickDirectory } from '../../services/repoSelect';
 import type { Worktree } from '../../types';
@@ -33,11 +39,35 @@ export function WorktreesView() {
     setRemoveTarget(wt);
   }
 
-  async function handleConfirmRemove(opts: { force: boolean }) {
+  async function handleConfirmRemove(opts: {
+    force: boolean;
+    cleanupBranches: boolean;
+  }) {
     if (!repo || !removeTarget) return;
     // Throws on failure so the dialog's local error path can render the
     // git stderr inline. The dialog clears its busy state on the throw.
     await removeWorktree(repo.path, removeTarget.path, opts.force);
+    if (opts.cleanupBranches) {
+      // Look up the Branch record fresh so we only attempt deletes for refs
+      // that actually exist — avoids a confusing "remote ref does not
+      // exist" error when only the local branch is around (or vice versa).
+      const branch = branches.find((b) => b.name === removeTarget.branch);
+      if (branch && branch.name !== repo.defaultBranch) {
+        // Local first: if the remote delete succeeds but the local one
+        // fails, the user is left with an orphaned local ref that's
+        // harder to explain than the reverse.
+        if (branch.hasLocal) {
+          // Force (-D): the worktree was just removed and a clean worktree
+          // for a squash-merged branch still looks "unmerged" to `git
+          // branch -d`, which would reject the delete. The whole point of
+          // this checkbox is to clean those up.
+          await deleteLocalBranch(repo.path, branch.name, true);
+        }
+        if (branch.hasRemote) {
+          await deleteRemoteBranch(repo.path, 'origin', branch.name);
+        }
+      }
+    }
     setRemoveTarget(null);
     await refreshOnce({ userInitiated: true });
   }
@@ -129,13 +159,19 @@ export function WorktreesView() {
           onPickDirectory={pickDirectory}
         />
       )}
-      {removeTarget && (
-        <RemoveWorktreeDialog
-          worktree={removeTarget}
-          onCancel={() => setRemoveTarget(null)}
-          onConfirm={handleConfirmRemove}
-        />
-      )}
+      {removeTarget && (() => {
+        const branch = branches.find((b) => b.name === removeTarget.branch);
+        return (
+          <RemoveWorktreeDialog
+            worktree={removeTarget}
+            hasLocalBranch={branch?.hasLocal ?? false}
+            hasRemoteBranch={branch?.hasRemote ?? false}
+            isDefaultBranch={removeTarget.branch === repo?.defaultBranch}
+            onCancel={() => setRemoveTarget(null)}
+            onConfirm={handleConfirmRemove}
+          />
+        );
+      })()}
     </div>
   );
 }
