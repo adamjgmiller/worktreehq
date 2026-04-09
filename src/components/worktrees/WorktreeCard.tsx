@@ -305,19 +305,19 @@ export function WorktreeCard({
           </div>
         </Tooltip>
       </div>
-      <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+      <div className="grid grid-cols-3 gap-2 text-xs mb-3">
         <Stat label="untracked" value={wt.untrackedCount} />
         <Stat label="modified" value={wt.modifiedCount} />
         <Stat label="staged" value={wt.stagedCount} />
         <Stat label="stashes" value={wt.stashCount} />
-        <Stat label="ahead / behind" value={aheadBehind(wt.ahead, wt.behind)} />
+        <Stat label="vs main" value={aheadBehind(wt.ahead, wt.behind)} />
         <Stat label="conflicts" value={wt.hasConflicts ? 'yes' : 'no'} />
       </div>
       <LastCommitFooter lastCommit={wt.lastCommit} />
+      <Notepad worktreePath={wt.path} />
       {presence && presence.inactiveSessions.length > 0 && (
         <PastSessionsList worktreePath={wt.path} sessions={presence.inactiveSessions} />
       )}
-      <Notepad worktreePath={wt.path} />
     </motion.div>
   );
 }

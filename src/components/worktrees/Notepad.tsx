@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { readNotepad, writeNotepad } from '../../services/notepadService';
+import {
+  computeNotepadAutofill,
+  readNotepad,
+  writeNotepad,
+} from '../../services/notepadService';
+import { useRepoStore } from '../../store/useRepoStore';
 
 const SAVE_DEBOUNCE_MS = 400;
 
@@ -20,7 +25,10 @@ export function Notepad({ worktreePath }: { worktreePath: string }) {
   const latestRef = useRef('');
 
   // Initial load. Guard against clobbering text the user already started
-  // typing before the read resolved.
+  // typing before the read resolved. Autofill is NOT inline here — it
+  // lives in a separate refresh-tick effect below so a worktree opened
+  // before its Claude session has typed a first prompt still gets seeded
+  // a few seconds later when the next refresh tick fires.
   useEffect(() => {
     let cancelled = false;
     readNotepad(worktreePath).then((text) => {
@@ -35,6 +43,65 @@ export function Notepad({ worktreePath }: { worktreePath: string }) {
       cancelled = true;
     };
   }, [worktreePath]);
+
+  // Autofill: re-checked on every successful refresh tick while the notepad
+  // is still empty AND nothing is in flight. This handles the common case
+  // where the user creates a worktree, the card mounts immediately, the
+  // user then types their first prompt to claude — and we want the next
+  // 15s poll to discover that prompt and seed the notepad.
+  //
+  // The touched flag inside computeNotepadAutofill is what makes this safe
+  // to call repeatedly: once any write succeeds (autofill, manual edit, or
+  // manual clear-to-empty) the path is locked out forever and re-checks
+  // become no-ops. So this effect is self-terminating without needing its
+  // own "did we already try" tracking.
+  //
+  // We subscribe to lastRefresh as a primitive selector — Zustand only
+  // re-renders this component when the timestamp actually changes, not on
+  // every store mutation.
+  const lastRefresh = useRepoStore((s) => s.lastRefresh);
+  useEffect(() => {
+    // Wait for the initial load to settle. Until `loaded` flips, latestRef
+    // still holds the default '' from useState, NOT the persisted notepad
+    // value, and we'd race with the load effect.
+    if (!loaded) return;
+    // Bail if anything is in flight or the notepad already has content.
+    // Read latestRef rather than `value` because `value` is captured at
+    // effect-schedule time and can lag behind the most recent keystroke.
+    if (latestRef.current !== '' || dirtyRef.current || timerRef.current != null) {
+      return;
+    }
+
+    let cancelled = false;
+    computeNotepadAutofill(worktreePath)
+      .then((seed) => {
+        // Re-check guards after the async hop. The user could have started
+        // typing during the autofill fetch, in which case we drop the
+        // seed on the floor rather than clobbering input.
+        if (cancelled || !seed) return;
+        if (latestRef.current !== '' || dirtyRef.current) return;
+        setValue(seed);
+        latestRef.current = seed;
+        // Persisting is what sets the touched flag in notepads.json, which
+        // prevents this autofill from firing again on subsequent ticks
+        // (or on a future mount). System-driven write — bypass the
+        // scheduleSave/flush UI machinery so 'saving…' doesn't flash.
+        writeNotepad(worktreePath, seed).catch(() => {
+          // Persist failure is non-fatal: the seed stays on screen, the
+          // user can edit normally. The touched flag won't be set, so the
+          // next refresh tick would re-attempt — acceptable for a disk-
+          // full / permissions edge case.
+        });
+      })
+      .catch(() => {
+        // Any error in the autofill path is purely cosmetic — leave the
+        // notepad empty and wait for the next tick.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [worktreePath, lastRefresh, loaded]);
 
   // Flush any pending save on unmount (e.g. worktree removed, app closing).
   useEffect(() => {
@@ -112,7 +179,7 @@ export function Notepad({ worktreePath }: { worktreePath: string }) {
         }}
         onBlur={flush}
         placeholder="Notes, todos, scratchpad…"
-        rows={3}
+        rows={5}
         spellCheck={false}
         aria-label="Worktree notepad"
         className="w-full resize-y bg-wt-bg/60 border border-wt-border rounded px-2 py-1.5 text-xs text-neutral-100 placeholder:text-neutral-600 focus:outline-none focus:border-wt-info"

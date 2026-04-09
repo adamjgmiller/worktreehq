@@ -1,3 +1,4 @@
+pub mod claude_first_prompt;
 pub mod claude_state;
 pub mod config;
 pub mod fs_probe;
