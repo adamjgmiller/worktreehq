@@ -8,19 +8,33 @@ import type { Worktree } from '../../types';
 // the worktree branch name as confirmation.
 export function RemoveWorktreeDialog({
   worktree,
+  hasLocalBranch,
+  hasRemoteBranch,
+  isDefaultBranch,
   onCancel,
   onConfirm,
 }: {
   worktree: Worktree;
+  hasLocalBranch: boolean;
+  hasRemoteBranch: boolean;
+  isDefaultBranch: boolean;
   onCancel: () => void;
   // The dialog reports whether the user wanted to force; the parent runs
   // the actual removeWorktree call so its loading/error state lives in
   // the parent's normal handlers.
-  onConfirm: (opts: { force: boolean }) => Promise<void>;
+  onConfirm: (opts: { force: boolean; cleanupBranches: boolean }) => Promise<void>;
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [typed, setTyped] = useState('');
+  // Only offered on the clean path — force-removing a dirty worktree is
+  // already a big enough decision to not bundle a branch-delete into it.
+  // Default checked: the whole reason this app exists is that squash-merged
+  // branches pile up, and a clean worktree for a merged branch is the most
+  // common delete target.
+  const canCleanup =
+    !isDefaultBranch && (hasLocalBranch || hasRemoteBranch);
+  const [cleanupBranches, setCleanupBranches] = useState(canCleanup);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
 
   const dirty =
@@ -48,7 +62,10 @@ export function RemoveWorktreeDialog({
     setSubmitting(true);
     setError(null);
     try {
-      await onConfirm({ force: requiresForce });
+      await onConfirm({
+        force: requiresForce,
+        cleanupBranches: !requiresForce && cleanupBranches,
+      });
     } catch (e: any) {
       setError(e?.message ?? String(e));
       setSubmitting(false);
@@ -107,8 +124,39 @@ export function RemoveWorktreeDialog({
           </div>
         ) : (
           <div className="bg-wt-clean/10 border border-wt-clean/40 rounded p-3 mb-3 text-xs text-neutral-300">
-            Worktree is clean. The branch ref will be preserved.
+            Worktree is clean.{' '}
+            {canCleanup
+              ? 'You can also delete its branch below.'
+              : isDefaultBranch
+              ? 'The default branch ref will be preserved.'
+              : 'The branch ref will be preserved.'}
           </div>
+        )}
+        {!requiresForce && canCleanup && (
+          <label className="flex items-start gap-2 mb-3 text-xs text-neutral-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={cleanupBranches}
+              onChange={(e) => setCleanupBranches(e.target.checked)}
+              disabled={submitting}
+              className="mt-0.5"
+            />
+            <span>
+              Also delete{' '}
+              {hasLocalBranch && hasRemoteBranch
+                ? 'local and remote'
+                : hasLocalBranch
+                ? 'local'
+                : 'remote'}{' '}
+              branch <span className="font-mono">{worktree.branch}</span>
+              {hasRemoteBranch && (
+                <span className="text-neutral-500">
+                  {' '}
+                  (pushes <span className="font-mono">--delete</span> to origin)
+                </span>
+              )}
+            </span>
+          </label>
         )}
         {requiresForce && (
           <div className="mb-3">
