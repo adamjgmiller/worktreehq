@@ -252,7 +252,7 @@ export function WorktreeCard({
           <div className="relative" ref={menuRef}>
             <button
               onClick={() => setMenuOpen((v) => !v)}
-              className="p-1 rounded hover:bg-wt-border"
+              className="p-1 -mt-0.5 rounded hover:bg-wt-border"
               aria-label="worktree actions"
             >
               <MoreVertical className="w-4 h-4 text-neutral-400" />
@@ -386,7 +386,7 @@ function OrphanedCard({
           <Tooltip label="Remove the worktree entry from git's bookkeeping">
             <button
               onClick={() => onRemove(wt)}
-              className="p-1 rounded hover:bg-wt-border"
+              className="p-1 -mt-0.5 rounded hover:bg-wt-border"
               aria-label="remove orphaned worktree"
             >
               <MoreVertical className="w-4 h-4 text-neutral-400" />
@@ -538,7 +538,7 @@ function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
   return (
     <Tooltip label={label}>
       <span
-        className={`relative inline-flex items-center ${colorClass} ${
+        className={`relative inline-flex items-center mt-0.5 ${colorClass} ${
           isMultiLive ? 'animate-pulse' : ''
         }`}
       >
