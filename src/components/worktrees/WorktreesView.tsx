@@ -44,9 +44,16 @@ export function WorktreesView() {
     cleanupBranches: boolean;
   }) {
     if (!repo || !removeTarget) return;
-    // Throws on failure so the dialog's local error path can render the
-    // git stderr inline. The dialog clears its busy state on the throw.
+    // Phase 1: remove the worktree. Throws on failure so the dialog's local
+    // error path can render the git stderr inline — the worktree still
+    // exists and the user might want to retry from the same modal.
     await removeWorktree(repo.path, removeTarget.path, opts.force);
+    // Phase 2: branch cleanup. Errors here are surfaced via the store error
+    // banner, NOT re-thrown: the worktree removal already succeeded, so
+    // keeping the modal open would misleadingly imply the whole op rolled
+    // back. We still want the user to see what failed, but next to the
+    // (now empty) worktree slot.
+    const cleanupErrors: string[] = [];
     if (opts.cleanupBranches) {
       // Look up the Branch record fresh so we only attempt deletes for refs
       // that actually exist — avoids a confusing "remote ref does not
@@ -57,18 +64,38 @@ export function WorktreesView() {
         // fails, the user is left with an orphaned local ref that's
         // harder to explain than the reverse.
         if (branch.hasLocal) {
-          // Force (-D): the worktree was just removed and a clean worktree
-          // for a squash-merged branch still looks "unmerged" to `git
-          // branch -d`, which would reject the delete. The whole point of
-          // this checkbox is to clean those up.
-          await deleteLocalBranch(repo.path, branch.name, true);
+          try {
+            // Force (-D): the worktree was just removed and a clean worktree
+            // for a squash-merged branch still looks "unmerged" to `git
+            // branch -d`, which would reject the delete. The whole point of
+            // this checkbox is to clean those up.
+            await deleteLocalBranch(repo.path, branch.name, true);
+          } catch (e: any) {
+            cleanupErrors.push(`local branch: ${e?.message ?? String(e)}`);
+          }
         }
         if (branch.hasRemote) {
-          await deleteRemoteBranch(repo.path, 'origin', branch.name);
+          try {
+            await deleteRemoteBranch(repo.path, 'origin', branch.name);
+          } catch (e: any) {
+            // Tolerate "remote ref does not exist": GitHub's auto-delete-
+            // after-merge setting can remove the remote branch before our
+            // 15s poll refreshes hasRemote, so the user's intent ("make the
+            // remote branch not exist") is already satisfied.
+            const msg = e?.message ?? String(e);
+            if (!/remote ref does not exist|unable to delete.*remote ref/i.test(msg)) {
+              cleanupErrors.push(`remote branch: ${msg}`);
+            }
+          }
         }
       }
     }
     setRemoveTarget(null);
+    if (cleanupErrors.length > 0) {
+      setError(
+        `Worktree removed, but branch cleanup failed — ${cleanupErrors.join('; ')}`,
+      );
+    }
     await refreshOnce({ userInitiated: true });
   }
 
