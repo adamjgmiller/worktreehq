@@ -18,7 +18,7 @@ import {
   ArrowDownToLine,
   Loader2,
 } from 'lucide-react';
-import type { ClaudePresence, Worktree, InProgressOp } from '../../types';
+import type { ClaudePresence, LastCommit, Worktree, InProgressOp } from '../../types';
 import { worktreeStatusClass } from '../../lib/colors';
 import { branchDisposition, type BranchDispositionAction } from '../../lib/branchDisposition';
 import { relativeTime, shortSha, aheadBehind, basename } from '../../lib/format';
@@ -313,16 +313,7 @@ export function WorktreeCard({
         <Stat label="ahead / behind" value={aheadBehind(wt.ahead, wt.behind)} />
         <Stat label="conflicts" value={wt.hasConflicts ? 'yes' : 'no'} />
       </div>
-      <div className="text-xs text-neutral-400 border-t border-wt-border pt-3">
-        <div className="truncate" title={wt.lastCommit.message}>
-          <span className="font-mono text-neutral-500">{shortSha(wt.lastCommit.sha)}</span>{' '}
-          {wt.lastCommit.message || '(no commits)'}
-        </div>
-        <div className="text-neutral-600 mt-1 flex items-center gap-1">
-          <GitBranch className="w-3 h-3" />
-          {wt.lastCommit.author} · {relativeTime(wt.lastCommit.date)}
-        </div>
-      </div>
+      <LastCommitFooter lastCommit={wt.lastCommit} />
       {presence && presence.inactiveSessions.length > 0 && (
         <PastSessionsList worktreePath={wt.path} sessions={presence.inactiveSessions} />
       )}
@@ -550,6 +541,57 @@ function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
         )}
       </span>
     </Tooltip>
+  );
+}
+
+// Default-collapsed last-commit footer. Mirrors the chevron-disclosure shape
+// of `PastSessionsList` so the two collapsible card sections feel like
+// siblings. Collapsed state shows only the relative commit time — that's the
+// single highest-signal field for "is this worktree forgotten?" and earns
+// its place in the tiny always-visible row. The full SHA, subject, and
+// author are tucked behind the disclosure for the rare moments you actually
+// want to identify the commit (detached HEAD diagnosis, post-rebase
+// orientation, "did my last commit land?").
+function LastCommitFooter({ lastCommit }: { lastCommit: LastCommit }) {
+  const [open, setOpen] = useState(false);
+  const when = relativeTime(lastCommit.date);
+  return (
+    <div className="border-t border-wt-border pt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-1 text-[0.6875rem] text-neutral-500 hover:text-neutral-300 transition-colors"
+        aria-expanded={open}
+      >
+        <ChevronRight
+          className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`}
+        />
+        <GitCommit className="w-3 h-3" />
+        <span className="uppercase tracking-wide">last commit · {when}</span>
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            layout
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="overflow-hidden mt-2 text-xs text-neutral-400"
+          >
+            <div className="truncate" title={lastCommit.message}>
+              <span className="font-mono text-neutral-500">
+                {shortSha(lastCommit.sha)}
+              </span>{' '}
+              {lastCommit.message || '(no commits)'}
+            </div>
+            <div className="text-neutral-600 mt-1">
+              {lastCommit.author ? `${lastCommit.author} · ${when}` : when}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 
