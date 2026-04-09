@@ -21,7 +21,7 @@ import {
 import type { ClaudePresence, Worktree, InProgressOp } from '../../types';
 import { worktreeStatusClass } from '../../lib/colors';
 import { branchDisposition, type BranchDispositionAction } from '../../lib/branchDisposition';
-import { relativeTime, shortSha, aheadBehind } from '../../lib/format';
+import { relativeTime, shortSha, aheadBehind, basename } from '../../lib/format';
 import { resumeCommand } from '../../services/claudeAwarenessService';
 import { pullFastForward } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
@@ -154,8 +154,27 @@ export function WorktreeCard({
           <div className="mt-0.5">{statusIconEntry.icon}</div>
         </Tooltip>
         <div className="flex-1 min-w-0">
-          <div className="font-mono text-sm text-neutral-100 truncate" title={wt.branch}>
-            {wt.branch}
+          {/*
+            Worktree directory name owns the primary slot — this app is all
+            about tracking worktrees, so the folder name is the first-class
+            identifier. The branch follows one step down in size and luminance
+            so both stay legible at a glance but the visual hierarchy matches
+            the mental model (worktree = "where I am", branch = "what I'm
+            working on"). Full path lives in the `title` attr for hover
+            discoverability and still renders in its own row below.
+          */}
+          <div
+            className="font-mono text-sm text-neutral-100 truncate"
+            title={wt.path}
+          >
+            {basename(wt.path)}
+          </div>
+          <div
+            className="font-mono text-xs text-neutral-300 mt-0.5 flex items-center gap-1 min-w-0"
+            title={wt.branch}
+          >
+            <GitBranch className="w-3 h-3 flex-shrink-0" />
+            <span className="truncate">{wt.branch}</span>
           </div>
           <div
             className="font-mono text-[0.6875rem] text-neutral-500 truncate"
@@ -342,8 +361,22 @@ function OrphanedCard({
           </div>
         </Tooltip>
         <div className="flex-1 min-w-0">
-          <div className="font-mono text-sm text-neutral-100 truncate" title={wt.branch}>
-            {wt.branch}
+          {/* Mirror the regular WorktreeCard hierarchy: basename primary,
+              branch secondary. For an orphan this is even more load-bearing —
+              the directory is gone, so the basename is the user's main cue
+              for "which missing folder is this?". */}
+          <div
+            className="font-mono text-sm text-neutral-100 truncate"
+            title={wt.path}
+          >
+            {basename(wt.path)}
+          </div>
+          <div
+            className="font-mono text-xs text-neutral-300 mt-0.5 flex items-center gap-1 min-w-0"
+            title={wt.branch}
+          >
+            <GitBranch className="w-3 h-3 flex-shrink-0" />
+            <span className="truncate">{wt.branch}</span>
           </div>
           <div className="font-mono text-[0.6875rem] text-wt-dirty uppercase tracking-wide mt-0.5">
             orphaned worktree
