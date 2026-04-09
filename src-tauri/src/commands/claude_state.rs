@@ -243,13 +243,28 @@ fn read_projects(claude: &Path) -> Vec<ProjectDir> {
 // recent JSONL in that worktree (which is the one a single-claude user is
 // almost always on, since `claude` rotates session ids per launch).
 //
-// macOS path: one `lsof -nP -c claude -d cwd -Fpn` subprocess. lsof's `-F`
-// emits one record per line, prefixed with a single field-id char (`p` for
-// pid, `n` for filename). Parsed in `parse_lsof_pn_output` (a pure function
-// for testability).
+// Two historical landmines shaped the current implementation:
 //
-// Linux path: walk /proc/*/comm, find entries equal to "claude", read
-// /proc/<pid>/cwd as a symlink. Multiple syscalls but no subprocess.
+//   1. The `claude` CLI execs a version-suffixed binary at
+//      `~/.local/share/claude/versions/<version>`, so the kernel's COMM /
+//      executable basename for a running session is e.g. `2.1.97`, NOT
+//      `claude`. Anything that filters on COMM (`lsof -c claude`, Linux
+//      `/proc/<pid>/comm`) matches zero processes. We have to look at
+//      argv[0] (what the wrapper set) instead.
+//
+//   2. lsof's `-c` and `-d` filters are joined with OR, not AND, unless
+//      you pass `-a`. `lsof -c claude -d cwd` means "files whose command
+//      starts with claude OR whose fd is cwd" — which, combined with (1),
+//      silently returned the cwd of every process on the system. We now
+//      always pass `-a` and only ever use `-p <pids>` (never `-c`) as the
+//      second filter.
+//
+// macOS path: one `ps -axo pid=,command=` to enumerate pids whose argv[0]
+// basename is "claude", then one `lsof -nP -a -p <pid,...> -d cwd -Fn` to
+// get their cwds.
+//
+// Linux path: walk /proc/<pid>/cmdline (null-separated argv), filter on
+// argv[0] basename == "claude", read /proc/<pid>/cwd as a symlink.
 //
 // Windows: returns empty Vec. The Claude Code user base is overwhelmingly
 // macOS/Linux and we'd need a different IPC mechanism (e.g. `tasklist` +
@@ -285,23 +300,82 @@ pub(crate) fn parse_lsof_pn_output(text: &str) -> Vec<String> {
     out
 }
 
+/// Parse the output of `ps -axo pid=,command=` and return the pids whose
+/// argv[0] basename is exactly "claude". The `=` suffix on the ps format
+/// suppresses headers and trailing whitespace padding, so every non-empty
+/// line is `<pid> <command-with-args>`.
+///
+/// We match on argv[0] (what the `claude` wrapper script sets) rather than
+/// the executable basename, because the wrapper execs
+/// `~/.local/share/claude/versions/<version>` — so the kernel-visible
+/// process name is the version string, not "claude". See the module
+/// comment for the full story.
+pub(crate) fn parse_ps_claude_pids(text: &str) -> Vec<String> {
+    let mut pids: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if line.is_empty() {
+            continue;
+        }
+        // Split into `<pid>` and `<rest>`.
+        let Some(space_idx) = line.find(char::is_whitespace) else {
+            continue;
+        };
+        let (pid, rest) = line.split_at(space_idx);
+        if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        // argv[0] is the first whitespace-delimited token of the command.
+        // We don't try to handle quoted-with-spaces argv[0] — `claude` is
+        // never invoked that way in practice, and `ps` doesn't quote for us.
+        let argv0 = rest.trim_start().split_whitespace().next().unwrap_or("");
+        if argv0.is_empty() {
+            continue;
+        }
+        // Compare the basename — argv[0] may be an absolute path
+        // (`/usr/local/bin/claude`), a tilde-expanded one, or bare `claude`.
+        let basename = argv0.rsplit('/').next().unwrap_or(argv0);
+        if basename == "claude" {
+            pids.push(pid.to_string());
+        }
+    }
+    pids
+}
+
 #[cfg(target_os = "macos")]
 fn scan_live_claude_cwds() -> Vec<String> {
-    // `-n` skips DNS lookups (faster), `-P` skips port name resolution,
-    // `-c claude` filters processes whose name starts with "claude", `-d cwd`
-    // restricts file descriptors to the cwd entry, and `-Fpn` emits machine-
-    // readable records with pid + path fields. The whole thing typically
-    // returns in well under 50ms even with several claude processes running.
+    // Step 1: enumerate claude processes via ps. We use `-axo pid=,command=`
+    // because `command=` shows the full argv (including argv[0] as the
+    // wrapper set it) rather than the kernel's COMM field, which would be
+    // the version string (e.g. "2.1.97") and match nothing.
+    let ps_output = match Command::new("ps").args(["-axo", "pid=,command="]).output() {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    let ps_text = String::from_utf8_lossy(&ps_output.stdout);
+    let pids = parse_ps_claude_pids(&ps_text);
+    if pids.is_empty() {
+        return Vec::new();
+    }
+
+    // Step 2: ask lsof for the cwds of exactly those pids. CRITICAL details:
+    //   * `-a` ANDs the filters together. Without it, lsof ORs `-p` and
+    //     `-d cwd`, effectively returning "these pids' files OR every
+    //     process's cwd" — i.e. the entire system's cwd table.
+    //   * `-p <comma-separated>` restricts to our claude pids.
+    //   * `-Fn` machine-readable output with filename (`n`) records. pid
+    //     (`p`) and fd (`f`) records are also emitted as part of the record
+    //     grouping; parse_lsof_pn_output already ignores those.
+    let pid_list = pids.join(",");
     let output = match Command::new("lsof")
-        .args(["-nP", "-c", "claude", "-d", "cwd", "-Fpn"])
+        .args(["-nP", "-a", "-p", &pid_list, "-d", "cwd", "-Fn"])
         .output()
     {
         Ok(o) => o,
         Err(_) => return Vec::new(),
     };
-    // lsof exits non-zero when no matching processes are found — that's not
-    // an error for us, just an empty result. So we don't gate on `success()`,
-    // we just parse whatever it printed (which will be empty stdout).
+    // lsof exits non-zero when there's nothing to report — that's not an
+    // error for us, just an empty result.
     let text = String::from_utf8_lossy(&output.stdout);
     parse_lsof_pn_output(&text)
 }
@@ -315,21 +389,35 @@ fn scan_live_claude_cwds() -> Vec<String> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        // /proc/<pid>/comm contains the process name (without args). We only
-        // want claude. Skip non-numeric dir names quickly.
+        // /proc/<pid> — skip non-numeric dir names quickly.
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
         if !name.bytes().all(|b| b.is_ascii_digit()) {
             continue;
         }
-        let comm = match fs::read_to_string(path.join("comm")) {
+        // /proc/<pid>/cmdline holds the full argv as NUL-separated records.
+        // We deliberately do NOT use /proc/<pid>/comm: comm is the kernel's
+        // COMM field, which is the executable basename and would be the
+        // version string (`2.1.97`) because the `claude` wrapper execs a
+        // version-suffixed binary. argv[0] is what the wrapper set and is
+        // the only place "claude" actually appears.
+        let cmdline = match fs::read(path.join("cmdline")) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if cmdline.is_empty() {
+            continue;
+        }
+        // argv[0] is everything up to the first NUL byte.
+        let argv0_end = cmdline.iter().position(|&b| b == 0).unwrap_or(cmdline.len());
+        let argv0 = match std::str::from_utf8(&cmdline[..argv0_end]) {
             Ok(s) => s,
             Err(_) => continue,
         };
-        if comm.trim() != "claude" {
+        let basename = argv0.rsplit('/').next().unwrap_or(argv0);
+        if basename != "claude" {
             continue;
         }
-        // /proc/<pid>/cwd is a symlink to the process's cwd. read_link
-        // returns the resolved target as a PathBuf.
+        // /proc/<pid>/cwd is a symlink to the process's cwd.
         let Ok(cwd) = fs::read_link(path.join("cwd")) else { continue };
         let Some(cwd_str) = cwd.to_str() else { continue };
         let owned = cwd_str.to_string();
@@ -493,5 +581,68 @@ mod tests {
         let raw = "garbage\np123\nfcwd\nnvalid\nmore garbage\n";
         let out = parse_lsof_pn_output(raw);
         assert_eq!(out, vec!["valid".to_string()]);
+    }
+
+    #[test]
+    fn parse_ps_claude_pids_matches_bare_argv0() {
+        // The most common shape: `ps -axo pid=,command=` with a bare
+        // `claude` argv[0] set by the wrapper script.
+        let raw = "\
+76093 claude --dangerously-skip-permissions --worktree claude-status-fix
+40734 /opt/homebrew/bin/python3 -m http.server
+12345 bash
+";
+        assert_eq!(parse_ps_claude_pids(raw), vec!["76093".to_string()]);
+    }
+
+    #[test]
+    fn parse_ps_claude_pids_matches_absolute_path_argv0() {
+        // Some shells rewrite argv[0] to the absolute executable path —
+        // the basename is still "claude" and that's what we key on.
+        let raw = "4242 /usr/local/bin/claude --foo\n999 /bin/bash\n";
+        assert_eq!(parse_ps_claude_pids(raw), vec!["4242".to_string()]);
+    }
+
+    #[test]
+    fn parse_ps_claude_pids_does_not_match_version_binary() {
+        // Regression test for the original bug: if someone ever starts the
+        // versioned binary directly (bypassing the wrapper), argv[0] is the
+        // version string, NOT "claude". We do NOT want to match that — it
+        // could be anything, and we'd rather silently miss than false-
+        // positive. Better mitigation is still: always launch via the
+        // wrapper so argv[0] == "claude".
+        let raw = "76093 /Users/adam/.local/share/claude/versions/2.1.97 --foo\n";
+        assert_eq!(parse_ps_claude_pids(raw), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_ps_claude_pids_does_not_match_substring() {
+        // `claude-code` or `claudewrap` should NOT be treated as claude.
+        // Matching substrings would re-introduce the over-match bug that
+        // motivated this whole change.
+        let raw = "1 claude-code --foo\n2 claudewrap\n3 /bin/claude-extras\n";
+        assert_eq!(parse_ps_claude_pids(raw), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_ps_claude_pids_skips_header_and_blank_lines() {
+        // ps with `=` headers shouldn't print a header, but defensive
+        // parsing against garbage lines costs nothing.
+        let raw = "\n   PID COMMAND\n\n76093 claude\n";
+        assert_eq!(parse_ps_claude_pids(raw), vec!["76093".to_string()]);
+    }
+
+    #[test]
+    fn parse_ps_claude_pids_handles_empty_input() {
+        assert_eq!(parse_ps_claude_pids(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_ps_claude_pids_collects_multiple() {
+        let raw = "1 claude\n2 /usr/bin/python\n3 /opt/bin/claude --foo\n";
+        assert_eq!(
+            parse_ps_claude_pids(raw),
+            vec!["1".to_string(), "3".to_string()]
+        );
     }
 }
