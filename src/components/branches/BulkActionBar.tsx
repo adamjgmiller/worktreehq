@@ -38,7 +38,7 @@ export function BulkActionBar({
         onClick={() => onAction('both')}
         className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-conflict/20 border border-wt-conflict/50 text-wt-conflict rounded hover:bg-wt-conflict/30"
       >
-        <Trash2 className="w-3.5 h-3.5" /> Delete both
+        <Trash2 className="w-3.5 h-3.5" /> Delete local + remote
       </button>
     </div>
   );
