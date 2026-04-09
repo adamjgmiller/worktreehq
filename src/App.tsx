@@ -167,7 +167,12 @@ export default function App() {
           .
         </div>
       )}
-      <div className="flex-1 overflow-hidden">
+      <div
+        id={`panel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`tab-${tab}`}
+        className="flex-1 overflow-hidden"
+      >
         {dataReady ? (
           <>
             {tab === 'worktrees' && <WorktreesView />}

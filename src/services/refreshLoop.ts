@@ -27,11 +27,19 @@ let fetchInFlight = false;
 
 // Single in-flight refresh promise. Callers that land during an active refresh
 // await the same work rather than kicking off a second one. Without this the
-// fetch ticker (~60s) and poll ticker (~5s) race each other, both hitting every
+// fetch ticker (~60s) and poll ticker (~15s) race each other, both hitting every
 // store setter and producing UI flicker. Also covers the re-entrancy case where
 // refreshOnce is called from both the poll tick and user-triggered paths
 // (RepoBar onClick, BranchesView post-delete).
 let refreshInFlight: Promise<void> | null = null;
+// True when a user-initiated refresh joined an in-flight refresh. The
+// in-flight one was started against pre-mutation state (or, during a repo
+// switch, against the OLD repo), so a user click after a delete or after
+// loadRepoAtPath needs a follow-up run to actually reflect the new state.
+// Set inside refreshOnce when dedupe collapses a userInitiated call onto an
+// existing in-flight, drained at the end of runRefreshOnce by re-entering
+// runRefreshOnce so the user sees fresh data on the same click.
+let pendingUserRefresh = false;
 
 export interface RefreshOptions {
   // When true, flips the store `userRefreshing` flag so the RepoBar spinner
@@ -84,12 +92,14 @@ async function runRefreshOnce(): Promise<void> {
 
     // Attach open PRs to branches. The REST list only populates isDraft; we
     // follow up with a GraphQL batch to fill in checksStatus / reviewDecision /
-    // mergeable so the BranchRow indicators work for open PRs too.
-    const openPRs = await listOpenPRsForBranches(
-      remote.owner ?? '',
-      remote.name ?? '',
-      branches.map((b) => b.name),
-    );
+    // mergeable so the BranchRow indicators work for open PRs too. Skip the
+    // call entirely when there's no resolvable GitHub remote — otherwise we'd
+    // round-trip a wasted 404 against /repos//pulls every refresh tick on
+    // non-github remotes.
+    const openPRs =
+      remote.owner && remote.name
+        ? await listOpenPRsForBranches(remote.owner, remote.name, branches.map((b) => b.name))
+        : new Map();
     if (remote.owner && remote.name && openPRs.size > 0) {
       const numbers = Array.from(openPRs.values()).map((pr) => pr.number);
       const enriched = await batchFetchPRs(remote.owner, remote.name, numbers);
@@ -152,9 +162,12 @@ async function runRefreshOnce(): Promise<void> {
 // to animate (button clicks, post-mutation refreshes) pass
 // `{ userInitiated: true }`; the automatic poll tick + watcher events do not.
 //
-// Note: if a user-initiated refresh lands on top of an in-flight background
-// refresh, we still flip the userRefreshing flag for the duration so the
-// click has a visible effect.
+// Dedupe semantics: when a user-initiated refresh joins an in-flight refresh,
+// we DON'T silently merge — the in-flight one was started against pre-mutation
+// state and would otherwise leave a freshly-deleted branch on screen for up to
+// the next poll interval. Instead we set `pendingUserRefresh` so the in-flight
+// run, on completion, kicks off a fresh runRefreshOnce against current state.
+// The returned promise resolves only after that follow-up has finished.
 export function refreshOnce(opts?: RefreshOptions): Promise<void> {
   const userInitiated = opts?.userInitiated === true;
   if (userInitiated) {
@@ -163,19 +176,40 @@ export function refreshOnce(opts?: RefreshOptions): Promise<void> {
   const existing = refreshInFlight;
   if (existing) {
     if (userInitiated) {
-      void existing.finally(() => {
+      pendingUserRefresh = true;
+      // Wait for the in-flight + the pending follow-up to drain before
+      // releasing the spinner.
+      const wait = existing.then(() => {
+        // The in-flight run will have triggered the follow-up by now via
+        // its finally hook below. Wait for whichever refresh is still in
+        // flight (could be the follow-up).
+        const next = refreshInFlight;
+        return next ?? Promise.resolve();
+      });
+      void wait.finally(() => {
         useRepoStore.getState().setUserRefreshing(false);
       });
+      return wait;
     }
     return existing;
   }
-  refreshInFlight = runRefreshOnce().finally(() => {
-    refreshInFlight = null;
-    if (userInitiated) {
-      useRepoStore.getState().setUserRefreshing(false);
-    }
-  });
-  return refreshInFlight;
+  const launch = (): Promise<void> => {
+    refreshInFlight = runRefreshOnce().finally(() => {
+      refreshInFlight = null;
+      // If a user-initiated refresh joined while we were running, drain
+      // the queue with a single follow-up run. We clear the flag BEFORE
+      // launching so a second user click during the follow-up gets its
+      // own queue slot.
+      if (pendingUserRefresh) {
+        pendingUserRefresh = false;
+        launch();
+      } else if (userInitiated) {
+        useRepoStore.getState().setUserRefreshing(false);
+      }
+    });
+    return refreshInFlight;
+  };
+  return launch();
 }
 
 export function startRefreshLoop(): void {
@@ -211,14 +245,40 @@ export function stopRefreshLoop(): void {
 // userInitiated flag also propagates to refreshOnce so the spinner animates.
 export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   if (fetchInFlight) return;
-  const { repo, setFetching } = useRepoStore.getState();
+  const { repo, setFetching, setError } = useRepoStore.getState();
   if (!repo) return;
   const userInitiated = opts?.userInitiated === true;
   fetchInFlight = true;
   setFetching(true);
+  let fetchFailed = false;
   try {
     const before = await snapshotRemoteRefs(repo.path);
-    await fetchAllPrune(repo.path);
+    try {
+      await fetchAllPrune(repo.path);
+    } catch (e) {
+      // Fetch failed (network, auth, hung subprocess timed out by git_exec,
+      // etc.). Surface user-initiated failures via the store error banner —
+      // previously the catch swallowed silently with a misleading "logged
+      // via refreshOnce" comment, but refreshOnce was inside the try and
+      // never reached on a failed fetch. Background tick failures stay
+      // quiet (we don't want a spinner-quiet poll loop spamming errors)
+      // but log to console so the failure is debuggable.
+      fetchFailed = true;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (userInitiated) {
+        setError(`Fetch failed: ${msg}`);
+      } else {
+        console.warn('[refreshLoop] background fetch failed:', msg);
+      }
+      // Even on a failed fetch, fall through to refreshOnce so the UI
+      // reflects whatever local state we already have. Without this a
+      // user click would leave the shimmer in place if the very first
+      // refresh of the session also coincided with a network failure.
+      if (userInitiated) {
+        await refreshOnce(opts);
+      }
+      return;
+    }
     const after = await snapshotRemoteRefs(repo.path);
     const refsChanged = !(before && after && before === after);
     if (!refsChanged && !userInitiated) {
@@ -244,8 +304,18 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     // and we want guaranteed visible feedback); trigger a refresh so the UI
     // reflects the new state.
     await refreshOnce(opts);
-  } catch {
-    /* best-effort: a failing fetch is logged via refreshOnce's own error path */
+  } catch (e) {
+    // Catches snapshotRemoteRefs failures and any unhandled error from the
+    // refresh chain. fetchAllPrune failures are caught above; this path
+    // covers everything else.
+    if (!fetchFailed) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (userInitiated) {
+        setError(`Fetch failed: ${msg}`);
+      } else {
+        console.warn('[refreshLoop] runFetchOnce error:', msg);
+      }
+    }
   } finally {
     setFetching(false);
     fetchInFlight = false;
@@ -272,6 +342,21 @@ export function startFetchLoop(): void {
 }
 
 export function stopFetchLoop(): void {
+  fetchRunning = false;
+  if (fetchTimer) clearTimeout(fetchTimer);
+  fetchTimer = null;
+}
+
+// Test-only: reset all module-level state between tests. Without this, a
+// failing test that leaves an unresolved refreshInFlight or a stuck
+// pendingUserRefresh poisons every test that follows in the same file.
+export function _resetRefreshLoopForTests(): void {
+  refreshInFlight = null;
+  pendingUserRefresh = false;
+  fetchInFlight = false;
+  running = false;
+  if (timer) clearTimeout(timer);
+  timer = null;
   fetchRunning = false;
   if (fetchTimer) clearTimeout(fetchTimer);
   fetchTimer = null;

@@ -4,14 +4,13 @@ import { initGithub } from '../../services/githubService';
 import { useRepoStore } from '../../store/useRepoStore';
 import { X } from 'lucide-react';
 
-interface AppConfigShape {
-  github_token: string;
-  github_token_explicitly_set?: boolean;
-  refresh_interval_ms: number;
-  fetch_interval_ms: number;
-  last_repo_path?: string | null;
-  zoom_level?: number;
-}
+// Loose shape — we read the full config object, spread it on save, and only
+// override the fields this modal owns. The rest (recent_repo_paths, zoom_level,
+// any future field) round-trips untouched. Previously this redeclared a narrow
+// set of fields and silently dropped recent_repo_paths on every save.
+type AppConfigShape = Record<string, unknown> & {
+  github_token?: string;
+};
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const setTokenPresent = useRepoStore((s) => s.setTokenPresent);
@@ -24,6 +23,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   // initial state and inadvertently wipe their working token.
   const [loaded, setLoaded] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  // Snapshot the full config when the modal opens. We keep it around so the
+  // save handler can spread untouched fields back into write_config —
+  // otherwise newly-added Rust config fields silently default to their
+  // serde defaults on every save (this was how recent_repo_paths got wiped).
+  const baseCfgRef = useRef<AppConfigShape | null>(null);
 
   // Re-fetch the current config every time the modal opens. The previous
   // version started with an empty string and silently overwrote the saved
@@ -38,7 +43,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       try {
         const cfg = await invoke<AppConfigShape>('read_config');
         if (cancelled) return;
-        setToken(cfg.github_token ?? '');
+        baseCfgRef.current = cfg;
+        setToken((cfg.github_token as string | undefined) ?? '');
         setLoaded(true);
       } catch (e: any) {
         if (cancelled) return;
@@ -75,21 +81,25 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     setSaving(true);
     setError(null);
     try {
-      const state = useRepoStore.getState();
-      // Always set github_token_explicitly_set: true on save. This makes
-      // explicit clears stick even when GITHUB_TOKEN is exported in the
-      // user's shell, and is harmless when the user is just updating the
-      // token because the value is also being written.
+      // Re-read the config right before the write so we pick up any changes
+      // (e.g. recent_repo_paths bumped by loadRepoAtPath while the modal was
+      // open). The cached snapshot in baseCfgRef is the fallback when the
+      // re-read fails.
+      let base: AppConfigShape;
+      try {
+        base = await invoke<AppConfigShape>('read_config');
+      } catch {
+        base = baseCfgRef.current ?? {};
+      }
+      // Spread the existing config and override only the fields this modal
+      // owns. Always set github_token_explicitly_set: true on save so an
+      // explicit clear sticks even when GITHUB_TOKEN is exported in the
+      // user's shell.
       await invoke('write_config', {
         cfg: {
+          ...base,
           github_token: token,
           github_token_explicitly_set: true,
-          refresh_interval_ms: state.refreshIntervalMs,
-          fetch_interval_ms: state.fetchIntervalMs,
-          last_repo_path: state.repo?.path ?? null,
-          // Preserve the user's zoom across settings saves. Without this, every
-          // token save would silently reset zoom to the Rust serde default.
-          zoom_level: state.zoomLevel,
         },
       });
       initGithub(token);

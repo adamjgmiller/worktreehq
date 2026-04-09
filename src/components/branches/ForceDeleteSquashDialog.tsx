@@ -1,46 +1,41 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Branch } from '../../types';
+import type { DeleteMode } from './ConfirmDeleteDialog';
 import { AlertTriangle, X } from 'lucide-react';
 
-export type DeleteMode = 'local' | 'remote' | 'both' | 'archive-and-delete';
+// Follow-up confirmation when git -d refused to delete a squash-merged branch
+// (git's perspective: "not fully merged"). This is a destructive flow — it
+// runs `git branch -D` and may also touch the remote when the original mode
+// was 'both' or 'archive-and-delete' — so it gets the same shape as the other
+// destructive dialogs: Escape closes, backdrop closes, focus on Cancel,
+// type-to-confirm, submitting state to block double-submit.
+export interface RejectedSquash {
+  branch: Branch;
+  mode: DeleteMode;
+}
 
-const modeHeadline: Record<DeleteMode, string> = {
-  local: 'local',
-  remote: 'remote',
-  both: 'local + remote',
-  'archive-and-delete': 'archive + local + remote',
-};
-
-export function ConfirmDeleteDialog({
-  branches,
-  mode,
+export function ForceDeleteSquashDialog({
+  rejected,
   submitting = false,
   onCancel,
   onConfirm,
 }: {
-  branches: Branch[];
-  mode: DeleteMode;
-  // True while the parent's async delete is in flight; disables Cancel +
-  // Confirm so a double-click can't fire two parallel delete loops, and
-  // the title flips to "Deleting…" so the user has feedback for slow
-  // remote pushes. Mirrors RemoveWorktreeDialog's pattern.
+  rejected: RejectedSquash[];
   submitting?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   const [typed, setTyped] = useState('');
-  // Type-to-confirm gates: bulk operations, AND any operation that touches
-  // the remote (delete propagates to origin → not locally reversible). The
-  // archive-and-delete mode is also remote-touching, so it's covered by the
-  // touchesRemote clause. Previously this only triggered above 5 branches,
-  // leaving 1-5 branch remote deletes one click away from a destructive op.
-  const touchesRemote = mode !== 'local';
-  const requiresType = branches.length > 5 || touchesRemote;
+  // Any item whose original mode touched the remote — we'll re-issue the
+  // remote delete in the parent's force path, so the typed-confirm gate is
+  // required.
+  const touchesRemote = rejected.some(
+    (r) => r.mode === 'both' || r.mode === 'archive-and-delete',
+  );
+  const requiresType = touchesRemote || rejected.length > 5;
   const canConfirm = !submitting && (!requiresType || typed === 'delete');
   const cancelRef = useRef<HTMLButtonElement | null>(null);
-  // Focus Cancel on open (instead of the destructive primary action) and
-  // wire up Escape-to-cancel + backdrop-click-to-cancel. Native dialogs
-  // would give us this for free but the modal here is a plain div.
+
   useEffect(() => {
     cancelRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
@@ -49,12 +44,13 @@ export function ConfirmDeleteDialog({
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onCancel, submitting]);
+
   return (
     <div
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="confirm-delete-title"
+      aria-labelledby="force-delete-squash-title"
       onClick={(e) => {
         if (e.target === e.currentTarget && !submitting) onCancel();
       }}
@@ -63,8 +59,8 @@ export function ConfirmDeleteDialog({
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2 text-wt-conflict">
             <AlertTriangle className="w-5 h-5" />
-            <h2 id="confirm-delete-title" className="text-lg font-semibold">
-              Confirm delete
+            <h2 id="force-delete-squash-title" className="text-lg font-semibold">
+              Force delete squash-merged?
             </h2>
           </div>
           <button onClick={onCancel} disabled={submitting} aria-label="close">
@@ -72,22 +68,21 @@ export function ConfirmDeleteDialog({
           </button>
         </div>
         <p className="text-sm text-neutral-400 mb-3">
-          The following refs will be removed ({modeHeadline[mode]}):
+          Git refused to delete {rejected.length}{' '}
+          {rejected.length === 1 ? 'branch' : 'branches'} because they don't look merged from
+          git's perspective. WorktreeHQ detected them as squash-merged via the PR merge commit.
+          Force delete?
         </p>
-        <div className="flex-1 overflow-auto border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4">
-          {branches.map((b) => (
-            <div key={b.name}>
-              {mode === 'archive-and-delete' && <div>tag:   archive/{b.name}</div>}
-              {mode !== 'remote' && b.hasLocal && <div>local:  {b.name}</div>}
-              {mode !== 'local' && b.hasRemote && <div>remote: origin/{b.name}</div>}
+        <div className="border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4 max-h-48 overflow-auto">
+          {rejected.map(({ branch, mode }) => (
+            <div key={branch.name}>
+              <div>local:  {branch.name}</div>
+              {(mode === 'both' || mode === 'archive-and-delete') && branch.hasRemote && (
+                <div>remote: origin/{branch.name}</div>
+              )}
             </div>
           ))}
         </div>
-        {mode === 'archive-and-delete' && (
-          <p className="text-xs text-neutral-500 mb-3">
-            Archive tags preserve the original commits so Squash Archaeology can recover them later.
-          </p>
-        )}
         {requiresType && (
           <div className="mb-3">
             <label className="text-xs text-neutral-400">
@@ -111,13 +106,11 @@ export function ConfirmDeleteDialog({
             Cancel
           </button>
           <button
-            disabled={!canConfirm}
             onClick={onConfirm}
+            disabled={!canConfirm}
             className="px-3 py-1.5 text-sm bg-wt-conflict/20 border border-wt-conflict/60 text-wt-conflict rounded hover:bg-wt-conflict/30 disabled:opacity-40"
           >
-            {submitting
-              ? 'Deleting…'
-              : `Delete ${branches.length} ${branches.length === 1 ? 'branch' : 'branches'}`}
+            {submitting ? 'Force deleting…' : 'Force delete'}
           </button>
         </div>
       </div>

@@ -4,6 +4,7 @@ import { FilterBar } from './FilterBar';
 import { BranchTable } from './BranchTable';
 import { BulkActionBar } from './BulkActionBar';
 import { ConfirmDeleteDialog, type DeleteMode } from './ConfirmDeleteDialog';
+import { ForceDeleteSquashDialog, type RejectedSquash } from './ForceDeleteSquashDialog';
 import { applyPreset, searchBranches, type FilterPreset } from '../../lib/filters';
 import {
   deleteLocalBranch,
@@ -14,14 +15,6 @@ import {
 } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
 import { EmptyState } from '../common/EmptyState';
-import type { Branch } from '../../types';
-
-// Tracks a squash-merged branch that git -d rejected. Captures the original mode so
-// the follow-up force-delete can still fulfil the remote half of `both`/`archive-and-delete`.
-interface RejectedSquash {
-  branch: Branch;
-  mode: DeleteMode;
-}
 
 export function BranchesView() {
   const branches = useRepoStore((s) => s.branches);
@@ -35,6 +28,12 @@ export function BranchesView() {
   // so bulk-delete errors need their own home where refreshes don't touch them.
   const [deleteErrors, setDeleteErrors] = useState<string[]>([]);
   const [rejectedSquash, setRejectedSquash] = useState<RejectedSquash[] | null>(null);
+  // In-flight guard for performDelete and performForceDeleteSquash. Both are
+  // bound to dialogs whose primary buttons used to remain clickable while the
+  // async work was running, so a double-click could fire two parallel delete
+  // loops against the same selection. The dialogs read this prop to disable
+  // their controls and flip the title to "Deleting…".
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!repo) return;
@@ -72,86 +71,101 @@ export function BranchesView() {
     });
 
   async function performDelete(mode: DeleteMode) {
-    if (!repo) return;
+    if (!repo || deleting) return;
+    setDeleting(true);
+    // Clear any stale error pile from a previous run before adding new ones —
+    // otherwise a successful retry of a failed batch leaves the old errors
+    // visible above the fresh result and the user can't tell what came from
+    // which run.
+    setDeleteErrors([]);
     const rejected: RejectedSquash[] = [];
     const errors: string[] = [];
     const deletesLocal = mode !== 'remote';
     const deletesRemote = mode !== 'local';
 
-    for (const b of selectedBranches) {
-      let localRejectedAsSquash = false;
-      try {
-        if (deletesLocal && b.hasLocal) {
-          // Tag-then-delete: tag FIRST so the archive points at the live tip,
-          // but only if the branch actually looks deletable. For non-squash,
-          // non-merged branches we'd otherwise create an orphan archive tag
-          // (delete fails → tag remains pointing at a still-live branch).
-          // squash-merged branches are expected to fail -d and route to the
-          // force-delete follow-up dialog, so the tag IS desired in that case.
-          const shouldTag =
-            mode === 'archive-and-delete' &&
-            (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged');
-          if (shouldTag) {
-            await tagBranch(repo.path, b.name, archiveTagNameFor(b.name));
-          }
-          try {
-            // Never auto-force: git -d refuses unmerged branches and that's a feature.
-            // Squash-merged rejections route to the force-delete follow-up dialog.
-            await deleteLocalBranch(repo.path, b.name, false);
-          } catch (e: any) {
-            if (b.mergeStatus === 'squash-merged') {
-              rejected.push({ branch: b, mode });
-              localRejectedAsSquash = true;
-            } else {
-              errors.push(`${b.name}: ${e?.message ?? e}`);
-              continue;
+    try {
+      for (const b of selectedBranches) {
+        let localRejectedAsSquash = false;
+        try {
+          if (deletesLocal && b.hasLocal) {
+            // Tag-then-delete: tag FIRST so the archive points at the live tip,
+            // but only if the branch actually looks deletable. For non-squash,
+            // non-merged branches we'd otherwise create an orphan archive tag
+            // (delete fails → tag remains pointing at a still-live branch).
+            // squash-merged branches are expected to fail -d and route to the
+            // force-delete follow-up dialog, so the tag IS desired in that case.
+            const shouldTag =
+              mode === 'archive-and-delete' &&
+              (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged');
+            if (shouldTag) {
+              await tagBranch(repo.path, b.name, archiveTagNameFor(b.name));
+            }
+            try {
+              // Never auto-force: git -d refuses unmerged branches and that's a feature.
+              // Squash-merged rejections route to the force-delete follow-up dialog.
+              await deleteLocalBranch(repo.path, b.name, false);
+            } catch (e: any) {
+              if (b.mergeStatus === 'squash-merged') {
+                rejected.push({ branch: b, mode });
+                localRejectedAsSquash = true;
+              } else {
+                errors.push(`${b.name}: ${e?.message ?? e}`);
+                continue;
+              }
             }
           }
+          // The remote side runs regardless of whether the local delete was deferred
+          // to the force-delete follow-up — otherwise `both`/`archive-and-delete` strand
+          // the remote ref for the user to clean up manually.
+          if (deletesRemote && b.hasRemote && !localRejectedAsSquash) {
+            await deleteRemoteBranch(repo.path, 'origin', b.name);
+          }
+        } catch (e: any) {
+          errors.push(`${b.name}: ${e?.message ?? e}`);
         }
-        // The remote side runs regardless of whether the local delete was deferred
-        // to the force-delete follow-up — otherwise `both`/`archive-and-delete` strand
-        // the remote ref for the user to clean up manually.
-        if (deletesRemote && b.hasRemote && !localRejectedAsSquash) {
-          await deleteRemoteBranch(repo.path, 'origin', b.name);
-        }
-      } catch (e: any) {
-        errors.push(`${b.name}: ${e?.message ?? e}`);
       }
-    }
 
-    setSelection(new Set());
-    setConfirm(null);
-    setDeleteErrors(errors);
-    if (rejected.length > 0) {
-      setRejectedSquash(rejected);
+      setSelection(new Set());
+      setConfirm(null);
+      setDeleteErrors(errors);
+      if (rejected.length > 0) {
+        setRejectedSquash(rejected);
+      }
+      await refreshOnce({ userInitiated: true });
+    } finally {
+      setDeleting(false);
     }
-    await refreshOnce({ userInitiated: true });
   }
 
   async function performForceDeleteSquash() {
-    if (!repo || !rejectedSquash) return;
-    const errors: string[] = [];
-    for (const item of rejectedSquash) {
-      try {
-        if (item.branch.hasLocal) {
-          await deleteLocalBranch(repo.path, item.branch.name, true);
+    if (!repo || !rejectedSquash || deleting) return;
+    setDeleting(true);
+    try {
+      const errors: string[] = [];
+      for (const item of rejectedSquash) {
+        try {
+          if (item.branch.hasLocal) {
+            await deleteLocalBranch(repo.path, item.branch.name, true);
+          }
+          // Honor the original mode: if the user picked `both` or `archive-and-delete`,
+          // their confirmation covered the remote ref too, so remove it now that the
+          // local force-delete succeeded.
+          const wantsRemote = item.mode === 'both' || item.mode === 'archive-and-delete';
+          if (wantsRemote && item.branch.hasRemote) {
+            await deleteRemoteBranch(repo.path, 'origin', item.branch.name);
+          }
+        } catch (e: any) {
+          errors.push(`${item.branch.name}: ${e?.message ?? e}`);
         }
-        // Honor the original mode: if the user picked `both` or `archive-and-delete`,
-        // their confirmation covered the remote ref too, so remove it now that the
-        // local force-delete succeeded.
-        const wantsRemote = item.mode === 'both' || item.mode === 'archive-and-delete';
-        if (wantsRemote && item.branch.hasRemote) {
-          await deleteRemoteBranch(repo.path, 'origin', item.branch.name);
-        }
-      } catch (e: any) {
-        errors.push(`${item.branch.name}: ${e?.message ?? e}`);
       }
+      setRejectedSquash(null);
+      if (errors.length > 0) {
+        setDeleteErrors((prev) => [...prev, ...errors]);
+      }
+      await refreshOnce({ userInitiated: true });
+    } finally {
+      setDeleting(false);
     }
-    setRejectedSquash(null);
-    if (errors.length > 0) {
-      setDeleteErrors((prev) => [...prev, ...errors]);
-    }
-    await refreshOnce({ userInitiated: true });
   }
 
   return (
@@ -186,41 +200,18 @@ export function BranchesView() {
         <ConfirmDeleteDialog
           branches={selectedBranches}
           mode={confirm}
+          submitting={deleting}
           onCancel={() => setConfirm(null)}
           onConfirm={() => performDelete(confirm)}
         />
       )}
       {rejectedSquash && rejectedSquash.length > 0 && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-wt-panel border border-wt-border rounded-xl p-6 w-[520px]">
-            <h2 className="text-lg font-semibold mb-2">Force delete squash-merged?</h2>
-            <p className="text-sm text-neutral-400 mb-3">
-              Git refused to delete {rejectedSquash.length}{' '}
-              {rejectedSquash.length === 1 ? 'branch' : 'branches'} because they don't look merged
-              from git's perspective. WorktreeHQ detected them as squash-merged via the PR merge
-              commit. Force delete?
-            </p>
-            <div className="border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4 max-h-48 overflow-auto">
-              {rejectedSquash.map(({ branch }) => (
-                <div key={branch.name}>{branch.name}</div>
-              ))}
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setRejectedSquash(null)}
-                className="px-3 py-1.5 text-sm text-neutral-400"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={performForceDeleteSquash}
-                className="px-3 py-1.5 text-sm bg-wt-conflict/20 border border-wt-conflict/60 text-wt-conflict rounded hover:bg-wt-conflict/30"
-              >
-                Force delete
-              </button>
-            </div>
-          </div>
-        </div>
+        <ForceDeleteSquashDialog
+          rejected={rejectedSquash}
+          submitting={deleting}
+          onCancel={() => setRejectedSquash(null)}
+          onConfirm={performForceDeleteSquash}
+        />
       )}
     </div>
   );

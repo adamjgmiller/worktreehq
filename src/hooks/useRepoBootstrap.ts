@@ -104,6 +104,16 @@ export function useRepoBootstrap() {
           (cfg.recent_repo_paths && cfg.recent_repo_paths[0]) ||
           cfg.last_repo_path ||
           null;
+        // First-launch path: no last_repo_path, no recents → don't try to
+        // resolve current_dir() (which on a Mac dock launch is `/` and
+        // produces a confusing "Not a git repository: /" error). Surface a
+        // friendly onboarding message; App.tsx already renders the
+        // "Pick a repository…" affordance when repo is null and an error
+        // is set.
+        if (!launchPath) {
+          setError('No repository loaded. Pick a git repository to get started.');
+          return;
+        }
         const info = await invoke<RepoInfo>('resolve_repo', { path: launchPath });
         if (!info.is_git) {
           setError(`Not a git repository: ${info.path}`);
@@ -112,7 +122,7 @@ export function useRepoBootstrap() {
         const defaultBranch = await getDefaultBranch(info.path);
         // Resolve the origin owner/name once at bootstrap and stash on the
         // repo state. This never changes for a given repo so paying the
-        // `remote get-url` subprocess on every 5s refresh tick was pure
+        // `remote get-url` subprocess on every refresh tick was pure
         // waste. The refresh loop reads these off `repo` directly.
         const remote = await getRemoteUrl(info.path);
         if (cancelled) return;

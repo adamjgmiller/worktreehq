@@ -28,7 +28,11 @@ interface PersistedCache {
   entries: Record<string, CacheEntry>;
 }
 
-let hydrated = false;
+// Stores the in-flight hydration promise so concurrent callers all wait on the
+// same disk read. Previously a `hydrated` boolean was flipped synchronously
+// before the await, which let a second caller race past the early return and
+// query an empty cache while the first caller's read was still in flight.
+let hydratePromise: Promise<void> | null = null;
 let persistDebounce: ReturnType<typeof setTimeout> | null = null;
 
 // Entries older than this for OPEN PRs are dropped on hydration — their
@@ -37,27 +41,31 @@ let persistDebounce: ReturnType<typeof setTimeout> | null = null;
 const STALE_OPEN_PR_MS = 7 * 24 * 60 * 60 * 1000;
 
 // One-time load from disk. Callers can await this at startup, but we also lazy-load
-// on the first cache hit so tests that never initialize don't hang.
-export async function hydratePrCache(): Promise<void> {
-  if (hydrated) return;
-  hydrated = true;
-  const raw = await readPrCacheFile();
-  if (!raw) return;
-  try {
-    const parsed: PersistedCache = JSON.parse(raw);
-    if (parsed.version !== 1 || !parsed.entries) return;
-    const now = Date.now();
-    for (const [k, v] of Object.entries(parsed.entries)) {
-      // Drop stale open-PR entries on hydration. Merged PRs are kept forever
-      // since their fields don't change once merged; treating them as fresh
-      // lets a long-idle laptop reopen the app with its cache intact.
-      const isOpen = v.pr?.state === 'open';
-      if (isOpen && now - v.at > STALE_OPEN_PR_MS) continue;
-      prCache.set(k, v);
+// on the first cache hit so tests that never initialize don't hang. Concurrent
+// callers all share the same in-flight promise so the second caller doesn't see
+// a half-populated cache.
+export function hydratePrCache(): Promise<void> {
+  if (hydratePromise) return hydratePromise;
+  hydratePromise = (async () => {
+    const raw = await readPrCacheFile();
+    if (!raw) return;
+    try {
+      const parsed: PersistedCache = JSON.parse(raw);
+      if (parsed.version !== 1 || !parsed.entries) return;
+      const now = Date.now();
+      for (const [k, v] of Object.entries(parsed.entries)) {
+        // Drop stale open-PR entries on hydration. Merged PRs are kept forever
+        // since their fields don't change once merged; treating them as fresh
+        // lets a long-idle laptop reopen the app with its cache intact.
+        const isOpen = v.pr?.state === 'open';
+        if (isOpen && now - v.at > STALE_OPEN_PR_MS) continue;
+        prCache.set(k, v);
+      }
+    } catch {
+      /* corrupt cache: ignore and start fresh */
     }
-  } catch {
-    /* corrupt cache: ignore and start fresh */
-  }
+  })();
+  return hydratePromise;
 }
 
 function schedulePersist() {
@@ -76,7 +84,7 @@ function cacheKey(owner: string, repo: string, n: number) {
 
 export function _clearPrCacheForTests() {
   prCache.clear();
-  hydrated = false;
+  hydratePromise = null;
 }
 
 // Drop every cached per-PR entry for a single repo. Called from
@@ -107,7 +115,7 @@ export function _getPrCacheKeysForTests(): string[] {
 
 // Kept as the single-PR fallback for cache misses outside the batch path.
 export async function getPR(owner: string, repo: string, number: number): Promise<PRInfo | null> {
-  if (!hydrated) await hydratePrCache();
+  await hydratePrCache();
   const key = cacheKey(owner, repo, number);
   const hit = prCache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.pr;
@@ -132,10 +140,15 @@ export async function getPR(owner: string, repo: string, number: number): Promis
     // Only negative-cache the definitive "PR doesn't exist" case (404). For
     // 401/403/network/5xx, leave the cache untouched so a transient hiccup
     // doesn't wipe PR data for the next 5 minutes (and worse, persist that
-    // null entry to disk).
+    // null entry to disk). Log auth/rate-limit failures so a developer
+    // running the app can diagnose silently-disappearing PR data.
     if (e?.status === 404) {
       prCache.set(key, { at: Date.now(), pr: null });
       schedulePersist();
+    } else if (e?.status === 401 || e?.status === 403) {
+      console.warn('[github] getPR auth/rate-limit failure', e?.status, e?.message);
+    } else if (e?.status && e?.status >= 500) {
+      console.warn('[github] getPR upstream error', e?.status, e?.message);
     }
     return null;
   }
@@ -198,8 +211,11 @@ async function runBatchChunk(
       out.set(n, pr);
       prCache.set(cacheKey(owner, repo, n), { at: Date.now(), pr });
     }
-  } catch {
-    // On failure, leave cache untouched so REST fallback can retry on subsequent calls.
+  } catch (e: any) {
+    // On failure, leave cache untouched so REST fallback can retry on
+    // subsequent calls. Log so a developer can spot silently-degraded
+    // GraphQL fetches (auth, rate-limit, network).
+    console.warn('[github] runBatchChunk failed', e?.status, e?.message);
   }
   return out;
 }
@@ -215,7 +231,7 @@ export async function batchFetchPRs(
   repo: string,
   numbers: number[],
 ): Promise<Map<number, PRInfo>> {
-  if (!hydrated) await hydratePrCache();
+  await hydratePrCache();
   const out = new Map<number, PRInfo>();
   const unique = Array.from(new Set(numbers));
   const toFetch: number[] = [];
@@ -302,10 +318,10 @@ export function mapMergeable(m: string | undefined | null): boolean | null {
   return null;
 }
 
-// TTL cache for the paginated open-PR list. Without this, the 5s refresh
-// loop fully re-paginated `pulls.list` every tick — on a repo with hundreds
-// of open PRs that's hundreds of REST calls per minute against the token's
-// 5,000/hr budget. The cache stores the *unfiltered* list (every open PR for
+// TTL cache for the paginated open-PR list. Without this, every refresh
+// tick fully re-paginated `pulls.list` — on a repo with hundreds of open
+// PRs that's a steady drip against the token's 5,000/hr budget. The cache
+// stores the *unfiltered* list (every open PR for
 // the repo, regardless of branch set) so callers with different branch sets
 // can share the same entry. The fetch loop calls `invalidateOpenPrListCache`
 // after a successful `git fetch --all --prune` so newly-pushed branches show
@@ -339,7 +355,10 @@ export async function listOpenPRsForBranches(
   branchNames: string[],
 ): Promise<Map<string, PRInfo>> {
   const out = new Map<string, PRInfo>();
-  if (!octokit || branchNames.length === 0) return out;
+  // Short-circuit when there's no GitHub remote — refreshLoop calls us with
+  // empty owner/name for non-GitHub repos and we'd otherwise issue a wasted
+  // 404'ing REST call against `/repos//pulls` on every poll tick.
+  if (!octokit || !owner || !repo || branchNames.length === 0) return out;
   const wanted = new Set(branchNames);
 
   const key = openPrListCacheKey(owner, repo);
@@ -364,9 +383,11 @@ export async function listOpenPRsForBranches(
         isDraft: p.draft ?? false,
       }));
       openPrListCache.set(key, { at: now, prs });
-    } catch {
+    } catch (e: any) {
       // On failure, fall back to whatever stale entry we have rather than
-      // dropping PR info on transient network errors.
+      // dropping PR info on transient network errors. Log so degraded
+      // states (auth, rate-limit, network) are visible during development.
+      console.warn('[github] listOpenPRsForBranches failed', e?.status, e?.message);
       prs = hit?.prs ?? [];
     }
   }

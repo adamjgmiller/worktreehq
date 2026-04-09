@@ -588,7 +588,7 @@ export async function listMainCommits(
 
 // Short-TTL cache. Tags change rarely and only matter for `archive/<branch>`
 // detection in squashDetector; a steady-state poll loop shouldn't re-shell
-// every 5s. The cache key is the repo path so switching repos trivially
+// on every refresh tick. The cache key is the repo path so switching repos trivially
 // invalidates. Callers that need guaranteed freshness after a known mutation
 // (e.g. after tagging from BranchesView) can call `invalidateTagsCache()`.
 interface TagsCacheEntry {

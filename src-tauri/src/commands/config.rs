@@ -117,6 +117,12 @@ pub fn read_config() -> AppResult<AppConfig> {
 pub fn write_config(cfg: AppConfig) -> AppResult<()> {
     let p = config_path()?;
     let text = toml::to_string_pretty(&cfg)?;
-    std::fs::write(&p, text).map_err(AppError::Io)?;
+    // Atomic write: serialize to a sibling .tmp then rename. A crash mid-write
+    // would otherwise leave config.toml truncated, taking down the user's
+    // token, recents, and zoom level all at once. Mirrors the same pattern
+    // used by notepads.rs and pr_cache.rs.
+    let tmp = p.with_extension("toml.tmp");
+    std::fs::write(&tmp, text).map_err(AppError::Io)?;
+    std::fs::rename(&tmp, &p).map_err(AppError::Io)?;
     Ok(())
 }
