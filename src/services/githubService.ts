@@ -6,8 +6,15 @@ let octokit: Octokit | null = null;
 let currentToken = '';
 
 export function initGithub(token: string) {
+  const prevToken = currentToken;
   currentToken = token;
   octokit = token ? new Octokit({ auth: token }) : new Octokit();
+  // If the token changed (cleared or rotated), drop the in-memory PR cache.
+  // Otherwise we'd keep serving PRs fetched under the old auth posture for
+  // up to 5 minutes, masking a token clear from the rest of the pipeline.
+  if (prevToken !== token) {
+    prCache.clear();
+  }
 }
 
 export function hasGithubAuth(): boolean {
@@ -47,7 +54,19 @@ const STALE_OPEN_PR_MS = 7 * 24 * 60 * 60 * 1000;
 export function hydratePrCache(): Promise<void> {
   if (hydratePromise) return hydratePromise;
   hydratePromise = (async () => {
-    const raw = await readPrCacheFile();
+    let raw: string | null = null;
+    try {
+      raw = await readPrCacheFile();
+    } catch (e) {
+      // A transient IPC failure on bootstrap must not poison the memoized
+      // promise — otherwise every getPR/batchFetchPRs call for the rest of
+      // the session awaits a rejected promise and PR enrichment stays dead
+      // until restart. Clear the memo so the next caller retries; treat
+      // this session as "no on-disk cache" and carry on.
+      console.warn('[githubService] hydratePrCache read failed:', e);
+      hydratePromise = null;
+      return;
+    }
     if (!raw) return;
     try {
       const parsed: PersistedCache = JSON.parse(raw);

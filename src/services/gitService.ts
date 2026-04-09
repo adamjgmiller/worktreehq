@@ -297,7 +297,11 @@ async function worktreeCore(
 }
 
 export async function listWorktrees(repo: string): Promise<Worktree[]> {
-  const raw = await run(repo, ['worktree', 'list', '--porcelain']);
+  // Read path: use tryRun so a transient failure on one poll tick doesn't
+  // blank the entire worktrees tab via a thrown pipeline error. An empty
+  // result degrades gracefully to "no worktrees" for the tick; the next
+  // poll will recover.
+  const raw = await tryRun(repo, ['worktree', 'list', '--porcelain']);
   const entries = parseWorktreeList(raw);
   // Parallel across worktrees; each call internally parallelizes its per-worktree probes.
   // Orphaned entries (prunable) skip the probes entirely and return a sentinel
@@ -687,7 +691,13 @@ export async function cherryCheck(
   const presentShas = new Set<string>();
   const allBranchShas = new Set<string>();
   for (const upstream of upstreams) {
-    const raw = await tryRun(repo, ['cherry', upstream, branchRef]);
+    // Use `run` (throws on non-zero) rather than `tryRun`: squashDetector
+    // has a try/catch around this call specifically to avoid caching
+    // transient failures. If we swallowed the error here and returned
+    // `false`, that catch would be dead code and a one-off `git cherry`
+    // failure would get cached as "not squash-merged" until the SHAs
+    // moved — exactly the flicker mode CLAUDE.md warns about.
+    const raw = await run(repo, ['cherry', upstream, branchRef]);
     for (const line of raw.split('\n')) {
       if (!line) continue;
       // Format: `<sign> <sha>` (sign is `+` or `-`, then a space, then the

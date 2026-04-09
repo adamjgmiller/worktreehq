@@ -238,7 +238,11 @@ export async function fetchClaudePresence(
     cachedWorktreeKey = wtKey;
     cachedAt = now;
     return presence;
-  } catch {
+  } catch (e) {
+    // Log rather than silently blanking the presence map — a regression in
+    // readClaudeState/joinClaudeState would otherwise make the Claude
+    // awareness indicator look permanently empty with no hint why.
+    console.warn('[claude] fetchClaudePresence failed:', e);
     return new Map();
   }
 }

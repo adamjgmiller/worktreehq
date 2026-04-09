@@ -24,6 +24,9 @@ let fetchTimer: ReturnType<typeof setTimeout> | null = null;
 // Prevents overlapping fetches — if a fetch is still in flight when the tick fires,
 // we just skip this round rather than queue up work.
 let fetchInFlight = false;
+// Promise mirror of `fetchInFlight` so user-initiated callers that land on a
+// background fetch can join it and then chain their own follow-up refresh.
+let fetchInFlightPromise: Promise<void> | null = null;
 
 // Single in-flight refresh promise. Callers that land during an active refresh
 // await the same work rather than kicking off a second one. Without this the
@@ -83,12 +86,15 @@ async function runRefreshOnce(): Promise<void> {
     const { commits: mainCommits, total: mainCommitsTotal } = mainCommitsResult;
     const remote = { owner: repo.owner, name: repo.name };
 
-    // Attach worktree paths to branches
+    // Attach worktree paths to branches. Build new objects rather than
+    // mutating the entries returned by listBranches so that any future
+    // caching inside gitService can't accidentally leak attached fields
+    // across repos or ticks.
     const wtByBranch = new Map(wts.map((w) => [w.branch, w.path]));
-    for (const b of branches) {
+    let enrichedBranches = branches.map((b) => {
       const wp = wtByBranch.get(b.name);
-      if (wp) b.worktreePath = wp;
-    }
+      return wp ? { ...b, worktreePath: wp } : b;
+    });
 
     // Attach open PRs to branches. The REST list only populates isDraft; we
     // follow up with a GraphQL batch to fill in checksStatus / reviewDecision /
@@ -98,7 +104,7 @@ async function runRefreshOnce(): Promise<void> {
     // non-github remotes.
     const openPRs =
       remote.owner && remote.name
-        ? await listOpenPRsForBranches(remote.owner, remote.name, branches.map((b) => b.name))
+        ? await listOpenPRsForBranches(remote.owner, remote.name, enrichedBranches.map((b) => b.name))
         : new Map();
     if (remote.owner && remote.name && openPRs.size > 0) {
       const numbers = Array.from(openPRs.values()).map((pr) => pr.number);
@@ -112,16 +118,16 @@ async function runRefreshOnce(): Promise<void> {
         }
       }
     }
-    for (const b of branches) {
+    enrichedBranches = enrichedBranches.map((b) => {
       const pr = openPRs.get(b.name);
-      if (pr) b.pr = pr;
-    }
+      return pr ? { ...b, pr } : b;
+    });
 
     const detect = await detectSquashMerges({
       repoPath: repo.path,
       defaultBranch: repo.defaultBranch,
       mainCommits,
-      branches,
+      branches: enrichedBranches,
       tags,
       owner: remote.owner,
       name: remote.name,
@@ -218,6 +224,10 @@ export function startRefreshLoop(): void {
   const tick = async () => {
     if (!running) return;
     await refreshOnce();
+    // Re-check after the await: stopRefreshLoop() may have fired while
+    // refreshOnce was in flight. Without this guard we'd schedule a stray
+    // timer past shutdown.
+    if (!running) return;
     const { refreshIntervalMs } = useRepoStore.getState();
     timer = setTimeout(tick, refreshIntervalMs);
   };
@@ -244,13 +254,25 @@ export function stopRefreshLoop(): void {
 // merge-without-merge, draft toggle) that don't move any remote ref. The
 // userInitiated flag also propagates to refreshOnce so the spinner animates.
 export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
-  if (fetchInFlight) return;
+  const userInitiated = opts?.userInitiated === true;
+  if (fetchInFlight) {
+    // A user click landing on a background fetch used to be silently
+    // dropped — no spinner, no chained refresh. Instead, join the
+    // in-flight fetch and then still run a user-initiated refresh so the
+    // user's click produces the feedback (and post-fetch refresh) they
+    // expect. Background calls during an in-flight fetch remain dropped.
+    if (userInitiated && fetchInFlightPromise) {
+      await fetchInFlightPromise.catch(() => {});
+      await refreshOnce(opts);
+    }
+    return;
+  }
   const { repo, setFetching, setError } = useRepoStore.getState();
   if (!repo) return;
-  const userInitiated = opts?.userInitiated === true;
   fetchInFlight = true;
   setFetching(true);
   let fetchFailed = false;
+  const body = (async () => {
   try {
     const before = await snapshotRemoteRefs(repo.path);
     try {
@@ -319,7 +341,11 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   } finally {
     setFetching(false);
     fetchInFlight = false;
+    fetchInFlightPromise = null;
   }
+  })();
+  fetchInFlightPromise = body;
+  await body;
 }
 
 export function startFetchLoop(): void {
@@ -331,6 +357,8 @@ export function startFetchLoop(): void {
     if (fetchIntervalMs > 0) {
       await runFetchOnce();
     }
+    // Re-check after the await: stopFetchLoop() may have fired mid-fetch.
+    if (!fetchRunning) return;
     // Re-read after awaiting in case the user toggled the interval mid-flight.
     // When disabled we still poll once a minute so flipping it back on without
     // restarting the app just works.

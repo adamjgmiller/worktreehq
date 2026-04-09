@@ -68,7 +68,7 @@ rather than reproducing the dance.
 
 `src/services/squashDetector.ts` is the brain of the app. The algorithm has two passes:
 
-1. **PR-tag pass**: walk first-parent commits on `main`, regex `/(#\d+)$/` on each subject to extract a PR number, fetch the PR via Octokit (cached 5 min in-memory in `githubService.ts`), and if `pr.merge_commit_sha === commit.sha` mark `pr.head.ref` as `squash-merged`. Also creates a `SquashMapping` so the Squash Archaeology view can render `squash sha → PR # → source branch → original commits` (the original commits come from optional `archive/<branch>` tags).
+1. **PR-tag pass**: walk first-parent commits on `main`, regex `/\(#(\d+)\)\s*$/` on each subject to extract a PR number, fetch the PR via Octokit (cached 5 min in-memory in `githubService.ts`), and if `pr.merge_commit_sha === commit.sha` mark `pr.head.ref` as `squash-merged`. Also creates a `SquashMapping` so the Squash Archaeology view can render `squash sha → PR # → source branch → original commits` (the original commits come from optional `archive/<branch>` tags).
 2. **Cherry fallback pass**: for branches still `unmerged` after pass 1, run `git cherry main <branch>` — if every line starts with `-`, every commit on the branch is patch-equivalent to something on main, so it's effectively squash-merged. Only runs on remaining unmerged branches to keep it cheap.
 3. **Stale rule**: any `unmerged` branch with `lastCommitDate < now-30d` becomes `stale`.
 
