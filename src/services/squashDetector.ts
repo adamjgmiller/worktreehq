@@ -1,6 +1,6 @@
 import type { Branch, MainCommit, SquashMapping, PRInfo } from '../types';
 import { batchFetchPRs } from './githubService';
-import { cherryCheck } from './gitService';
+import { cherryCheck, resolveMainUpstreams } from './gitService';
 
 // Cache cherry-check results by (branch head sha, main head sha). Lives for
 // the process lifetime — no TTL needed because the key is content-addressed:
@@ -110,6 +110,15 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
   const cherryCandidates = Array.from(branchIndex.values()).filter(
     (b) => b.mergeStatus === 'unmerged' && b.aheadOfMain > 0,
   );
+  // Resolve the main-history ref set ONCE per run rather than per branch.
+  // This is the set that `cherryCheck` unions its patch-id check against;
+  // it includes `origin/<defaultBranch>` when that remote-tracking ref
+  // exists, which is how squash commits merged on GitHub get detected
+  // before the user has fast-forwarded their local main.
+  const upstreams =
+    cherryCandidates.length > 0
+      ? await resolveMainUpstreams(input.repoPath, input.defaultBranch)
+      : [input.defaultBranch];
   const mainSha = mainCommits[0]?.sha ?? '';
   const cherryResults = await Promise.all(
     cherryCandidates.map(async (b) => {
@@ -118,7 +127,7 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       if (cached !== undefined) return [b, cached] as const;
       try {
         const ref = b.hasLocal ? b.name : `origin/${b.name}`;
-        const squashed = await cherryCheck(input.repoPath, input.defaultBranch, ref);
+        const squashed = await cherryCheck(input.repoPath, upstreams, ref);
         cherryCache.set(key, squashed);
         return [b, squashed] as const;
       } catch {

@@ -12,6 +12,8 @@ import {
   listTags,
   invalidateTagsCache,
   listBranches,
+  resolveMainUpstreams,
+  cherryCheck,
   _clearBranchAbCacheForTests,
 } from './gitService';
 
@@ -245,12 +247,53 @@ describe('resolveWatchDirs', () => {
   });
 });
 
+describe('resolveMainUpstreams', () => {
+  beforeEach(() => {
+    gitExecMock.mockReset();
+  });
+
+  it('includes origin/<default> when the remote-tracking ref exists', async () => {
+    // rev-parse --verify --quiet succeeds and prints the SHA.
+    gitExecMock.mockResolvedValueOnce({
+      stdout: '98a8dcea02f1ec369e93c5a3f7e442562ff3b4d8\n',
+      stderr: '',
+      code: 0,
+    });
+    const refs = await resolveMainUpstreams('/repo', 'main');
+    expect(refs).toEqual(['main', 'origin/main']);
+    expect(gitExecMock.mock.calls[0]?.[1]).toEqual([
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      'refs/remotes/origin/main',
+    ]);
+  });
+
+  it('falls back to local-only when origin/<default> does not exist', async () => {
+    // rev-parse --verify --quiet exits non-zero with empty stdout; tryRun
+    // returns ''. resolveMainUpstreams must not include origin in that case.
+    gitExecMock.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 });
+    const refs = await resolveMainUpstreams('/repo', 'trunk');
+    expect(refs).toEqual(['trunk']);
+  });
+
+  it('treats whitespace-only rev-parse output as "not present"', async () => {
+    // Defensive against a theoretically possible whitespace-only response.
+    gitExecMock.mockResolvedValueOnce({ stdout: '   \n', stderr: '', code: 0 });
+    const refs = await resolveMainUpstreams('/repo', 'main');
+    expect(refs).toEqual(['main']);
+  });
+});
+
 describe('listMainCommits', () => {
   beforeEach(() => {
     gitExecMock.mockReset();
   });
 
   it('skips the count subprocess when the log returned fewer than `limit` rows', async () => {
+    // 1. resolveMainUpstreams → rev-parse (origin exists)
+    gitExecMock.mockResolvedValueOnce({ stdout: 'sha\n', stderr: '', code: 0 });
+    // 2. the log itself
     gitExecMock.mockResolvedValueOnce({
       stdout: 'abc\tone\t2026-01-01T00:00:00Z\ndef\ttwo (#42)\t2026-01-02T00:00:00Z\n',
       stderr: '',
@@ -260,24 +303,152 @@ describe('listMainCommits', () => {
     expect(out.commits).toHaveLength(2);
     expect(out.commits[1].prNumber).toBe(42);
     expect(out.total).toBe(2);
-    // Only one git invocation: the log. No follow-up rev-list.
-    expect(gitExecMock).toHaveBeenCalledTimes(1);
+    // Two git invocations: rev-parse + log. No follow-up rev-list.
+    expect(gitExecMock).toHaveBeenCalledTimes(2);
+    // The log walked BOTH refs.
+    expect(gitExecMock.mock.calls[1]?.[1]).toEqual([
+      'log',
+      'main',
+      'origin/main',
+      '--first-parent',
+      '-200',
+      '--format=%H%x09%s%x09%cI',
+    ]);
   });
 
   it('issues a count subprocess only when the log saturates `limit`', async () => {
     const lines = Array.from({ length: 5 }, (_, i) => `sha${i}\tmsg\t2026-01-01T00:00:00Z`).join('\n');
+    // 1. rev-parse — origin exists
+    gitExecMock.mockResolvedValueOnce({ stdout: 'sha\n', stderr: '', code: 0 });
+    // 2. log
     gitExecMock.mockResolvedValueOnce({ stdout: lines, stderr: '', code: 0 });
+    // 3. count — must be against the same ref set the log walked
     gitExecMock.mockResolvedValueOnce({ stdout: '999\n', stderr: '', code: 0 });
     const out = await listMainCommits('/repo', 'main', 5);
     expect(out.commits).toHaveLength(5);
     expect(out.total).toBe(999);
-    expect(gitExecMock).toHaveBeenCalledTimes(2);
-    expect(gitExecMock.mock.calls[1]?.[1]).toEqual([
+    expect(gitExecMock).toHaveBeenCalledTimes(3);
+    expect(gitExecMock.mock.calls[2]?.[1]).toEqual([
       'rev-list',
       '--count',
       '--first-parent',
       'main',
+      'origin/main',
     ]);
+  });
+
+  it('walks local-only when origin/<default> does not exist', async () => {
+    // rev-parse exits non-zero → tryRun returns ''
+    gitExecMock.mockResolvedValueOnce({ stdout: '', stderr: '', code: 1 });
+    gitExecMock.mockResolvedValueOnce({
+      stdout: 'abc\tone\t2026-01-01T00:00:00Z\n',
+      stderr: '',
+      code: 0,
+    });
+    const out = await listMainCommits('/repo', 'main', 200);
+    expect(out.commits).toHaveLength(1);
+    // The log walked ONLY local main — no origin/main in the args.
+    expect(gitExecMock.mock.calls[1]?.[1]).toEqual([
+      'log',
+      'main',
+      '--first-parent',
+      '-200',
+      '--format=%H%x09%s%x09%cI',
+    ]);
+  });
+});
+
+describe('cherryCheck', () => {
+  beforeEach(() => {
+    gitExecMock.mockReset();
+  });
+
+  it('returns true when every branch commit is patch-present in the single upstream', async () => {
+    // `git cherry main feat/x` output: two commits, both marked `-` (present).
+    gitExecMock.mockResolvedValueOnce({
+      stdout: '- aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n- bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n',
+      stderr: '',
+      code: 0,
+    });
+    await expect(cherryCheck('/repo', ['main'], 'feat/x')).resolves.toBe(true);
+    expect(gitExecMock.mock.calls[0]?.[1]).toEqual(['cherry', 'main', 'feat/x']);
+  });
+
+  it('returns false when any branch commit is marked + (not present)', async () => {
+    gitExecMock.mockResolvedValueOnce({
+      stdout: '- aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n',
+      stderr: '',
+      code: 0,
+    });
+    await expect(cherryCheck('/repo', ['main'], 'feat/x')).resolves.toBe(false);
+  });
+
+  it('returns false on empty cherry output (nothing to check)', async () => {
+    gitExecMock.mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
+    await expect(cherryCheck('/repo', ['main'], 'feat/x')).resolves.toBe(false);
+  });
+
+  it('unions patch-presence across multiple upstreams — local misses, origin catches', async () => {
+    // This is the regression case the whole PR exists for: local main is
+    // stale (doesn't have the squash commit), so `cherry main` marks every
+    // branch commit as `+`. origin/main has the squash commit, so
+    // `cherry origin/main` marks the same commits as `-`. The union must
+    // decide the branch IS merged.
+    gitExecMock.mockResolvedValueOnce({
+      // cherry main feat/x — nothing patch-present on stale local main
+      stdout: '+ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n',
+      stderr: '',
+      code: 0,
+    });
+    gitExecMock.mockResolvedValueOnce({
+      // cherry origin/main feat/x — both commits are patch-present
+      stdout: '- aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n- bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n',
+      stderr: '',
+      code: 0,
+    });
+    await expect(cherryCheck('/repo', ['main', 'origin/main'], 'feat/x')).resolves.toBe(true);
+    expect(gitExecMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns false when a commit is absent from ALL upstreams in the union', async () => {
+    // Same SHAs in both runs. A is marked `-` in origin only; B is marked
+    // `+` in both. The union still can't account for B → not merged.
+    gitExecMock.mockResolvedValueOnce({
+      stdout: '+ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n',
+      stderr: '',
+      code: 0,
+    });
+    gitExecMock.mockResolvedValueOnce({
+      stdout: '- aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n',
+      stderr: '',
+      code: 0,
+    });
+    await expect(cherryCheck('/repo', ['main', 'origin/main'], 'feat/x')).resolves.toBe(false);
+  });
+
+  it('handles divergent cherry output (different SHAs per upstream) via the union', async () => {
+    // Edge case: a commit that's ancestor of origin/main won't show up in
+    // `cherry origin/main branch` at all (it's no longer in the range), but
+    // will show up in `cherry local_main branch` (still in range, marked `-`).
+    // Using the union of SHAs across runs, every commit listed in either run
+    // must have at least one `-` mark — still correctly decides "merged".
+    gitExecMock.mockResolvedValueOnce({
+      stdout: '- aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n- bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n',
+      stderr: '',
+      code: 0,
+    });
+    // origin/main range omits `a` entirely (ancestor already), lists only `b`.
+    gitExecMock.mockResolvedValueOnce({
+      stdout: '- bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n',
+      stderr: '',
+      code: 0,
+    });
+    await expect(cherryCheck('/repo', ['main', 'origin/main'], 'feat/x')).resolves.toBe(true);
+  });
+
+  it('returns false when given an empty upstream list (defensive)', async () => {
+    await expect(cherryCheck('/repo', [], 'feat/x')).resolves.toBe(false);
+    expect(gitExecMock).not.toHaveBeenCalled();
   });
 });
 

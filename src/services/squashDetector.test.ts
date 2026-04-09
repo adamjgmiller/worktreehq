@@ -9,13 +9,21 @@ import type { Branch } from '../types';
 
 vi.mock('./gitService', () => ({
   cherryCheck: vi.fn(),
+  // detectSquashMerges now resolves the upstream ref set (local + origin/main
+  // when present) once per run and passes it into cherryCheck. Mock it to
+  // the 2-ref shape so tests exercise the same code path production does.
+  resolveMainUpstreams: vi.fn(async (_repo: string, defaultBranch: string) => [
+    defaultBranch,
+    `origin/${defaultBranch}`,
+  ]),
 }));
 vi.mock('./githubService', () => ({
   batchFetchPRs: vi.fn(async () => new Map()),
 }));
 
-import { cherryCheck } from './gitService';
+import { cherryCheck, resolveMainUpstreams } from './gitService';
 const cherryCheckMock = cherryCheck as unknown as ReturnType<typeof vi.fn>;
+const resolveMainUpstreamsMock = resolveMainUpstreams as unknown as ReturnType<typeof vi.fn>;
 
 describe('parsePrNumberFromSubject', () => {
   it('extracts PR number from trailing (#N)', () => {
@@ -106,8 +114,8 @@ describe('detectSquashMerges: cherry-check cache', () => {
   });
 
   it('caches results by (branch sha, main sha) so a second call skips the subprocess', async () => {
-    cherryCheckMock.mockImplementation(async (_repo: string, _main: string, ref: string) =>
-      ref === 'feat/a',
+    cherryCheckMock.mockImplementation(
+      async (_repo: string, _upstreams: string[], ref: string) => ref === 'feat/a',
     );
 
     const first = await detectSquashMerges(makeInput());
@@ -116,6 +124,9 @@ describe('detectSquashMerges: cherry-check cache', () => {
       'squash-merged',
     );
     expect(first.updatedBranches.find((b) => b.name === 'feat/b')!.mergeStatus).toBe('unmerged');
+    // cherryCheck received the full upstream set — this is the whole point of
+    // the PR: detection must consider origin/main, not just local main.
+    expect(cherryCheckMock.mock.calls[0]?.[1]).toEqual(['main', 'origin/main']);
 
     const second = await detectSquashMerges(makeInput());
     // Cache hit → cherryCheck is NOT called again.
@@ -123,6 +134,35 @@ describe('detectSquashMerges: cherry-check cache', () => {
     expect(second.updatedBranches.find((b) => b.name === 'feat/a')!.mergeStatus).toBe(
       'squash-merged',
     );
+  });
+
+  it('calls resolveMainUpstreams once per run, not per candidate branch', async () => {
+    // Resolving the upstream set requires a rev-parse subprocess; doing it
+    // N times (once per cherry candidate) in a 100-branch repo would be 100
+    // extra subprocesses on every refresh tick. One call per run is the
+    // whole point of hoisting the resolution into detectSquashMerges.
+    resolveMainUpstreamsMock.mockClear();
+    cherryCheckMock.mockResolvedValue(false);
+    await detectSquashMerges(makeInput());
+    expect(resolveMainUpstreamsMock).toHaveBeenCalledTimes(1);
+    expect(cherryCheckMock).toHaveBeenCalledTimes(2); // two candidate branches
+  });
+
+  it('skips resolveMainUpstreams entirely when no branches need a cherry check', async () => {
+    // If pass 1 already resolved every branch (or there are no unmerged
+    // branches), the cherry fallback does nothing — and we shouldn't shell
+    // out to rev-parse for an upstream set we're not going to use.
+    resolveMainUpstreamsMock.mockClear();
+    cherryCheckMock.mockReset();
+    const input = makeInput();
+    // Pre-mark both branches as something other than `unmerged` so they're
+    // filtered out of cherryCandidates.
+    input.branches.forEach((b) => {
+      b.mergeStatus = 'merged-normally';
+    });
+    await detectSquashMerges(input);
+    expect(resolveMainUpstreamsMock).not.toHaveBeenCalled();
+    expect(cherryCheckMock).not.toHaveBeenCalled();
   });
 
   it('misses the cache when the branch sha moves', async () => {

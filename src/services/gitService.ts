@@ -558,9 +558,15 @@ export async function listMainCommits(
   defaultBranch: string,
   limit = 200,
 ): Promise<MainCommitsResult> {
+  // Walk first-parent history of both local `<defaultBranch>` AND
+  // `origin/<defaultBranch>` when the remote-tracking ref exists. `git log`
+  // dedupes across multiple tips by SHA, so passing both is free when
+  // they're on the same trunk (the common case) and correct when they
+  // diverge. See `resolveMainUpstreams` for the full motivation.
+  const refs = await resolveMainUpstreams(repo, defaultBranch);
   const raw = await tryRun(repo, [
     'log',
-    defaultBranch,
+    ...refs,
     '--first-parent',
     `-${limit}`,
     '--format=%H%x09%s%x09%cI',
@@ -581,7 +587,15 @@ export async function listMainCommits(
   if (commits.length < limit) {
     return { commits, total: commits.length };
   }
-  const countRaw = await tryRun(repo, ['rev-list', '--count', '--first-parent', defaultBranch]);
+  // Count against the same ref set so the "total" matches the union we
+  // just walked. `rev-list --count` accepts multiple tips and returns the
+  // count of the union (dedup'd by SHA) — the same shape `git log` used.
+  const countRaw = await tryRun(repo, [
+    'rev-list',
+    '--count',
+    '--first-parent',
+    ...refs,
+  ]);
   const n = parseInt(countRaw.trim(), 10);
   return { commits, total: Number.isFinite(n) ? n : commits.length };
 }
@@ -614,11 +628,84 @@ export async function listTags(repo: string): Promise<string[]> {
   return tags;
 }
 
-export async function cherryCheck(repo: string, defaultBranch: string, branchRef: string): Promise<boolean> {
-  const raw = await tryRun(repo, ['cherry', defaultBranch, branchRef]);
-  const lines = raw.split('\n').filter(Boolean);
-  if (lines.length === 0) return false;
-  return lines.every((l) => l.startsWith('-'));
+// Build the list of refs that collectively represent "main's history" for
+// squash-merge detection. When the remote-tracking `origin/<defaultBranch>`
+// exists, we include it alongside the local branch — the refresh loop keeps
+// origin/main fresh via `git fetch` but never advances local main, so right
+// after a PR is squash-merged on GitHub the squash commit lives on
+// origin/main only. Walking local main alone would silently miss it and
+// leave every downstream branch tagged "unmerged" until the user manually
+// `git pull`s. Passing both refs to `git log`/`git cherry` is cheap and
+// correct — git dedupes by SHA, and the commits overlap entirely when
+// local is up to date.
+//
+// Returns `[defaultBranch]` alone when origin/<defaultBranch> doesn't
+// exist (fresh repo, no remote, or a different remote name) — callers are
+// guaranteed to get at least one ref back.
+export async function resolveMainUpstreams(
+  repo: string,
+  defaultBranch: string,
+): Promise<string[]> {
+  const refs = [defaultBranch];
+  // --verify --quiet: prints the SHA on success, nothing on failure.
+  // tryRun returns '' on any non-zero exit, so an empty trim means the ref
+  // doesn't exist and we stick with just local.
+  const verify = await tryRun(repo, [
+    'rev-parse',
+    '--verify',
+    '--quiet',
+    `refs/remotes/origin/${defaultBranch}`,
+  ]);
+  if (verify.trim()) refs.push(`origin/${defaultBranch}`);
+  return refs;
+}
+
+// Run `git cherry` against each upstream ref and decide whether every commit
+// on `branchRef` is patch-equivalent to something on at least one upstream.
+//
+// `git cherry <upstream> <head>` emits one line per commit in
+// `<head>`..`<upstream>..<head>` (commits in head but not upstream), prefixed
+// with `-` when an equivalent patch-id exists upstream and `+` when it
+// doesn't. A branch is squash-merged when every commit has at least one `-`
+// across the upstream set.
+//
+// Why we union across upstreams instead of just picking the "ahead-most"
+// one: when local main has diverged commits (user committed locally but
+// hasn't pushed), neither local nor origin is a strict superset — we need
+// both to get full coverage. Union by SHA is the only correct answer.
+export async function cherryCheck(
+  repo: string,
+  upstreams: string[],
+  branchRef: string,
+): Promise<boolean> {
+  if (upstreams.length === 0) return false;
+  // Per-branch-commit: SHA → has a `-` mark in at least one run.
+  // We track the full set of SHAs seen across all runs too, because cherry
+  // may list slightly different sets per upstream (a commit that's an
+  // ancestor of origin/main won't appear in `cherry origin/main branch`
+  // even though it would in `cherry local branch`).
+  const presentShas = new Set<string>();
+  const allBranchShas = new Set<string>();
+  for (const upstream of upstreams) {
+    const raw = await tryRun(repo, ['cherry', upstream, branchRef]);
+    for (const line of raw.split('\n')) {
+      if (!line) continue;
+      // Format: `<sign> <sha>` (sign is `+` or `-`, then a space, then the
+      // full 40-char SHA). No `-v`, so no subject suffix.
+      const spaceIdx = line.indexOf(' ');
+      if (spaceIdx < 0) continue;
+      const sign = line.slice(0, spaceIdx);
+      const sha = line.slice(spaceIdx + 1).trim();
+      if (!sha) continue;
+      allBranchShas.add(sha);
+      if (sign === '-') presentShas.add(sha);
+    }
+  }
+  if (allBranchShas.size === 0) return false;
+  for (const sha of allBranchShas) {
+    if (!presentShas.has(sha)) return false;
+  }
+  return true;
 }
 
 export async function deleteLocalBranch(repo: string, name: string, force = false): Promise<void> {
