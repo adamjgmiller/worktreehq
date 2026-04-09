@@ -55,6 +55,52 @@ export async function isNotepadTouched(worktreePath: string): Promise<boolean> {
 // card.
 export const AUTOFILL_MAX_CHARS = 200;
 
+// Flat shape returned by `list_notepads`. Mirrors the Rust NotepadListEntry.
+export type NotepadListEntry = {
+  path: string;
+  content: string;
+  touched: boolean;
+};
+
+/**
+ * Returns every notepad entry on disk, sorted by path. The Worktree Archive
+ * view filters this client-side against the live worktree list and the
+ * current repo's path prefix to surface notes whose worktrees no longer
+ * exist.
+ *
+ * Falls back to the in-memory store when running outside Tauri so the unit
+ * tests and dev preview don't have to mock the IPC layer.
+ */
+export async function listNotepads(): Promise<NotepadListEntry[]> {
+  if (!isTauri()) {
+    return Array.from(memoryStore.entries())
+      .map(([path, e]) => ({ path, content: e.content, touched: e.touched }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+  try {
+    return await invoke<NotepadListEntry[]>('list_notepads');
+  } catch {
+    // Empty list is the safe fallback: an archive view that can't reach the
+    // backend just shows "nothing archived" rather than an error toast.
+    return [];
+  }
+}
+
+/**
+ * Permanently removes a notepad entry from the on-disk store. Used by the
+ * Worktree Archive's "delete" action when the user wants to clear out an
+ * orphaned note. Throws on failure so the caller can surface the error in
+ * the UI — unlike the read paths, this is destructive and silent failure
+ * would be a footgun.
+ */
+export async function deleteNotepad(worktreePath: string): Promise<void> {
+  if (!isTauri()) {
+    memoryStore.delete(worktreePath);
+    return;
+  }
+  await invoke<void>('delete_notepad', { worktreePath });
+}
+
 /**
  * Compute the autofill seed for an empty notepad, or null if it shouldn't
  * be autofilled. A seed is returned only when:

@@ -17,6 +17,8 @@ pub fn run() {
             commands::notepads::read_notepad,
             commands::notepads::write_notepad,
             commands::notepads::is_notepad_touched,
+            commands::notepads::list_notepads,
+            commands::notepads::delete_notepad,
             commands::watcher::start_watching,
             commands::watcher::stop_watching,
             commands::claude_state::read_claude_state,

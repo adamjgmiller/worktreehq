@@ -5,6 +5,7 @@ import { WorktreesView } from './components/worktrees/WorktreesView';
 import { BranchesView } from './components/branches/BranchesView';
 import { SquashView } from './components/squash/SquashView';
 import { GraphView } from './components/graph/GraphView';
+import { WorktreeArchiveView } from './components/archive/WorktreeArchiveView';
 import { ErrorBanner } from './components/common/ErrorBanner';
 import { ContentSkeleton } from './components/common/ContentSkeleton';
 import { SettingsModal } from './components/common/SettingsModal';
@@ -179,6 +180,7 @@ export default function App() {
             {tab === 'branches' && <BranchesView />}
             {tab === 'squash' && <SquashView />}
             {tab === 'graph' && <GraphView />}
+            {tab === 'archive' && <WorktreeArchiveView />}
           </>
         ) : showContentSkeleton ? (
           <ContentSkeleton tab={tab} />

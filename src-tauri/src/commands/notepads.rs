@@ -119,6 +119,55 @@ pub fn is_notepad_touched(worktree_path: String) -> AppResult<bool> {
     Ok(map.get(&worktree_path).map(|e| e.touched).unwrap_or(false))
 }
 
+/// Flat shape for IPC. We hand the frontend a Vec instead of a HashMap so
+/// the order is stable across calls (sorted by path), which keeps the
+/// Worktree Archive view from reshuffling rows on every render tick.
+#[derive(Debug, Serialize)]
+pub struct NotepadListEntry {
+    pub path: String,
+    pub content: String,
+    pub touched: bool,
+}
+
+/// Returns every notepad entry on disk. The Worktree Archive view filters
+/// these client-side: it intersects against the live `git worktree list`
+/// and the current repo's path prefix to surface notes whose worktrees no
+/// longer exist (the whole point of the archive).
+///
+/// Returning everything — not pre-filtering on the Rust side — is deliberate:
+/// the Rust process has no notion of "current repo" or "live worktrees"
+/// (those live in the Zustand store on the frontend). Pushing that filter
+/// down here would require either threading repo context into a command
+/// that's currently context-free, or duplicating the worktree-list logic.
+/// Both are worse than letting TS do a single `.filter()`.
+#[tauri::command]
+pub fn list_notepads() -> AppResult<Vec<NotepadListEntry>> {
+    let _g = NOTEPADS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let map = load_all()?;
+    let mut entries: Vec<NotepadListEntry> = map
+        .into_iter()
+        .map(|(path, e)| NotepadListEntry {
+            path,
+            content: e.content,
+            touched: e.touched,
+        })
+        .collect();
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
+}
+
+/// Permanently removes a notepad entry from the on-disk store. Used by the
+/// Worktree Archive's "delete" action when the user wants to clear out an
+/// orphaned note. Idempotent: a missing key is a no-op (HashMap::remove
+/// returns None which we ignore), so a double-click can't error out.
+#[tauri::command]
+pub fn delete_notepad(worktree_path: String) -> AppResult<()> {
+    let _g = NOTEPADS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut map = load_all()?;
+    map.remove(&worktree_path);
+    save_all(&map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
