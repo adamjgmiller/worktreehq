@@ -12,7 +12,7 @@ Two problems most git GUIs don't solve:
 
 **1. Squash merges break branch hygiene.** After GitHub squash-merges a PR, the source branch's commits never appear on `main`, so `git branch --merged` returns nothing. Tools like GitKraken, Fork, and Tower treat the commit graph as the source of truth — but squash merging deliberately breaks that graph. The result: dead branches pile up forever and there's no safe way to bulk-clean them.
 
-**2. Parallel AI coding sessions across worktrees have no unified view.** If you run 2–8 [Claude Code](https://claude.com/claude-code), Codex, or other agent sessions in parallel `git worktree`s, you have no single place to see what's committed, what's dirty, what's ahead/behind main, which sessions are alive, or which branches are stale.
+**2. Parallel AI coding sessions across worktrees have no unified view.** If you run multiple [Claude Code](https://claude.com/claude-code), Codex, or other agent sessions in parallel `git worktree`s, you have no single place to see what's committed, what's dirty, what's ahead/behind main, which sessions are alive, or which branches are stale.
 
 WorktreeHQ is a desktop dashboard for both. It detects squash-merged branches via the GitHub API plus a `git cherry` patch-id fallback, surfaces live worktree state across all your parallel sessions, and lets you safely bulk-delete the dead branches that other tools think are still alive.
 
