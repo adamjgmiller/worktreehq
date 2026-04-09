@@ -161,11 +161,26 @@ fn sessions_oldest_first(dir: &Path) -> Vec<PathBuf> {
 /// MAX_LINES_SCANNED lines.
 ///
 /// The filter is shape-based, not graph-based: we look for `type:"user"`,
-/// `message.role:"user"`, and `message.content` being a JSON string. The
-/// content-is-string discriminator is what cleanly excludes the array-shaped
-/// `tool_result` records that also use `type:"user"`. We additionally drop
-/// records whose content starts with `<command-` because Claude Code wraps
-/// slash-command stdout in fake user records using that envelope.
+/// `message.role:"user"`, and then extract human-readable text from
+/// `message.content`. Content comes in two shapes:
+///
+///   1. Plain string  → simple typed prompt, no attachments.
+///   2. Array of blocks → either a `tool_result` envelope (which we skip)
+///      or a typed prompt with attached image(s) and/or text. Claude Code
+///      switches to array form whenever the user pasted or dropped an
+///      image into their prompt. The text block in that array already
+///      contains "[Image #N]" markers (Claude Code injects them when the
+///      session is recorded), so we just need to pull the text out. If
+///      the message is image-only with no accompanying text we fall back
+///      to a literal "[Image]" placeholder so the notepad still gets a
+///      seed instead of silently advancing to the next prompt.
+///
+/// Discriminator between the two array sub-shapes: `tool_result` records
+/// always contain at least one block with `type:"tool_result"`. Human
+/// messages with images contain only `type:"text"` and `type:"image"`
+/// blocks. We also drop records whose extracted text starts with
+/// `<command-` because Claude Code wraps slash-command stdout in fake
+/// user records using that envelope.
 pub(crate) fn extract_first_user_prompt(jsonl: &Path) -> Option<String> {
     let file = fs::File::open(jsonl).ok()?;
     let reader = BufReader::new(file);
@@ -186,13 +201,53 @@ pub(crate) fn extract_first_user_prompt(jsonl: &Path) -> Option<String> {
         if msg.get("role").and_then(|r| r.as_str()) != Some("user") {
             continue;
         }
-        // The crucial filter: human-typed prompts have string content;
-        // tool_result records have array content. There's no other reliable
-        // way to tell them apart from the JSONL alone.
-        let Some(content) = msg.get("content").and_then(|c| c.as_str()) else {
+        let Some(content_value) = msg.get("content") else {
             continue;
         };
-        let trimmed = content.trim();
+        let extracted: String = if let Some(s) = content_value.as_str() {
+            s.to_string()
+        } else if let Some(arr) = content_value.as_array() {
+            // tool_result envelope → not human input, skip the whole record.
+            let is_tool_result = arr.iter().any(|b| {
+                b.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+            });
+            if is_tool_result {
+                continue;
+            }
+            // Walk text/image blocks. Text blocks already have "[Image #N]"
+            // markers baked in by Claude Code, so for the common case
+            // (text + image) we just join the text blocks and ignore the
+            // image blocks entirely. The has_image fallback only fires for
+            // image-only messages where there's no text to anchor to.
+            let mut text_parts: Vec<String> = Vec::new();
+            let mut has_image = false;
+            for block in arr {
+                match block.get("type").and_then(|t| t.as_str()) {
+                    Some("text") => {
+                        if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                            text_parts.push(t.to_string());
+                        }
+                    }
+                    Some("image") => {
+                        has_image = true;
+                    }
+                    _ => {}
+                }
+            }
+            if text_parts.is_empty() {
+                if has_image {
+                    "[Image]".to_string()
+                } else {
+                    continue;
+                }
+            } else {
+                text_parts.join(" ")
+            }
+        } else {
+            continue;
+        };
+
+        let trimmed = extracted.trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -313,11 +368,11 @@ mod tests {
     }
 
     #[test]
-    fn skips_user_records_with_array_content() {
+    fn skips_tool_result_envelope_records() {
         // Tool-result records also have type=user but message.content is
-        // an array of {tool_use_id, type, content} objects. We must NOT
-        // pick those — they're not human input. The next record (a real
-        // string-content prompt) is the one we want.
+        // an array containing at least one block with type="tool_result".
+        // We must NOT pick those — they're not human input. The next
+        // record (a real string-content prompt) is the one we want.
         let tmp = tempdir();
         let jsonl = write_jsonl(
             tmp.path(),
@@ -330,6 +385,67 @@ mod tests {
         assert_eq!(
             extract_first_user_prompt(&jsonl),
             Some("the actual prompt".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_text_from_user_record_with_attached_image() {
+        // The bug this guards against: when a user pastes/drops an image
+        // alongside their text, Claude Code switches `message.content` to
+        // an array of blocks. The previous string-only filter skipped
+        // these records and the autofill landed on the next plain prompt
+        // (e.g. "yep commit and push and pr") instead of the real first
+        // one. The text block already has "[Image #N]" markers baked in,
+        // so just extracting the text gives the user-visible prompt.
+        let tmp = tempdir();
+        let jsonl = write_jsonl(
+            tmp.path(),
+            "s.jsonl",
+            &[
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Image #1] please make this the new logo"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KG"}}]}}"#,
+            ],
+        );
+        assert_eq!(
+            extract_first_user_prompt(&jsonl),
+            Some("[Image #1] please make this the new logo".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_image_placeholder_for_image_only_user_record() {
+        // Edge case: user pasted an image with no accompanying text.
+        // We can't extract text but we still want SOMETHING in the
+        // notepad rather than silently skipping to the next prompt.
+        let tmp = tempdir();
+        let jsonl = write_jsonl(
+            tmp.path(),
+            "s.jsonl",
+            &[
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KG"}}]}}"#,
+            ],
+        );
+        assert_eq!(
+            extract_first_user_prompt(&jsonl),
+            Some("[Image]".to_string())
+        );
+    }
+
+    #[test]
+    fn joins_multiple_text_blocks_in_array_content() {
+        // Defensive: if a user message somehow ends up with multiple
+        // text blocks (image-text-image-text interleaving), join them
+        // with spaces so the notepad seed reads naturally.
+        let tmp = tempdir();
+        let jsonl = write_jsonl(
+            tmp.path(),
+            "s.jsonl",
+            &[
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"first part"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"x"}},{"type":"text","text":"second part"}]}}"#,
+            ],
+        );
+        assert_eq!(
+            extract_first_user_prompt(&jsonl),
+            Some("first part second part".to_string())
         );
     }
 
