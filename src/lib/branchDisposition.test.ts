@@ -27,6 +27,8 @@ function mkWorktree(over: Partial<Worktree> & { status: WorktreeStatus }): Workt
     stashCount: 0,
     ahead: 0,
     behind: 0,
+    aheadOfMain: 0,
+    behindMain: 0,
     hasConflicts: false,
     lastCommit: { sha: 'abc', message: '', date: '', author: '' },
     ...over,

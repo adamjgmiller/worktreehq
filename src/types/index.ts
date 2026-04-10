@@ -29,6 +29,8 @@ export interface Worktree {
   stashCount: number;
   ahead: number;
   behind: number;
+  aheadOfMain: number;
+  behindMain: number;
   hasConflicts: boolean;
   inProgress?: InProgressOp;
   lastCommit: LastCommit;

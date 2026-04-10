@@ -30,6 +30,8 @@ function wt(path: string, branch = 'feat/x'): Worktree {
     stashCount: 0,
     ahead: 0,
     behind: 0,
+    aheadOfMain: 0,
+    behindMain: 0,
     hasConflicts: false,
     lastCommit: { sha: 'abc', message: '', date: '', author: '' },
     status: 'clean',

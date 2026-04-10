@@ -230,6 +230,8 @@ function orphanedWorktree(
     stashCount: 0,
     ahead: 0,
     behind: 0,
+    aheadOfMain: 0,
+    behindMain: 0,
     hasConflicts: false,
     lastCommit: { sha: head, message: '', date: '', author: '' },
     status: 'clean',
@@ -242,10 +244,12 @@ async function worktreeCore(
   head: string,
   branch: string,
   isPrimary: boolean,
+  defaultBranch: string,
 ): Promise<Worktree> {
-  const [status, ab, upstreamRaw, logLine, stashes, inProgress] = await Promise.all([
+  const [status, ab, abMain, upstreamRaw, logLine, stashes, inProgress] = await Promise.all([
     tryRun(path, ['status', '--porcelain=v1']),
     tryRun(path, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD']),
+    tryRun(path, ['rev-list', '--left-right', '--count', `origin/${defaultBranch}...HEAD`]),
     tryRun(path, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']),
     tryRun(path, ['log', '-1', '--format=%H%x09%s%x09%cI%x09%an']),
     stashCount(path, branch),
@@ -261,6 +265,14 @@ async function worktreeCore(
   if (abm) {
     behind = parseInt(abm[1], 10);
     ahead = parseInt(abm[2], 10);
+  }
+
+  let aheadOfMain = 0;
+  let behindMain = 0;
+  const abmMain = abMain.trim().match(/^(\d+)\s+(\d+)$/);
+  if (abmMain) {
+    behindMain = parseInt(abmMain[1], 10);
+    aheadOfMain = parseInt(abmMain[2], 10);
   }
 
   const upstream = upstreamRaw.trim() || undefined;
@@ -284,6 +296,8 @@ async function worktreeCore(
     stashCount: stashes,
     ahead,
     behind,
+    aheadOfMain,
+    behindMain,
     hasConflicts: conflicts > 0,
     inProgress,
     lastCommit: {
@@ -296,7 +310,7 @@ async function worktreeCore(
   };
 }
 
-export async function listWorktrees(repo: string): Promise<Worktree[]> {
+export async function listWorktrees(repo: string, defaultBranch: string): Promise<Worktree[]> {
   // Read path: use tryRun so a transient failure on one poll tick doesn't
   // blank the entire worktrees tab via a thrown pipeline error. An empty
   // result degrades gracefully to "no worktrees" for the tick; the next
@@ -311,7 +325,7 @@ export async function listWorktrees(repo: string): Promise<Worktree[]> {
       if (e.prunable) {
         return orphanedWorktree(e.path, e.head, e.branch, e.prunable);
       }
-      return worktreeCore(e.path, e.head, e.branch, i === 0);
+      return worktreeCore(e.path, e.head, e.branch, i === 0, defaultBranch);
     }),
   );
 }
@@ -409,10 +423,21 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
       });
     }
   }
-  // Pick up the default branch's current sha from the ref data we already
-  // have. Used as a cache key component — if main moves, every branch's
-  // ahead/behind relative to main is potentially stale and must be recomputed.
-  const mainSha = branches.get(defaultBranch)?.lastCommitSha ?? '';
+  // Prefer `origin/<defaultBranch>` as the comparison ref for ahead/behind
+  // and merge-base — local main can be stale because the refresh loop fetches
+  // but never fast-forwards it. Extract the origin SHA from the remote refs
+  // we already fetched (no extra subprocess). Fall back to local when no
+  // remote tracking ref exists (fresh repo, no remote configured).
+  let originMainSha = '';
+  for (const line of remoteRaw.split('\n').filter(Boolean)) {
+    const [refShort, sha] = line.split('\t');
+    if (refShort === `origin/${defaultBranch}`) {
+      originMainSha = sha || '';
+      break;
+    }
+  }
+  const mainRef = originMainSha ? `origin/${defaultBranch}` : defaultBranch;
+  const mainSha = originMainSha || (branches.get(defaultBranch)?.lastCommitSha ?? '');
 
   // Build the set of first-parent shas on the default branch. We need this to
   // distinguish "branch tip is just a snapshot of main's history" from "branch
@@ -435,7 +460,7 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
   // the per-branch cache key (which already includes mainSha) stays valid.
   const firstParentRaw = await tryRun(repo, [
     'rev-list',
-    defaultBranch,
+    mainRef,
     '--first-parent',
   ]);
   const mainFirstParentShas = new Set(firstParentRaw.split('\n').filter(Boolean));
@@ -473,9 +498,9 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
           'rev-list',
           '--left-right',
           '--count',
-          `${defaultBranch}...${ref}`,
+          `${mainRef}...${ref}`,
         ]).catch(() => null),
-        gitExec(repo, ['merge-base', '--is-ancestor', ref, defaultBranch]).catch(
+        gitExec(repo, ['merge-base', '--is-ancestor', ref, mainRef]).catch(
           () => null,
         ),
       ]);
