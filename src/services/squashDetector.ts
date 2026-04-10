@@ -91,7 +91,7 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       // show a misleading "MERGED (SQUASH)" pill while the user is still
       // actively working through the PR.
       const hasOpenPR = match?.pr?.state === 'open';
-      if (match && match.mergeStatus === 'unmerged' && isLikelySquash && !hasOpenPR) {
+      if (match && (match.mergeStatus === 'unmerged' || match.mergeStatus === 'empty') && isLikelySquash && !hasOpenPR) {
         match.mergeStatus = 'squash-merged';
         // Only attach the historical merged PR when the branch doesn't
         // already carry an open PR from refreshLoop's listOpenPRsForBranches
