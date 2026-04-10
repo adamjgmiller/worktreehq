@@ -78,7 +78,7 @@ async function runRefreshOnce(): Promise<void> {
     // into listMainCommits (returns `{ commits, total }`). listTags is
     // now short-TTL cached inside gitService.
     const [wts, branches, mainCommitsResult, tags] = await Promise.all([
-      listWorktrees(repo.path),
+      listWorktrees(repo.path, repo.defaultBranch),
       listBranches(repo.path, repo.defaultBranch),
       listMainCommits(repo.path, repo.defaultBranch),
       listTags(repo.path),

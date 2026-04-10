@@ -230,6 +230,8 @@ function orphanedWorktree(
     stashCount: 0,
     ahead: 0,
     behind: 0,
+    aheadOfMain: 0,
+    behindMain: 0,
     hasConflicts: false,
     lastCommit: { sha: head, message: '', date: '', author: '' },
     status: 'clean',
@@ -242,10 +244,12 @@ async function worktreeCore(
   head: string,
   branch: string,
   isPrimary: boolean,
+  defaultBranch: string,
 ): Promise<Worktree> {
-  const [status, ab, upstreamRaw, logLine, stashes, inProgress] = await Promise.all([
+  const [status, ab, abMain, upstreamRaw, logLine, stashes, inProgress] = await Promise.all([
     tryRun(path, ['status', '--porcelain=v1']),
     tryRun(path, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD']),
+    tryRun(path, ['rev-list', '--left-right', '--count', `origin/${defaultBranch}...HEAD`]),
     tryRun(path, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']),
     tryRun(path, ['log', '-1', '--format=%H%x09%s%x09%cI%x09%an']),
     stashCount(path, branch),
@@ -261,6 +265,14 @@ async function worktreeCore(
   if (abm) {
     behind = parseInt(abm[1], 10);
     ahead = parseInt(abm[2], 10);
+  }
+
+  let aheadOfMain = 0;
+  let behindMain = 0;
+  const abmMain = abMain.trim().match(/^(\d+)\s+(\d+)$/);
+  if (abmMain) {
+    behindMain = parseInt(abmMain[1], 10);
+    aheadOfMain = parseInt(abmMain[2], 10);
   }
 
   const upstream = upstreamRaw.trim() || undefined;
@@ -284,6 +296,8 @@ async function worktreeCore(
     stashCount: stashes,
     ahead,
     behind,
+    aheadOfMain,
+    behindMain,
     hasConflicts: conflicts > 0,
     inProgress,
     lastCommit: {
@@ -296,7 +310,7 @@ async function worktreeCore(
   };
 }
 
-export async function listWorktrees(repo: string): Promise<Worktree[]> {
+export async function listWorktrees(repo: string, defaultBranch: string): Promise<Worktree[]> {
   // Read path: use tryRun so a transient failure on one poll tick doesn't
   // blank the entire worktrees tab via a thrown pipeline error. An empty
   // result degrades gracefully to "no worktrees" for the tick; the next
@@ -311,7 +325,7 @@ export async function listWorktrees(repo: string): Promise<Worktree[]> {
       if (e.prunable) {
         return orphanedWorktree(e.path, e.head, e.branch, e.prunable);
       }
-      return worktreeCore(e.path, e.head, e.branch, i === 0);
+      return worktreeCore(e.path, e.head, e.branch, i === 0, defaultBranch);
     }),
   );
 }
