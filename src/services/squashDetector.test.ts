@@ -22,8 +22,10 @@ vi.mock('./githubService', () => ({
 }));
 
 import { cherryCheck, resolveMainUpstreams } from './gitService';
+import { batchFetchPRs } from './githubService';
 const cherryCheckMock = cherryCheck as unknown as ReturnType<typeof vi.fn>;
 const resolveMainUpstreamsMock = resolveMainUpstreams as unknown as ReturnType<typeof vi.fn>;
+const batchFetchPRsMock = batchFetchPRs as unknown as ReturnType<typeof vi.fn>;
 
 describe('parsePrNumberFromSubject', () => {
   it('extracts PR number from trailing (#N)', () => {
@@ -188,5 +190,91 @@ describe('detectSquashMerges: cherry-check cache', () => {
     await detectSquashMerges(makeInput());
     // Both branches re-check because the prior failures weren't cached.
     expect(cherryCheckMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('skips cherry-check for branches with an open PR', async () => {
+    cherryCheckMock.mockResolvedValue(true);
+    const input = makeInput();
+    // Attach an open PR to feat/a — its patches may be on main via a
+    // different PR, but the open PR means the user is still working on it.
+    input.branches[0].pr = {
+      number: 42,
+      title: 'Add feature A',
+      state: 'open',
+      headRef: 'feat/a',
+      url: 'https://github.com/o/r/pull/42',
+    };
+    const result = await detectSquashMerges(input);
+    // feat/a should be excluded from cherry candidates → stays unmerged.
+    expect(result.updatedBranches.find((b) => b.name === 'feat/a')!.mergeStatus).toBe('unmerged');
+    // feat/b has no open PR → cherry-check runs and finds squash-merged.
+    expect(result.updatedBranches.find((b) => b.name === 'feat/b')!.mergeStatus).toBe(
+      'squash-merged',
+    );
+    // Only one cherry-check call (for feat/b), not two.
+    expect(cherryCheckMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('detectSquashMerges: PR-tag pass respects open PRs', () => {
+  beforeEach(() => {
+    _clearCherryCacheForTests();
+    cherryCheckMock.mockReset();
+    batchFetchPRsMock.mockReset();
+  });
+
+  it('does not tag a branch as squash-merged when it carries an open PR', async () => {
+    // Simulate: PR #10 was squash-merged from `feat/x`, and a commit on main
+    // references it. But the local `feat/x` branch already carries a DIFFERENT
+    // open PR (e.g., new work pushed after the merge, or same branch name in a
+    // fork workflow).
+    const mergedPR = {
+      number: 10,
+      title: 'Old work',
+      state: 'merged' as const,
+      mergeCommitSha: 'main-sha-1',
+      headRef: 'feat/x',
+      url: 'https://github.com/o/r/pull/10',
+    };
+    batchFetchPRsMock.mockResolvedValue(new Map([[10, mergedPR]]));
+    cherryCheckMock.mockResolvedValue(false);
+
+    const result = await detectSquashMerges({
+      repoPath: '/repo',
+      defaultBranch: 'main',
+      mainCommits: [
+        { sha: 'main-sha-1', subject: 'feat: old work (#10)', date: new Date().toISOString(), prNumber: 10 },
+      ],
+      branches: [
+        {
+          name: 'feat/x',
+          hasLocal: true,
+          hasRemote: false,
+          lastCommitDate: new Date().toISOString(),
+          lastCommitSha: 'branch-sha',
+          aheadOfMain: 3,
+          behindMain: 1,
+          mergeStatus: 'unmerged',
+          // Open PR already attached by refreshLoop before squash detection.
+          pr: {
+            number: 20,
+            title: 'New work',
+            state: 'open' as const,
+            headRef: 'feat/x',
+            url: 'https://github.com/o/r/pull/20',
+          },
+        } as Branch,
+      ],
+      tags: [],
+      owner: 'o',
+      name: 'r',
+    });
+
+    const branch = result.updatedBranches.find((b) => b.name === 'feat/x')!;
+    // Should stay unmerged — the open PR takes priority.
+    expect(branch.mergeStatus).toBe('unmerged');
+    // The open PR should NOT be overwritten by the merged PR.
+    expect(branch.pr!.number).toBe(20);
+    expect(branch.pr!.state).toBe('open');
   });
 });
