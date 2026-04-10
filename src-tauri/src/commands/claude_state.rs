@@ -18,6 +18,12 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+/// Timeout for `ps` and `lsof` subprocesses. These should return near-instantly
+/// but can hang when the system has an unresponsive NFS/FUSE mount. Without
+/// this, a blocked `lsof` would wedge the Claude-awareness poll indefinitely.
+const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize)]
@@ -342,15 +348,42 @@ pub(crate) fn parse_ps_claude_pids(text: &str) -> Vec<String> {
     pids
 }
 
+/// Run a subprocess with a timeout. Returns None on spawn failure, timeout, or
+/// if the child can't be waited on. Mirrors the timeout pattern in git_exec.rs.
+fn run_with_timeout(cmd: &mut Command) -> Option<std::process::Output> {
+    let child = cmd.spawn().ok()?;
+    let child_id = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(SUBPROCESS_TIMEOUT) {
+        Ok(result) => result.ok(),
+        Err(_) => {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(child_id as libc::pid_t, libc::SIGKILL);
+            }
+            eprintln!(
+                "[claude_state] subprocess timed out after {}s",
+                SUBPROCESS_TIMEOUT.as_secs()
+            );
+            None
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn scan_live_claude_cwds() -> Vec<String> {
     // Step 1: enumerate claude processes via ps. We use `-axo pid=,command=`
     // because `command=` shows the full argv (including argv[0] as the
     // wrapper set it) rather than the kernel's COMM field, which would be
     // the version string (e.g. "2.1.97") and match nothing.
-    let ps_output = match Command::new("ps").args(["-axo", "pid=,command="]).output() {
-        Ok(o) => o,
-        Err(_) => return Vec::new(),
+    let ps_output = match run_with_timeout(
+        Command::new("ps").args(["-axo", "pid=,command="]),
+    ) {
+        Some(o) => o,
+        None => return Vec::new(),
     };
     let ps_text = String::from_utf8_lossy(&ps_output.stdout);
     let pids = parse_ps_claude_pids(&ps_text);
@@ -367,12 +400,11 @@ fn scan_live_claude_cwds() -> Vec<String> {
     //     (`p`) and fd (`f`) records are also emitted as part of the record
     //     grouping; parse_lsof_pn_output already ignores those.
     let pid_list = pids.join(",");
-    let output = match Command::new("lsof")
-        .args(["-nP", "-a", "-p", &pid_list, "-d", "cwd", "-Fn"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return Vec::new(),
+    let output = match run_with_timeout(
+        Command::new("lsof").args(["-nP", "-a", "-p", &pid_list, "-d", "cwd", "-Fn"]),
+    ) {
+        Some(o) => o,
+        None => return Vec::new(),
     };
     // lsof exits non-zero when there's nothing to report — that's not an
     // error for us, just an empty result.

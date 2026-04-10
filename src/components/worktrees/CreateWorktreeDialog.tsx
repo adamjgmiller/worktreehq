@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FolderOpen, X } from 'lucide-react';
 import type { Branch } from '../../types';
 import { pathExists } from '../../services/tauriBridge';
@@ -30,6 +30,18 @@ export function CreateWorktreeDialog({
   const [existingBranch, setExistingBranch] = useState<string>(defaultBranch);
   const [newBranchName, setNewBranchName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  // Match the destructive-dialog convention: Escape closes, focus Cancel on mount.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !submitting) onCancel();
+    };
+    document.addEventListener('keydown', onKey);
+    cancelRef.current?.focus();
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel, submitting]);
 
   const existingNames = useMemo(
     () =>
@@ -60,24 +72,34 @@ export function CreateWorktreeDialog({
       setError('Branch is required');
       return;
     }
-    // Pre-check: git worktree add will reject an existing directory anyway,
-    // but the error surfaces post-click and is cryptic. Catching it here gives
-    // inline feedback before the user commits. pathExists returns false on
-    // any error (per tauriBridge.ts), so this fails open if the backend is
-    // unreachable, preserving the pre-change behavior.
-    if (await pathExists(trimmed)) {
-      setError(`Path already exists: ${trimmed}`);
-      return;
+    setSubmitting(true);
+    try {
+      // Pre-check: git worktree add will reject an existing directory anyway,
+      // but the error surfaces post-click and is cryptic. Catching it here gives
+      // inline feedback before the user commits. pathExists returns false on
+      // any error (per tauriBridge.ts), so this fails open if the backend is
+      // unreachable, preserving the pre-change behavior.
+      if (await pathExists(trimmed)) {
+        setError(`Path already exists: ${trimmed}`);
+        return;
+      }
+      onConfirm({ path: trimmed, branch, newBranch: mode === 'new' });
+    } finally {
+      setSubmitting(false);
     }
-    onConfirm({ path: trimmed, branch, newBranch: mode === 'new' });
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !submitting) onCancel();
+      }}
+    >
       <div className="bg-wt-panel border border-wt-border rounded-xl p-6 w-[560px]">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Create worktree</h2>
-          <button onClick={onCancel} aria-label="close">
+          <button onClick={onCancel} disabled={submitting} aria-label="close">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -149,14 +171,20 @@ export function CreateWorktreeDialog({
           {error && <div className="text-xs text-wt-conflict">{error}</div>}
         </div>
         <div className="mt-6 flex justify-end gap-2">
-          <button onClick={onCancel} className="px-3 py-1.5 text-sm text-neutral-400">
+          <button
+            ref={cancelRef}
+            onClick={onCancel}
+            disabled={submitting}
+            className="px-3 py-1.5 text-sm text-neutral-400 disabled:opacity-50"
+          >
             Cancel
           </button>
           <button
             onClick={submit}
-            className="px-3 py-1.5 text-sm bg-wt-info/20 border border-wt-info/50 rounded hover:bg-wt-info/30"
+            disabled={submitting}
+            className="px-3 py-1.5 text-sm bg-wt-info/20 border border-wt-info/50 rounded hover:bg-wt-info/30 disabled:opacity-50"
           >
-            Create
+            {submitting ? 'Creating…' : 'Create'}
           </button>
         </div>
       </div>
