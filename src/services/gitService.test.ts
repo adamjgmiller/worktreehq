@@ -674,6 +674,48 @@ describe('listBranches sha-cache', () => {
     expect(empty?.mergeStatus).toBe('empty');
     expect(real?.mergeStatus).toBe('merged-normally');
   });
+
+  // Regression: when the per-branch rev-list fails (caught by .catch → null),
+  // aheadOfMain stays at its default 0. Without the guard, the downstream
+  // `else if (aheadOfMain === 0)` fires and tags the branch as `empty` — even
+  // though we have no data to support that. The branch should stay `unmerged`.
+  it('does not mis-tag a branch as empty when rev-list fails', async () => {
+    gitExecMock.mockImplementation(async (_repo: string, args: string[]) => {
+      if (args[0] === 'for-each-ref' && args.includes('refs/heads')) {
+        return {
+          stdout: 'main\tmainsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>\n' +
+            'feat/x\tsha-x\t2026-01-01T00:00:00+00:00\t\t<u@x.com>',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args[0] === 'for-each-ref' && args.includes('refs/remotes')) {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (
+        args[0] === 'rev-list' &&
+        args.includes('--first-parent') &&
+        !args.includes('--count')
+      ) {
+        return { stdout: 'mainsha\n', stderr: '', code: 0 };
+      }
+      // Per-branch rev-list THROWS for feat/x (simulating a transient
+      // failure like a ref race during rebase).
+      if (args[0] === 'rev-list') {
+        throw new Error('object not found');
+      }
+      // merge-base also fails.
+      if (args[0] === 'merge-base') {
+        throw new Error('object not found');
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await listBranches('/repo', 'main');
+    const branch = result.find((b) => b.name === 'feat/x');
+    // Should stay at the default `unmerged`, NOT be mis-tagged as `empty`.
+    expect(branch?.mergeStatus).toBe('unmerged');
+  });
 });
 
 describe('isAncestor', () => {

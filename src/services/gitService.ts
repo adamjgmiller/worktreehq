@@ -531,12 +531,16 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
       b.behindMain = behindMain;
       if (merged) {
         b.mergeStatus = 'merged-normally';
-      } else if (aheadOfMain === 0) {
+      } else if (abMatch && aheadOfMain === 0) {
         // Branch has no commits of its own — either pointing exactly at main's
         // tip (just-created via `git worktree add -b`) or lagging behind on
         // main's first-parent line. Either way there is literally nothing to
         // merge, so the bare "unmerged" pill is misleading. Tag it as `empty`
         // so the UI can render a quiet "no work yet" hint instead.
+        //
+        // Guard on `abMatch`: when the rev-list command fails (caught by
+        // .catch → null), aheadOfMain stays at its default 0 and the branch
+        // would be mis-tagged as empty instead of staying `unmerged`.
         b.mergeStatus = 'empty';
       }
       // Only cache when both probes returned a usable answer. A partial

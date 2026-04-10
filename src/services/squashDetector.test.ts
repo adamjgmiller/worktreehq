@@ -278,3 +278,56 @@ describe('detectSquashMerges: PR-tag pass respects open PRs', () => {
     expect(branch.pr!.state).toBe('open');
   });
 });
+
+describe('detectSquashMerges: PR-tag pass reclassifies empty branches', () => {
+  beforeEach(() => {
+    _clearCherryCacheForTests();
+    cherryCheckMock.mockReset();
+    batchFetchPRsMock.mockReset();
+  });
+
+  // Regression: a branch tagged `empty` by listBranches (aheadOfMain === 0)
+  // could still match a squash-merged PR — e.g. the branch was squash-merged
+  // and then its ref was moved to point at main. The PR-tag pass used to
+  // skip these because it only checked `mergeStatus === 'unmerged'`.
+  it('reclassifies an empty branch as squash-merged when it matches a merged PR', async () => {
+    const mergedPR = {
+      number: 15,
+      title: 'Ship feature Y',
+      state: 'merged' as const,
+      mergeCommitSha: 'main-sha-1',
+      headRef: 'feat/y',
+      url: 'https://github.com/o/r/pull/15',
+    };
+    batchFetchPRsMock.mockResolvedValue(new Map([[15, mergedPR]]));
+    cherryCheckMock.mockResolvedValue(false);
+
+    const result = await detectSquashMerges({
+      repoPath: '/repo',
+      defaultBranch: 'main',
+      mainCommits: [
+        { sha: 'main-sha-1', subject: 'feat: ship feature Y (#15)', date: new Date().toISOString(), prNumber: 15 },
+      ],
+      branches: [
+        {
+          name: 'feat/y',
+          hasLocal: true,
+          hasRemote: false,
+          lastCommitDate: new Date().toISOString(),
+          lastCommitSha: 'main-sha-1',
+          aheadOfMain: 0,
+          behindMain: 0,
+          // listBranches tagged this as `empty` because aheadOfMain === 0.
+          mergeStatus: 'empty',
+        } as Branch,
+      ],
+      tags: [],
+      owner: 'o',
+      name: 'r',
+    });
+
+    const branch = result.updatedBranches.find((b) => b.name === 'feat/y')!;
+    expect(branch.mergeStatus).toBe('squash-merged');
+    expect(branch.pr!.number).toBe(15);
+  });
+});
