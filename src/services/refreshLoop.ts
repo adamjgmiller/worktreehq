@@ -267,7 +267,7 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     }
     return;
   }
-  const { repo, setFetching, setError } = useRepoStore.getState();
+  const { repo, setFetching, setLastFetchError, setError } = useRepoStore.getState();
   if (!repo) return;
   fetchInFlight = true;
   setFetching(true);
@@ -292,6 +292,15 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
       } else {
         console.warn('[refreshLoop] background fetch failed:', msg);
       }
+      // Surface background failures via the subtle RepoBar indicator so
+      // silent auth/network issues (e.g. expired SSH key after a reboot)
+      // don't go completely unnoticed. User-initiated failures already
+      // get the full ErrorBanner via setError above — don't also set
+      // lastFetchError or the user sees two independently-dismissible
+      // error surfaces for the same failure.
+      if (!userInitiated) {
+        setLastFetchError(msg);
+      }
       // Even on a failed fetch, fall through to refreshOnce so the UI
       // reflects whatever local state we already have. Without this a
       // user click would leave the shimmer in place if the very first
@@ -301,6 +310,8 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
       }
       return;
     }
+    // Fetch succeeded — clear any prior background failure indicator.
+    setLastFetchError(null);
     const after = await snapshotRemoteRefs(repo.path);
     const refsChanged = !(before && after && before === after);
     if (!refsChanged && !userInitiated) {

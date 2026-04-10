@@ -31,6 +31,11 @@ interface StoreState {
   // RepoBar spinner binds to this so it doesn't animate on the heartbeat.
   userRefreshing: boolean;
   fetching: boolean;
+  // Last background fetch error message. Null when fetches are healthy.
+  // Unlike `error` (which is the full-width ErrorBanner for user-initiated
+  // failures), this surfaces as a subtle inline indicator in RepoBar so
+  // silent background failures (e.g. expired SSH key) don't go unnoticed.
+  lastFetchError: string | null;
   error: string | null;
   lastRefresh: number;
   githubTokenSet: boolean;
@@ -65,6 +70,7 @@ interface StoreState {
   setLoading: (v: boolean) => void;
   setUserRefreshing: (v: boolean) => void;
   setFetching: (v: boolean) => void;
+  setLastFetchError: (e: string | null) => void;
   setError: (e: string | null) => void;
   setTokenPresent: (v: boolean) => void;
   setDataRepoPath: (p: string | null) => void;
@@ -94,6 +100,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   loading: false,
   userRefreshing: false,
   fetching: false,
+  lastFetchError: null,
   error: null,
   lastRefresh: 0,
   githubTokenSet: false,
@@ -117,6 +124,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   setLoading: (loading) => set({ loading }),
   setUserRefreshing: (userRefreshing) => set({ userRefreshing }),
   setFetching: (fetching) => set({ fetching }),
+  setLastFetchError: (lastFetchError) => set({ lastFetchError }),
   setError: (error) => set({ error }),
   setTokenPresent: (githubTokenSet) => set({ githubTokenSet }),
   setDataRepoPath: (dataRepoPath) => set({ dataRepoPath }),

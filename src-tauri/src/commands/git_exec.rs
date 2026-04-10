@@ -14,11 +14,12 @@ pub struct GitExecResult {
 }
 
 // Wall-clock cap on a single git subprocess. The env scrub below prevents the
-// most common hang (credential prompts) but not slow networks, dead remotes,
-// or stuck filesystems — `git fetch` over a wedged TCP connection or `git
-// status` against a sleeping NFS mount could otherwise pin a Tauri worker
-// thread indefinitely. 90s is generous enough for legitimately slow fetches
-// against a large remote while still cutting off truly hung processes.
+// most common hangs (HTTPS credential prompts via GIT_TERMINAL_PROMPT=0, SSH
+// passphrase prompts via BatchMode=yes, slow TCP via ConnectTimeout=10) but
+// not every pathological case — `git status` against a sleeping NFS mount or a
+// fetch stuck mid-transfer could still pin a Tauri worker thread. 90s is
+// generous enough for legitimately slow fetches against a large remote while
+// still cutting off truly hung processes.
 const GIT_EXEC_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[tauri::command]
@@ -39,6 +40,21 @@ pub fn git_exec(repo_path: String, args: Vec<String>) -> AppResult<GitExecResult
     //   GIT_TERMINAL_PROMPT=0  fetch against an unreachable HTTPS remote
     //                          would hang forever waiting for credentials
     //                          (no TTY to type into), wedging the refresh loop.
+    //   GIT_SSH_COMMAND         the SSH equivalent of GIT_TERMINAL_PROMPT=0.
+    //                          GIT_TERMINAL_PROMPT only covers git's own
+    //                          HTTPS credential helpers — SSH passphrase
+    //                          prompts are handled by the ssh binary itself.
+    //                          BatchMode=yes tells SSH to fail immediately
+    //                          instead of prompting when the agent has no key
+    //                          loaded (after a reboot, sleep/wake, or keychain
+    //                          timeout). ConnectTimeout=10 caps the TCP
+    //                          handshake so a dead remote fails in seconds
+    //                          instead of the OS default (~75s). We append
+    //                          to any user-provided GIT_SSH_COMMAND so the
+    //                          custom SSH binary is preserved and, because
+    //                          SSH uses first-wins for -o options, any user
+    //                          overrides (e.g. ConnectTimeout=60) take
+    //                          precedence over our defaults.
     //   GIT_PAGER=cat          prevents pager-related blocking on commands
     //                          that paginate output in unusual configs.
     //   LC_ALL=C               parsers in gitService.ts implicitly assume
@@ -49,7 +65,10 @@ pub fn git_exec(repo_path: String, args: Vec<String>) -> AppResult<GitExecResult
     //   GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE removed — if the app was
     //   launched from inside a git repo with these set, subprocesses would
     //   misdirect to the launching shell's repo instead of repo_path.
+    let ssh_base = std::env::var("GIT_SSH_COMMAND").unwrap_or_else(|_| "ssh".into());
+    let ssh_cmd = format!("{ssh_base} -o BatchMode=yes -o ConnectTimeout=10");
     cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", &ssh_cmd)
         .env("GIT_PAGER", "cat")
         .env("LC_ALL", "C")
         .env("GIT_OPTIONAL_LOCKS", "0")
