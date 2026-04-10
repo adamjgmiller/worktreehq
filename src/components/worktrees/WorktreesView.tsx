@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { useRepoStore } from '../../store/useRepoStore';
 import { WorktreeCard } from './WorktreeCard';
@@ -23,6 +23,13 @@ export function WorktreesView() {
   const setError = useRepoStore((s) => s.setError);
   const [createOpen, setCreateOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Worktree | null>(null);
+
+  // Listen for the global keyboard shortcut (N) to open the Create dialog.
+  useEffect(() => {
+    const handler = () => setCreateOpen(true);
+    window.addEventListener('wthq:create-worktree', handler);
+    return () => window.removeEventListener('wthq:create-worktree', handler);
+  }, []);
 
   async function handleCreate(v: CreateWorktreeValue) {
     if (!repo) return;
@@ -131,7 +138,7 @@ export function WorktreesView() {
           onClick={() => setCreateOpen(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-info/20 border border-wt-info/50 text-wt-info rounded hover:bg-wt-info/30"
         >
-          <Plus className="w-3.5 h-3.5" /> New worktree
+          <Plus className="w-3.5 h-3.5" /> New worktree <kbd className="ml-1 text-[10px] opacity-60">N</kbd>
         </button>
       </div>
       {worktrees.length === 0 ? (

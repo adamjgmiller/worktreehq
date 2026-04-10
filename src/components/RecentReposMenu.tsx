@@ -69,6 +69,13 @@ export function RecentReposMenu() {
   // Reset to -1 whenever the menu closes so re-opening starts fresh.
   const [activeIdx, setActiveIdx] = useState<number>(-1);
 
+  // Listen for the global keyboard shortcut to toggle this menu open/closed.
+  useEffect(() => {
+    const handler = () => setOpen((v) => !v);
+    window.addEventListener('wthq:toggle-repo-menu', handler);
+    return () => window.removeEventListener('wthq:toggle-repo-menu', handler);
+  }, []);
+
   // Resolve home dir on first render so tildify works without a flash of
   // raw paths. Cheap: ~1 IPC call total per app session (cached at module
   // scope after the first call).

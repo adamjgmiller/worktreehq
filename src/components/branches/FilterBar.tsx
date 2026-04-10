@@ -40,6 +40,7 @@ export function FilterBar({
         ))}
       </div>
       <input
+        id="branch-search-input"
         value={search}
         onChange={(e) => onSearch(e.target.value)}
         placeholder="search branches or PRs…"

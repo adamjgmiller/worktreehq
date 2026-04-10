@@ -3,7 +3,7 @@ import { LayoutGrid, GitBranch, Archive, Network, FolderArchive } from 'lucide-r
 
 export type TabKey = 'worktrees' | 'branches' | 'squash' | 'graph' | 'archive';
 
-type TabDef = { key: TabKey; label: string; icon: any };
+type TabDef = { key: TabKey; label: string; icon: any; shortcut: string };
 
 // The two groups split by importance. "Core" tabs are the daily-driver
 // surfaces (worktrees + branches) and live on the left in their normal
@@ -15,14 +15,14 @@ type TabDef = { key: TabKey; label: string; icon: any };
 // same tabpanel wiring). If a tab graduates from auxiliary to core, just
 // move it between these arrays.
 const coreTabs: TabDef[] = [
-  { key: 'worktrees', label: 'Worktrees', icon: LayoutGrid },
-  { key: 'branches', label: 'Branches', icon: GitBranch },
+  { key: 'worktrees', label: 'Worktrees', icon: LayoutGrid, shortcut: '1' },
+  { key: 'branches', label: 'Branches', icon: GitBranch, shortcut: '2' },
 ];
 
 const auxiliaryTabs: TabDef[] = [
-  { key: 'squash', label: 'Squash Archaeology', icon: Archive },
-  { key: 'graph', label: 'Graph', icon: Network },
-  { key: 'archive', label: 'Worktree Archive', icon: FolderArchive },
+  { key: 'squash', label: 'Squash Archaeology', icon: Archive, shortcut: '3' },
+  { key: 'graph', label: 'Graph', icon: Network, shortcut: '4' },
+  { key: 'archive', label: 'Worktree Archive', icon: FolderArchive, shortcut: '5' },
 ];
 
 export function Tabs({ value, onChange }: { value: TabKey; onChange: (v: TabKey) => void }) {
@@ -40,6 +40,7 @@ export function Tabs({ value, onChange }: { value: TabKey; onChange: (v: TabKey)
         // only by re-focusing the tablist. Full arrow-key navigation is
         // out of scope — this is the 80/20 for screen readers.
         tabIndex={selected ? 0 : -1}
+        title={`${t.label} (${t.shortcut})`}
         onClick={() => onChange(t.key)}
         className={clsx(
           'flex items-center gap-2 px-4 py-3 text-sm border-b-2 -mb-px transition-colors',
