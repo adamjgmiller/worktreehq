@@ -216,7 +216,8 @@ export function ConflictMatrix({
     .filter((p) => p.severity !== 'none')
     .sort((a, b) => {
       if (a.severity !== b.severity) return a.severity === 'conflict' ? -1 : 1;
-      return a.branchA.localeCompare(b.branchA);
+      const cmp = a.branchA.localeCompare(b.branchA);
+      return cmp !== 0 ? cmp : a.branchB.localeCompare(b.branchB);
     });
 
   const conflictPairs = pairs.filter((p) => p.severity === 'conflict');

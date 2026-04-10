@@ -156,8 +156,10 @@ export async function detectCrossWorktreeConflicts(
 
   for (let i = 0; i < candidates.length; i++) {
     for (let j = i + 1; j < candidates.length; j++) {
-      const a = candidates[i];
-      const b = candidates[j];
+      // Normalize so branchA < branchB alphabetically for stable sort order
+      const [a, b] = candidates[i].branch.localeCompare(candidates[j].branch) <= 0
+        ? [candidates[i], candidates[j]]
+        : [candidates[j], candidates[i]];
       const filesA = filesByBranch.get(a.branch);
       const filesB = filesByBranch.get(b.branch);
       if (!filesA || !filesB || filesA.size === 0 || filesB.size === 0) {
