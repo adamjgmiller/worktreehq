@@ -47,6 +47,24 @@ export function BranchesView() {
     };
   }, [repo]);
 
+  // Listen for global keyboard shortcuts dispatched by useKeyboardShortcuts.
+  useEffect(() => {
+    const onToggleAll = () => toggleAll();
+    const onEscape = () => {
+      if (search) {
+        setSearch('');
+      } else if (selection.size > 0) {
+        setSelection(new Set());
+      }
+    };
+    window.addEventListener('wthq:toggle-all-branches', onToggleAll);
+    window.addEventListener('wthq:branches-escape', onEscape);
+    return () => {
+      window.removeEventListener('wthq:toggle-all-branches', onToggleAll);
+      window.removeEventListener('wthq:branches-escape', onEscape);
+    };
+  });
+
   const filtered = useMemo(
     () =>
       searchBranches(

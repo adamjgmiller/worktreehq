@@ -1,5 +1,7 @@
 import { RefreshCw, Settings, Github, Download, AlertTriangle } from 'lucide-react';
 import { useRepoStore } from '../store/useRepoStore';
+
+const MOD_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
 import { runFetchOnce } from '../services/refreshLoop';
 import { relativeTime } from '../lib/format';
 import { RecentReposMenu } from './RecentReposMenu';
@@ -59,7 +61,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
         disabled={busy}
         className="p-1.5 rounded hover:bg-wt-border disabled:opacity-50"
         aria-label="refresh"
-        title="Fetch from origin and refresh"
+        title={`Fetch from origin and refresh (${MOD_KEY}R)`}
       >
         <RefreshCw className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />
       </button>
@@ -74,6 +76,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
         onClick={onSettings}
         className="p-1.5 rounded hover:bg-wt-border"
         aria-label="settings"
+        title={`Settings (${MOD_KEY},)`}
       >
         <Settings className="w-4 h-4" />
       </button>

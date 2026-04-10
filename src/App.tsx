@@ -10,6 +10,7 @@ import { ErrorBanner } from './components/common/ErrorBanner';
 import { ContentSkeleton } from './components/common/ContentSkeleton';
 import { SettingsModal } from './components/common/SettingsModal';
 import { ZoomIndicator } from './components/common/ZoomIndicator';
+import { ShortcutHelpOverlay } from './components/common/ShortcutHelpOverlay';
 import {
   useRepoStore,
   ZOOM_DEFAULT,
@@ -18,6 +19,7 @@ import {
   ZOOM_STEP,
 } from './store/useRepoStore';
 import { useRepoBootstrap } from './hooks/useRepoBootstrap';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { pickAndLoadRepo } from './services/repoSelect';
 import { invoke } from './services/tauriBridge';
 
@@ -41,6 +43,7 @@ async function persistZoom(level: number) {
 export default function App() {
   const [tab, setTab] = useState<TabKey>('worktrees');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const repo = useRepoStore((s) => s.repo);
   const error = useRepoStore((s) => s.error);
   const tokenSet = useRepoStore((s) => s.githubTokenSet);
@@ -53,6 +56,14 @@ export default function App() {
   // its first render (no flash on launch).
   const [zoomTick, setZoomTick] = useState(0);
   useRepoBootstrap();
+  useKeyboardShortcuts({
+    tab,
+    setTab,
+    settingsOpen,
+    setSettingsOpen,
+    helpOpen,
+    setHelpOpen,
+  });
 
   // Global zoom keyboard shortcuts. Cmd/Ctrl + +/-/0 are the universal
   // browser-style bindings; we also accept the bare keys (when no input is
@@ -188,6 +199,15 @@ export default function App() {
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ZoomIndicator zoomLevel={zoomLevel} pulseKey={zoomTick} />
+      <button
+        onClick={() => setHelpOpen(true)}
+        className="fixed bottom-4 right-6 z-40 flex items-center gap-1.5 text-[11px] text-neutral-600 hover:text-neutral-400 transition-colors"
+        style={{ fontSize: '11px' }}
+      >
+        <kbd className="px-1 py-0.5 rounded border border-neutral-700/60 bg-neutral-800/50 text-neutral-500 font-mono text-[10px] leading-none">?</kbd>
+        shortcuts
+      </button>
+      <ShortcutHelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }
