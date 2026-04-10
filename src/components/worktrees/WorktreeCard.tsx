@@ -310,7 +310,7 @@ export function WorktreeCard({
         <Stat label="modified" value={wt.modifiedCount} />
         <Stat label="staged" value={wt.stagedCount} />
         <Stat label="stashes" value={wt.stashCount} />
-        <Stat label={`vs ${defaultBranch}`} value={aheadBehind(wt.aheadOfMain, wt.behindMain)} />
+        <Stat label="vs remote" value={aheadBehind(wt.ahead, wt.behind)} />
         <Stat label="conflicts" value={wt.hasConflicts ? 'yes' : 'no'} />
       </div>
       <LastCommitFooter lastCommit={wt.lastCommit} />
