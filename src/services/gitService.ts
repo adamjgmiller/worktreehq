@@ -881,7 +881,7 @@ export async function getChangedFiles(
 ): Promise<string[]> {
   // Three-dot diff: files changed on branch since it diverged from defaultBranch.
   // tryRun so a transient failure degrades to "no files" for one tick.
-  const out = await tryRun(repo, ['diff', '--name-only', `${defaultBranch}...${branch}`]);
+  const out = await tryRun(repo, ['diff', '--name-only', `origin/${defaultBranch}...${branch}`]);
   return out.split('\n').filter(Boolean);
 }
 

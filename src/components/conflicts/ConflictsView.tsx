@@ -10,7 +10,7 @@ export function ConflictsView() {
   const [selectedPair, setSelectedPair] = useState<{ a: string; b: string } | null>(null);
 
   // Need at least 2 non-primary worktrees for pairwise comparison
-  const candidates = worktrees.filter((w) => !w.isPrimary && !w.prunable);
+  const candidates = worktrees.filter((w) => !w.isPrimary && !w.prunable && w.branch && w.branch !== 'HEAD');
   if (candidates.length < 2) {
     return (
       <EmptyState

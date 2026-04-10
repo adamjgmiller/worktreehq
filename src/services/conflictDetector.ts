@@ -54,6 +54,12 @@ async function withConcurrency<T>(
  *     their  100644 <sha> <path>
  *   <optional unified-diff with conflict markers>
  *
+ * or, when both branches create the same new file:
+ *   added in both
+ *     our    100644 <sha> <path>
+ *     their  100644 <sha> <path>
+ *   <optional unified-diff with conflict markers>
+ *
  * Files with `<<<<<<<` markers are conflicts; others are clean merges of
  * the same file.
  */
@@ -64,15 +70,18 @@ function parseMergeTreeOutput(
   if (!output.trim()) return [];
 
   const files: ConflictFile[] = [];
-  // Split on the "changed in both" sentinel to get per-file blocks.
-  const blocks = output.split(/^changed in both$/m);
+  // Split on "changed in both" or "added in both" sentinels to get per-file blocks.
+  const blocks = output.split(/^(?:changed|added) in both$/m);
 
   for (const block of blocks) {
     if (!block.trim()) continue;
-    // Extract file path from the "base" line:  base   100644 <sha> <path>
-    const baseMatch = block.match(/^\s+base\s+\d+\s+\S+\s+(.+)$/m);
-    if (!baseMatch) continue;
-    const filePath = baseMatch[1].trim();
+    // Extract file path from "base", "our", or "result" lines:
+    //   base   100644 <sha> <path>   (changed in both)
+    //   our    100644 <sha> <path>   (added in both — no base line)
+    //   result 100644 <sha> <path>   (added in both — alternate form)
+    const pathMatch = block.match(/^\s+(?:base|our|result)\s+\d+\s+\S+\s+(.+)$/m);
+    if (!pathMatch) continue;
+    const filePath = pathMatch[1].trim();
     // Only report files that are in our overlap set
     if (!overlappingFiles.has(filePath)) continue;
 

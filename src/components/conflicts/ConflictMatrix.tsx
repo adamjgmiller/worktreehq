@@ -3,26 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
 import { GitBranch, AlertTriangle, Check, ChevronDown } from 'lucide-react';
 import { Tooltip } from '../common/Tooltip';
-import type { Worktree, WorktreePairOverlap, OverlapSeverity } from '../../types';
+import type { Worktree, WorktreePairOverlap } from '../../types';
 import { basename } from '../../lib/format';
-
-const severityLabel: Record<OverlapSeverity, string> = {
-  none: 'No file overlap',
-  clean: 'Same files touched, merges cleanly',
-  conflict: 'Textual merge conflicts',
-};
-
-function lookupPair(
-  pairs: WorktreePairOverlap[],
-  branchA: string,
-  branchB: string,
-): WorktreePairOverlap | undefined {
-  return pairs.find(
-    (p) =>
-      (p.branchA === branchA && p.branchB === branchB) ||
-      (p.branchA === branchB && p.branchB === branchA),
-  );
-}
 
 // ─── Pair row ──────────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@ export type TabKey = 'worktrees' | 'conflicts' | 'branches' | 'squash' | 'graph'
 type TabDef = { key: TabKey; label: string; icon: any; shortcut: string };
 
 // The two groups split by importance. "Core" tabs are the daily-driver
-// surfaces (worktrees + branches) and live on the left in their normal
+// surfaces (worktrees + conflicts + branches) and live on the left in their normal
 // styling. "Auxiliary" tabs are occasional / rescue tools (squash
 // archaeology, the graph view, the new archive) — they live on the right
 // and render in a dimmer color so the eye is drawn to the core tabs first.

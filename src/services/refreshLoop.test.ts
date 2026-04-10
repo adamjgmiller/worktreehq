@@ -54,6 +54,8 @@ function resetStore() {
     mainCommitsTotal: 0,
     squashMappings: [],
     claudePresence: new Map(),
+    crossWorktreeConflicts: [],
+    conflictSummaryByPath: new Map(),
     loading: false,
     userRefreshing: false,
     fetching: false,

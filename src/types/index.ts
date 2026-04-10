@@ -151,10 +151,11 @@ export interface ClaudeStateRaw {
 // ─── Cross-worktree conflict detection ─────────────────────────────────
 
 export type OverlapSeverity = 'none' | 'clean' | 'conflict';
+export type FileSeverity = 'clean' | 'conflict';
 
 export interface ConflictFile {
   path: string;
-  severity: OverlapSeverity;
+  severity: FileSeverity;
   conflictMarkers?: string; // raw merge-tree output, only when severity === 'conflict'
 }
 
