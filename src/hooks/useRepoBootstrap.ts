@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
-import { invoke, isTauri, stopWatching } from '../services/tauriBridge';
+import { invoke, isTauri } from '../services/tauriBridge';
 import { hydratePrCache, initGithub } from '../services/githubService';
 import { getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
 import {
@@ -155,9 +155,13 @@ export function useRepoBootstrap() {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       stopRefreshLoop();
       stopFetchLoop();
-      // Tear down the Rust-side watcher so a stale notify thread doesn't
-      // keep firing `worktree-changed` events at a remounted hook.
-      void stopWatching();
+      // Don't call stopWatching() here — the second effect (worktree-paths
+      // watcher) manages the Rust-side watcher's lifecycle, and
+      // start_watching already replaces any prior watcher on its own. If
+      // this cleanup runs (e.g. React strict-mode remount) without the
+      // second effect re-firing, calling stopWatching() would kill the
+      // native watcher with no re-registration, silently disabling
+      // watcher-accelerated refreshes until a worktree path changes.
     };
   }, [
     setRepo,
