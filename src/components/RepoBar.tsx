@@ -1,4 +1,4 @@
-import { RefreshCw, Settings, Github, Download } from 'lucide-react';
+import { RefreshCw, Settings, Github, Download, AlertTriangle } from 'lucide-react';
 import { useRepoStore } from '../store/useRepoStore';
 import { runFetchOnce } from '../services/refreshLoop';
 import { relativeTime } from '../lib/format';
@@ -13,6 +13,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
   const fetching = useRepoStore((s) => s.fetching);
   const busy = userRefreshing || fetching;
   const lastRefresh = useRepoStore((s) => s.lastRefresh);
+  const lastFetchError = useRepoStore((s) => s.lastFetchError);
   const tokenSet = useRepoStore((s) => s.githubTokenSet);
   return (
     <div className="flex items-center gap-4 px-6 py-3 border-b border-wt-border bg-wt-panel">
@@ -30,6 +31,16 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
           <Download className="w-3.5 h-3.5 animate-pulse" />
           fetching…
         </div>
+      )}
+      {lastFetchError && !fetching && (
+        <button
+          onClick={() => useRepoStore.getState().setLastFetchError(null)}
+          className="flex items-center gap-1.5 text-xs text-wt-dirty hover:text-wt-conflict"
+          title={`Last fetch failed: ${lastFetchError}\n\nClick to dismiss`}
+        >
+          <AlertTriangle className="w-3.5 h-3.5" />
+          fetch failed
+        </button>
       )}
       <div className="text-xs text-neutral-500">
         {lastRefresh ? `updated ${relativeTime(new Date(lastRefresh).toISOString())}` : 'never'}

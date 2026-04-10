@@ -257,6 +257,19 @@ describe('runFetchOnce', () => {
 
     await expect(runFetchOnce()).resolves.toBeUndefined();
     expect(useRepoStore.getState().fetching).toBe(false);
+    // Background failures surface via the lastFetchError indicator.
+    expect(useRepoStore.getState().lastFetchError).toBe('network');
+  });
+
+  it('clears lastFetchError on a successful fetch', async () => {
+    useRepoStore.setState({ lastFetchError: 'prior failure' });
+    asMock(git.snapshotRemoteRefs)
+      .mockResolvedValueOnce('before\n')
+      .mockResolvedValueOnce('after\n');
+
+    await runFetchOnce({ userInitiated: true });
+
+    expect(useRepoStore.getState().lastFetchError).toBeNull();
   });
 });
 
