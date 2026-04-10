@@ -15,7 +15,7 @@ import {
   listOpenPRsForBranches,
 } from './githubService';
 import { fetchClaudePresence } from './claudeAwarenessService';
-import { detectCrossWorktreeConflicts } from './conflictDetector';
+import { detectCrossWorktreeConflicts, type ConflictDetectResult } from './conflictDetector';
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -135,27 +135,23 @@ async function runRefreshOnce(): Promise<void> {
       name: remote.name,
     });
 
-    // Claude Code awareness: fetch after we have worktrees so we can join
-    // by path. Runs against the same refresh tick so UI stays in sync.
-    // Failures degrade to an empty map via fetchClaudePresence's try/catch.
-    const presence = await fetchClaudePresence(wts);
-
-    // Cross-worktree conflict detection: compute pairwise file overlap and
-    // simulate merges for overlapping pairs. Runs after the worktree batch
-    // (needs wts) and degrades to empty results on failure.
-    let conflictResult: Awaited<ReturnType<typeof detectCrossWorktreeConflicts>> = {
-      pairs: [],
-      summaryByPath: new Map(),
-    };
-    try {
-      conflictResult = await detectCrossWorktreeConflicts({
+    // Claude Code awareness + cross-worktree conflict detection both depend
+    // only on `wts` and are independent of each other — run in parallel.
+    // Each has its own error handling so a failure in one doesn't block the
+    // other: fetchClaudePresence has an internal try/catch that degrades to
+    // an empty map; conflict detection uses .catch() here to degrade to an
+    // empty result.
+    const [presence, conflictResult] = await Promise.all([
+      fetchClaudePresence(wts),
+      detectCrossWorktreeConflicts({
         repoPath: repo.path,
         defaultBranch: repo.defaultBranch,
         worktrees: wts,
-      });
-    } catch (e) {
-      console.warn('[refreshLoop] conflict detection failed:', e);
-    }
+      }).catch((e) => {
+        console.warn('[refreshLoop] conflict detection failed:', e);
+        return { pairs: [], summaryByPath: new Map() } as ConflictDetectResult;
+      }),
+    ]);
 
     setWorktrees(wts);
     setBranches(detect.updatedBranches);

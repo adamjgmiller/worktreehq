@@ -899,6 +899,12 @@ export async function getMergeBase(
  * Uses the three-argument form of `git merge-tree` for broad git version
  * compatibility (works on all versions; the newer `--write-tree` form
  * requires git 2.38+).
+ *
+ * NOTE: The three-argument (old) form of `git merge-tree` always exits 0
+ * regardless of conflicts. The `hasConflicts` field is set based on exit
+ * code, so it may always be `false` with this form. Callers that need
+ * reliable conflict detection should parse the output for `<<<<<<<`
+ * markers instead of relying on `hasConflicts`.
  */
 export async function simulateMerge(
   repo: string,
@@ -906,8 +912,9 @@ export async function simulateMerge(
   refA: string,
   refB: string,
 ): Promise<{ hasConflicts: boolean; output: string }> {
-  // Raw gitExec: we need both exit code (conflict detection) and stdout
-  // (conflict markers). merge-tree exits non-zero when there are conflicts.
+  // Raw gitExec: we need both exit code and stdout.
+  // The old three-argument form always exits 0, so conflict detection
+  // relies on parsing `<<<<<<<` markers in the output, not the exit code.
   try {
     const r = await gitExec(repo, ['merge-tree', mergeBase, refA, refB]);
     return { hasConflicts: r.code !== 0, output: r.stdout };
