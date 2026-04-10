@@ -66,10 +66,14 @@ export function joinClaudeState(
   }
 
   // Set membership of worktree paths that have a `claude` process running
-  // with cwd == path. Used to promote `recent`/`dormant` → `idle` for
-  // worktrees where the user just stepped away from the prompt instead of
-  // closing the session. Falls back to empty set if Rust didn't populate
-  // the field (older snapshots in tests, or platforms with no scanner).
+  // with cwd == path. Used in two places: (1) to gate `status = 'live'`
+  // — without a running process, fresh JSONL alone isn't enough, so the
+  // multi-session warning clears immediately on close; (2) to promote
+  // `recent`/`dormant` → `idle` for worktrees where the user just stepped
+  // away from the prompt instead of closing the session. Falls back to
+  // empty set if Rust didn't populate the field (older snapshots in tests,
+  // or platforms with no scanner — on those platforms, `live` requires an
+  // IDE lock).
   const liveCwds = new Set(raw.live_worktree_cwds ?? []);
 
   const out = new Map<string, ClaudePresence>();
