@@ -85,7 +85,13 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
         archiveTag,
       });
       const match = branchIndex.get(sourceBranch);
-      if (match && match.mergeStatus === 'unmerged' && isLikelySquash) {
+      // Guard: don't tag a branch as squash-merged when it carries an open PR.
+      // A merged PR from a previous iteration of the same branch name (common
+      // in fork workflows) would otherwise clobber the live open-PR state and
+      // show a misleading "MERGED (SQUASH)" pill while the user is still
+      // actively working through the PR.
+      const hasOpenPR = match?.pr?.state === 'open';
+      if (match && match.mergeStatus === 'unmerged' && isLikelySquash && !hasOpenPR) {
         match.mergeStatus = 'squash-merged';
         // Only attach the historical merged PR when the branch doesn't
         // already carry an open PR from refreshLoop's listOpenPRsForBranches
@@ -107,8 +113,14 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
   // because each cherry-check is independent and subprocess-bound, and cached
   // by (branch sha, main sha) so steady-state refreshes skip the subprocess
   // entirely when nothing has moved.
+  // Exclude branches that carry an open PR — their patches may be on main
+  // via a different PR (or a cherry-pick), and the cherry-check can't tell
+  // the difference from a genuine squash merge. Tagging them squash-merged
+  // would show a misleading pill while the user's PR is still in flight.
+  // When the PR is finally merged, the PR-tag pass (above) catches it on
+  // the next refresh without needing the cherry fallback.
   const cherryCandidates = Array.from(branchIndex.values()).filter(
-    (b) => b.mergeStatus === 'unmerged' && b.aheadOfMain > 0,
+    (b) => b.mergeStatus === 'unmerged' && b.aheadOfMain > 0 && b.pr?.state !== 'open',
   );
   // Resolve the main-history ref set ONCE per run rather than per branch.
   // This is the set that `cherryCheck` unions its patch-id check against;
