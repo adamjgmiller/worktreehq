@@ -7,10 +7,11 @@ import { useRepoStore } from '../store/useRepoStore';
 // Ordered to match the visual tab layout: core (1-2), auxiliary (3-5).
 const TAB_BY_NUMBER: Record<string, TabKey> = {
   '1': 'worktrees',
-  '2': 'branches',
-  '3': 'squash',
-  '4': 'graph',
-  '5': 'archive',
+  '2': 'conflicts',
+  '3': 'branches',
+  '4': 'squash',
+  '5': 'graph',
+  '6': 'archive',
 };
 
 interface Params {

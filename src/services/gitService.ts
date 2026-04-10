@@ -870,3 +870,48 @@ export async function resolveWatchDirs(worktreePaths: string[]): Promise<string[
   );
   return Array.from(out);
 }
+
+// ─── Cross-worktree conflict detection helpers ─────────────────────────
+
+/** Files changed on `branch` relative to its merge-base with `defaultBranch`. */
+export async function getChangedFiles(
+  repo: string,
+  defaultBranch: string,
+  branch: string,
+): Promise<string[]> {
+  // Three-dot diff: files changed on branch since it diverged from defaultBranch.
+  // tryRun so a transient failure degrades to "no files" for one tick.
+  const out = await tryRun(repo, ['diff', '--name-only', `${defaultBranch}...${branch}`]);
+  return out.split('\n').filter(Boolean);
+}
+
+/** Common ancestor of two refs. Returns empty string on failure. */
+export async function getMergeBase(
+  repo: string,
+  refA: string,
+  refB: string,
+): Promise<string> {
+  return (await tryRun(repo, ['merge-base', refA, refB])).trim();
+}
+
+/**
+ * Simulate a three-way merge without touching the worktree or index.
+ * Uses the three-argument form of `git merge-tree` for broad git version
+ * compatibility (works on all versions; the newer `--write-tree` form
+ * requires git 2.38+).
+ */
+export async function simulateMerge(
+  repo: string,
+  mergeBase: string,
+  refA: string,
+  refB: string,
+): Promise<{ hasConflicts: boolean; output: string }> {
+  // Raw gitExec: we need both exit code (conflict detection) and stdout
+  // (conflict markers). merge-tree exits non-zero when there are conflicts.
+  try {
+    const r = await gitExec(repo, ['merge-tree', mergeBase, refA, refB]);
+    return { hasConflicts: r.code !== 0, output: r.stdout };
+  } catch {
+    return { hasConflicts: false, output: '' };
+  }
+}

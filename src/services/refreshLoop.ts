@@ -15,6 +15,7 @@ import {
   listOpenPRsForBranches,
 } from './githubService';
 import { fetchClaudePresence } from './claudeAwarenessService';
+import { detectCrossWorktreeConflicts } from './conflictDetector';
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -59,6 +60,7 @@ async function runRefreshOnce(): Promise<void> {
     setMainCommits,
     setSquashMappings,
     setClaudePresence,
+    setCrossWorktreeConflicts,
     setError,
     markRefreshed,
     setLoading,
@@ -138,11 +140,29 @@ async function runRefreshOnce(): Promise<void> {
     // Failures degrade to an empty map via fetchClaudePresence's try/catch.
     const presence = await fetchClaudePresence(wts);
 
+    // Cross-worktree conflict detection: compute pairwise file overlap and
+    // simulate merges for overlapping pairs. Runs after the worktree batch
+    // (needs wts) and degrades to empty results on failure.
+    let conflictResult: Awaited<ReturnType<typeof detectCrossWorktreeConflicts>> = {
+      pairs: [],
+      summaryByPath: new Map(),
+    };
+    try {
+      conflictResult = await detectCrossWorktreeConflicts({
+        repoPath: repo.path,
+        defaultBranch: repo.defaultBranch,
+        worktrees: wts,
+      });
+    } catch (e) {
+      console.warn('[refreshLoop] conflict detection failed:', e);
+    }
+
     setWorktrees(wts);
     setBranches(detect.updatedBranches);
     setMainCommits(mainCommits, mainCommitsTotal);
     setSquashMappings(detect.mappings);
     setClaudePresence(presence);
+    setCrossWorktreeConflicts(conflictResult.pairs, conflictResult.summaryByPath);
     // Mark the in-store collections as belonging to this repo path. App.tsx
     // gates the content region on `dataRepoPath === repo.path`, so this is
     // what lifts the shimmer skeleton on first load and after a repo switch.

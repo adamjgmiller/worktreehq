@@ -6,6 +6,8 @@ import type {
   MainCommit,
   RepoState,
   ClaudePresence,
+  WorktreePairOverlap,
+  WorktreeConflictSummary,
 } from '../types';
 
 // Zoom is clamped to [ZOOM_MIN, ZOOM_MAX] in the setter. Range matches the
@@ -25,6 +27,8 @@ interface StoreState {
   mainCommitsTotal: number;
   squashMappings: SquashMapping[];
   claudePresence: Map<string, ClaudePresence>;
+  crossWorktreeConflicts: WorktreePairOverlap[];
+  conflictSummaryByPath: Map<string, WorktreeConflictSummary>;
   loading: boolean;
   // `loading` flips on every poll tick; `userRefreshing` only flips when the
   // user explicitly asked for a refresh (button click, post-mutation). The
@@ -67,6 +71,7 @@ interface StoreState {
   setMainCommits: (c: MainCommit[], total?: number) => void;
   setSquashMappings: (s: SquashMapping[]) => void;
   setClaudePresence: (p: Map<string, ClaudePresence>) => void;
+  setCrossWorktreeConflicts: (pairs: WorktreePairOverlap[], summary: Map<string, WorktreeConflictSummary>) => void;
   setLoading: (v: boolean) => void;
   setUserRefreshing: (v: boolean) => void;
   setFetching: (v: boolean) => void;
@@ -97,6 +102,8 @@ export const useRepoStore = create<StoreState>((set) => ({
   mainCommitsTotal: 0,
   squashMappings: [],
   claudePresence: new Map(),
+  crossWorktreeConflicts: [],
+  conflictSummaryByPath: new Map(),
   loading: false,
   userRefreshing: false,
   fetching: false,
@@ -121,6 +128,8 @@ export const useRepoStore = create<StoreState>((set) => ({
     set({ mainCommits, mainCommitsTotal: total ?? mainCommits.length }),
   setSquashMappings: (squashMappings) => set({ squashMappings }),
   setClaudePresence: (claudePresence) => set({ claudePresence }),
+  setCrossWorktreeConflicts: (crossWorktreeConflicts, conflictSummaryByPath) =>
+    set({ crossWorktreeConflicts, conflictSummaryByPath }),
   setLoading: (loading) => set({ loading }),
   setUserRefreshing: (userRefreshing) => set({ userRefreshing }),
   setFetching: (fetching) => set({ fetching }),
