@@ -66,8 +66,24 @@ fn load_all() -> AppResult<HashMap<String, NotepadEntry>> {
     if text.trim().is_empty() {
         return Ok(HashMap::new());
     }
-    let raw: HashMap<String, RawNotepadValue> = serde_json::from_str(&text)
-        .map_err(|e| AppError::Msg(format!("notepads parse: {}", e)))?;
+    let raw: HashMap<String, RawNotepadValue> = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            // A corrupt notepads.json would otherwise propagate an error to
+            // every read AND write call, locking the user out of saving
+            // anything for the rest of the session. Quarantine the bad
+            // file to `notepads.json.bad` and start fresh so the user can
+            // keep working; the original is preserved for manual recovery.
+            let bad = p.with_extension("json.bad");
+            eprintln!(
+                "[notepads] parse error ({}); moving corrupt file to {}",
+                e,
+                bad.display()
+            );
+            let _ = std::fs::rename(&p, &bad);
+            return Ok(HashMap::new());
+        }
+    };
     Ok(raw.into_iter().map(|(k, v)| (k, v.into())).collect())
 }
 

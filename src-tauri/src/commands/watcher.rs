@@ -27,11 +27,18 @@ pub fn start_watching(
     for p in paths {
         let path = std::path::PathBuf::from(&p);
         if path.exists() {
-            let _ = watcher.watch(&path, RecursiveMode::Recursive);
+            if let Err(e) = watcher.watch(&path, RecursiveMode::Recursive) {
+                eprintln!("[watcher] failed to watch {}: {}", p, e);
+            }
         }
     }
 
+    // Drop the old watcher BEFORE installing the new one. If we assigned
+    // `*slot = Some(new)` while the old watcher was still inside the slot,
+    // both watchers would emit `worktree-changed` events into the same
+    // AppHandle for the duration of the drop, doubling every refresh event.
     let mut slot = state.0.lock().unwrap_or_else(|p| p.into_inner());
+    slot.take();
     *slot = Some(watcher);
     let _ = app;
     Ok(())
