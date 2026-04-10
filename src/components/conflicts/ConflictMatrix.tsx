@@ -215,9 +215,12 @@ export function ConflictMatrix({
   const interestingPairs = pairs
     .filter((p) => p.severity !== 'none')
     .sort((a, b) => {
+      // Group by left branch so all pairs for the same worktree are together,
+      // then severity (conflicts first), then right branch.
+      const left = a.branchA.localeCompare(b.branchA);
+      if (left !== 0) return left;
       if (a.severity !== b.severity) return a.severity === 'conflict' ? -1 : 1;
-      const cmp = a.branchA.localeCompare(b.branchA);
-      return cmp !== 0 ? cmp : a.branchB.localeCompare(b.branchB);
+      return a.branchB.localeCompare(b.branchB);
     });
 
   const conflictPairs = pairs.filter((p) => p.severity === 'conflict');
