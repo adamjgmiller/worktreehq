@@ -57,6 +57,7 @@ function resetStore() {
     loading: false,
     userRefreshing: false,
     fetching: false,
+    lastFetchError: null,
     error: null,
     lastRefresh: 0,
   });
@@ -257,8 +258,25 @@ describe('runFetchOnce', () => {
 
     await expect(runFetchOnce()).resolves.toBeUndefined();
     expect(useRepoStore.getState().fetching).toBe(false);
-    // Background failures surface via the lastFetchError indicator.
+  });
+
+  it('sets lastFetchError on background fetch failure', async () => {
+    asMock(git.fetchAllPrune).mockRejectedValueOnce(new Error('network'));
+
+    await runFetchOnce();
     expect(useRepoStore.getState().lastFetchError).toBe('network');
+  });
+
+  it('does not set lastFetchError on user-initiated fetch failure', async () => {
+    asMock(git.fetchAllPrune).mockRejectedValueOnce(new Error('auth'));
+
+    await runFetchOnce({ userInitiated: true });
+
+    // User-initiated failures go through setError → ErrorBanner, then
+    // chain a refreshOnce (which clears error on success). The key
+    // invariant: lastFetchError stays null so the inline indicator
+    // doesn't double up with the ErrorBanner.
+    expect(useRepoStore.getState().lastFetchError).toBeNull();
   });
 
   it('clears lastFetchError on a successful fetch', async () => {

@@ -62,6 +62,7 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
   const {
     setRepo,
     setError,
+    setLastFetchError,
     setRecentRepoPaths,
     recentRepoPaths,
     setWorktrees,
@@ -92,6 +93,7 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     setSquashMappings([]);
     setClaudePresence(new Map());
     setDataRepoPath(null);
+    setLastFetchError(null);
     setRepo({
       path: info.path,
       defaultBranch,

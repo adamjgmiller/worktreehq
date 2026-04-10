@@ -295,9 +295,12 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
       // Surface background failures via the subtle RepoBar indicator so
       // silent auth/network issues (e.g. expired SSH key after a reboot)
       // don't go completely unnoticed. User-initiated failures already
-      // get the full ErrorBanner via setError above, but we still set
-      // lastFetchError so the inline indicator is consistent.
-      setLastFetchError(msg);
+      // get the full ErrorBanner via setError above — don't also set
+      // lastFetchError or the user sees two independently-dismissible
+      // error surfaces for the same failure.
+      if (!userInitiated) {
+        setLastFetchError(msg);
+      }
       // Even on a failed fetch, fall through to refreshOnce so the UI
       // reflects whatever local state we already have. Without this a
       // user click would leave the shimmer in place if the very first

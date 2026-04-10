@@ -49,9 +49,12 @@ pub fn git_exec(repo_path: String, args: Vec<String>) -> AppResult<GitExecResult
     //                          loaded (after a reboot, sleep/wake, or keychain
     //                          timeout). ConnectTimeout=10 caps the TCP
     //                          handshake so a dead remote fails in seconds
-    //                          instead of the OS default (~75s). We prepend
-    //                          to any user-provided GIT_SSH_COMMAND so custom
-    //                          SSH binaries or flags are preserved.
+    //                          instead of the OS default (~75s). We append
+    //                          to any user-provided GIT_SSH_COMMAND so the
+    //                          custom SSH binary is preserved and, because
+    //                          SSH uses first-wins for -o options, any user
+    //                          overrides (e.g. ConnectTimeout=60) take
+    //                          precedence over our defaults.
     //   GIT_PAGER=cat          prevents pager-related blocking on commands
     //                          that paginate output in unusual configs.
     //   LC_ALL=C               parsers in gitService.ts implicitly assume
