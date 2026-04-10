@@ -73,7 +73,7 @@ describe('joinClaudeState', () => {
     expect(presence.inactiveSessions).toEqual([]);
   });
 
-  it('marks status=live when newest JSONL is within LIVE_WINDOW', () => {
+  it('marks status=live when newest JSONL is within LIVE_WINDOW and process is running', () => {
     const raw: ClaudeStateRaw = {
       ide_locks: [],
       projects: [
@@ -86,11 +86,30 @@ describe('joinClaudeState', () => {
           ],
         },
       ],
+      live_worktree_cwds: [worktreePath],
     };
     const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
     expect(presence.status).toBe('live');
     expect(presence.activeSessionId).toBe('active');
     expect(presence.inactiveSessions.map((s) => s.sessionId)).toEqual(['old']);
+  });
+
+  it('marks status=recent when newest JSONL is within LIVE_WINDOW but no process is running', () => {
+    // Fresh mtime but no live process: the session was just closed.
+    // The process scan is the authority — without it, don't count as live.
+    const raw: ClaudeStateRaw = {
+      ide_locks: [],
+      projects: [
+        {
+          dir_name: dirName,
+          worktree_path: worktreePath,
+          sessions: [{ session_id: 'closed', mtime_ms: NOW - 5_000 }],
+        },
+      ],
+    };
+    const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+    expect(presence.status).toBe('recent');
+    expect(presence.liveSessionCount).toBe(0);
   });
 
   it('marks status=recent when within RECENT_WINDOW but past LIVE_WINDOW', () => {
@@ -173,6 +192,7 @@ describe('joinClaudeState', () => {
           sessions: [{ session_id: 's', mtime_ms: NOW - 1000 }],
         },
       ],
+      live_worktree_cwds: [a.path],
     };
     const result = joinClaudeState(raw, [a, b], NOW);
     expect(result.get(a.path)!.status).toBe('live');
@@ -189,7 +209,7 @@ describe('joinClaudeState', () => {
       expect(presence.liveSessionCount).toBe(0);
     });
 
-    it('is 1 when one session is within the live window', () => {
+    it('is 1 when one session is within the live window and process is running', () => {
       const raw: ClaudeStateRaw = {
         ide_locks: [],
         projects: [
@@ -202,12 +222,33 @@ describe('joinClaudeState', () => {
             ],
           },
         ],
+        live_worktree_cwds: [worktreePath],
       };
       const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
       expect(presence.liveSessionCount).toBe(1);
     });
 
-    it('is 2 when two sessions are both within the live window', () => {
+    it('is 0 when sessions are within the live window but no process is running', () => {
+      // Sessions recently closed — JSONL is fresh but no process means
+      // liveSessionCount should immediately drop to 0.
+      const raw: ClaudeStateRaw = {
+        ide_locks: [],
+        projects: [
+          {
+            dir_name: dirName,
+            worktree_path: worktreePath,
+            sessions: [
+              { session_id: 'a', mtime_ms: NOW - 5_000 },
+              { session_id: 'b', mtime_ms: NOW - 30_000 },
+            ],
+          },
+        ],
+      };
+      const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
+      expect(presence.liveSessionCount).toBe(0);
+    });
+
+    it('is 2 when two sessions are both within the live window and process is running', () => {
       const raw: ClaudeStateRaw = {
         ide_locks: [],
         projects: [
@@ -221,6 +262,7 @@ describe('joinClaudeState', () => {
             ],
           },
         ],
+        live_worktree_cwds: [worktreePath],
       };
       const presence = joinClaudeState(raw, [wt(worktreePath)], NOW).get(worktreePath)!;
       expect(presence.liveSessionCount).toBe(2);
@@ -491,35 +533,36 @@ describe('fetchClaudePresence fingerprint cache', () => {
   });
 
   it('re-joins from cached raw on unchanged so status fields reflect current time', async () => {
-    // Session mtime old enough that it's `live` at first call but should be
-    // `recent` once wall-clock advances past LIVE_WINDOW_MS (60s). The
-    // advance must stay under CLAUDE_FORCE_REFRESH_MS (30s) so the cache
-    // path actually engages — otherwise the force-refresh would kick us out
-    // and we'd be testing the cold path instead.
+    // Session mtime old enough that it's `live` at first call but should
+    // transition to `idle` once wall-clock advances past LIVE_WINDOW_MS
+    // (60s) while a process is still running. The advance must stay under
+    // CLAUDE_FORCE_REFRESH_MS (30s) so the cache path actually engages.
     const t0 = 1_000_000_000_000;
     const mtime = t0 - 50_000; // age 50s when first joined → live (≤ 60s)
     vi.useFakeTimers();
     try {
       vi.setSystemTime(t0);
-      readClaudeStateMock.mockResolvedValueOnce(
-        buildRaw({ fingerprint: 'fp-1', mtime }),
-      );
+      readClaudeStateMock.mockResolvedValueOnce({
+        ...buildRaw({ fingerprint: 'fp-1', mtime }),
+        live_worktree_cwds: [wtPath],
+      });
       const first = await fetchClaudePresence(worktrees);
       expect(first.get(wtPath)?.status).toBe('live');
 
       // Advance 15s (within force-refresh window). True age now 65s, past
-      // LIVE_WINDOW_MS=60s. The cache hit (unchanged=true) should re-join
-      // the cached raw against the new wall clock and report `recent`, not
-      // the stale `live` from the first call's joined map.
+      // LIVE_WINDOW_MS=60s. Process still running → idle (not live).
+      // The cache hit (unchanged=true) should re-join the cached raw
+      // against the new wall clock, not return the stale `live` status.
       vi.setSystemTime(t0 + 15_000);
       readClaudeStateMock.mockResolvedValueOnce({
         ide_locks: [],
         projects: [],
+        live_worktree_cwds: [wtPath],
         fingerprint: 'fp-1',
         unchanged: true,
       });
       const second = await fetchClaudePresence(worktrees);
-      expect(second.get(wtPath)?.status).toBe('recent');
+      expect(second.get(wtPath)?.status).toBe('idle');
     } finally {
       vi.useRealTimers();
     }
@@ -571,7 +614,8 @@ describe('fetchClaudePresence fingerprint cache', () => {
 
   it('uses fresh ide_locks from the unchanged response (crashed-IDE detection)', async () => {
     const mtime = Date.now();
-    // First call: a session with status=live, plus an IDE lock pointing at it.
+    // First call: a session with status=live-ide, plus an IDE lock and a
+    // running process pointing at the worktree.
     readClaudeStateMock.mockResolvedValueOnce({
       ide_locks: [
         { pid: 4242, ide_name: 'Cursor', workspace_folders: [wtPath] },
@@ -583,6 +627,7 @@ describe('fetchClaudePresence fingerprint cache', () => {
           sessions: [{ session_id: 's', mtime_ms: mtime }],
         },
       ],
+      live_worktree_cwds: [wtPath],
       fingerprint: 'fp-1',
       unchanged: false,
     });
@@ -591,11 +636,12 @@ describe('fetchClaudePresence fingerprint cache', () => {
 
     // Second call: Rust short-circuits projects but reports the IDE lock has
     // disappeared (the editor crashed and pid_is_alive filtered it out).
-    // The TS side must use the fresh empty ide_locks rather than the cached
-    // ones, so status drops back to `live` (no IDE lock).
+    // Process is still running. The TS side must use the fresh empty
+    // ide_locks rather than the cached ones, so status drops to `live`.
     readClaudeStateMock.mockResolvedValueOnce({
       ide_locks: [],
       projects: [],
+      live_worktree_cwds: [wtPath],
       fingerprint: 'fp-1',
       unchanged: true,
     });

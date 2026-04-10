@@ -66,10 +66,14 @@ export function joinClaudeState(
   }
 
   // Set membership of worktree paths that have a `claude` process running
-  // with cwd == path. Used to promote `recent`/`dormant` → `idle` for
-  // worktrees where the user just stepped away from the prompt instead of
-  // closing the session. Falls back to empty set if Rust didn't populate
-  // the field (older snapshots in tests, or platforms with no scanner).
+  // with cwd == path. Used in two places: (1) to gate `status = 'live'`
+  // — without a running process, fresh JSONL alone isn't enough, so the
+  // multi-session warning clears immediately on close; (2) to promote
+  // `recent`/`dormant` → `idle` for worktrees where the user just stepped
+  // away from the prompt instead of closing the session. Falls back to
+  // empty set if Rust didn't populate the field (older snapshots in tests,
+  // or platforms with no scanner — on those platforms, `live` requires an
+  // IDE lock).
   const liveCwds = new Set(raw.live_worktree_cwds ?? []);
 
   const out = new Map<string, ClaudePresence>();
@@ -107,7 +111,7 @@ export function joinClaudeState(
 
     let status: ClaudePresenceStatus;
     if (lock) status = 'live-ide';
-    else if (age <= LIVE_WINDOW_MS) status = 'live';
+    else if (hasLiveProcess && age <= LIVE_WINDOW_MS) status = 'live';
     else if (hasLiveProcess) {
       // The JSONL is stale (≥60s) but a `claude` process is running with
       // cwd == this worktree. The user is almost certainly idle in front
@@ -118,18 +122,20 @@ export function joinClaudeState(
     } else if (age <= RECENT_WINDOW_MS) status = 'recent';
     else status = 'dormant';
 
-    // Count distinct live agents — JSONL sessions within LIVE_WINDOW_MS, plus
-    // the IDE lock when it exists. The lock may overlap with the newest
-    // session (the IDE writes its own JSONL too), so we only add 1 for the
-    // lock if the newest JSONL is itself outside the live window. This
-    // approximates "how many human-driven Claudes are touching this worktree
-    // right now" — the number we want to warn about, not the raw file count.
+    // Count distinct live agents. The process scan is the authoritative
+    // signal for whether Claude is actually running — JSONL mtime alone
+    // can't distinguish "just closed" from "actively running". Without a
+    // live process (or IDE lock), liveSessionCount is 0 regardless of
+    // how fresh the JSONL is, so the multi-session warning clears
+    // immediately when sessions close instead of lingering for 60s.
     //
-    // An `idle` promotion also counts the running process as 1 live agent,
-    // for the same warning logic. We only add it when no JSONL session is
-    // already counted (otherwise we'd double-count when a recent JSONL
-    // sneaks in just before the process is detected).
-    const liveJsonlCount = sessions.filter((s) => now - s.mtime_ms <= LIVE_WINDOW_MS).length;
+    // When a process IS running, we count JSONL sessions within
+    // LIVE_WINDOW_MS to approximate how many concurrent agents are active.
+    // The IDE lock adds 1 when the newest JSONL is outside the live window
+    // (it may overlap with the newest session otherwise).
+    const liveJsonlCount = (hasLiveProcess || lock)
+      ? sessions.filter((s) => now - s.mtime_ms <= LIVE_WINDOW_MS).length
+      : 0;
     let liveSessionCount = liveJsonlCount + (lock && age > LIVE_WINDOW_MS ? 1 : 0);
     if (status === 'idle' && liveJsonlCount === 0) {
       liveSessionCount += 1;
