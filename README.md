@@ -4,7 +4,7 @@
 
 > v0.x — early, actively developed. Currently builds from source; pre-built binaries are not yet provided.
 
-<img width="1424" height="1077" alt="WorktreeHQ-Screenshot-3" src="https://github.com/user-attachments/assets/978ddaf3-9d0e-4277-96a4-75c2b32ccb7c" />
+<img width="1533" height="1219" alt="WorktreeHQ-Screenshot-4" src="https://github.com/user-attachments/assets/7df7fe57-4018-488b-9299-56c0cbbc57d4" />
 
 ## Why this exists
 
