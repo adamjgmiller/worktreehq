@@ -8,6 +8,7 @@ import type {
   ClaudePresence,
   WorktreePairOverlap,
   WorktreeConflictSummary,
+  WorktreeSortMode,
 } from '../types';
 import { initialThemePreference, type ThemePreference } from '../hooks/useTheme';
 
@@ -75,6 +76,11 @@ interface StoreState {
   // user would see a one-tick flash of stale ordering.
   recentRepoPaths: string[];
   worktreeOrder: string[];
+  // How the Worktrees tab sorts its cards. 'recent' is the first-run default
+  // (most recently touched first, primary pinned to top). Switches to 'manual'
+  // automatically when the user drags a card, so the drag gesture "just works"
+  // without requiring them to pre-select Manual mode. Persisted per-repo.
+  worktreeSortMode: WorktreeSortMode;
   // User's theme choice. "dark" is the first-run default (the app's
   // established visual identity); "system" is an opt-in that follows
   // the OS `prefers-color-scheme`. See useTheme.ts for the resolution
@@ -105,6 +111,7 @@ interface StoreState {
   setZoomLevel: (z: number) => void;
   setRecentRepoPaths: (paths: string[]) => void;
   setWorktreeOrder: (order: string[]) => void;
+  setWorktreeSortMode: (mode: WorktreeSortMode) => void;
   setThemePreference: (pref: ThemePreference) => void;
   markRefreshed: () => void;
 }
@@ -148,6 +155,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   zoomLevel: ZOOM_DEFAULT,
   recentRepoPaths: [],
   worktreeOrder: [],
+  worktreeSortMode: 'recent',
   // Seed from localStorage (same source bootstrapThemeSync reads) so
   // useTheme's first-render effect is a no-op that agrees with the
   // DOM class already set in main.tsx. A naked `'dark'` default here
@@ -175,6 +183,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   setZoomLevel: (z) => set({ zoomLevel: clampZoom(z) }),
   setRecentRepoPaths: (recentRepoPaths) => set({ recentRepoPaths }),
   setWorktreeOrder: (worktreeOrder) => set({ worktreeOrder }),
+  setWorktreeSortMode: (worktreeSortMode) => set({ worktreeSortMode }),
   setThemePreference: (themePreference) => set({ themePreference }),
   markRefreshed: () => set({ lastRefresh: Date.now() }),
 }));

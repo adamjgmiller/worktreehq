@@ -11,7 +11,10 @@ import {
   stopFetchLoop,
   stopRefreshLoop,
 } from '../services/refreshLoop';
-import { readWorktreeOrder } from '../services/worktreeOrderService';
+import {
+  readWorktreeOrder,
+  readWorktreeSortMode,
+} from '../services/worktreeOrderService';
 
 // Minimum gap between watcher-driven refreshes. The 250ms debounce below
 // coalesces a burst of events, but on its own doesn't cap throughput — a
@@ -47,6 +50,7 @@ export function useRepoBootstrap() {
   const setZoomLevel = useRepoStore((s) => s.setZoomLevel);
   const setRecentRepoPaths = useRepoStore((s) => s.setRecentRepoPaths);
   const setWorktreeOrder = useRepoStore((s) => s.setWorktreeOrder);
+  const setWorktreeSortMode = useRepoStore((s) => s.setWorktreeSortMode);
   const setThemePreference = useRepoStore((s) => s.setThemePreference);
   // Derive just the sorted-paths key so the watcher effect only re-runs when the
   // actual path SET changes — not on every refresh tick when other worktree
@@ -153,13 +157,25 @@ export function useRepoBootstrap() {
           owner: remote.owner,
           name: remote.name,
         });
-        // Hydrate persisted card order for this repo before the first
-        // refresh lands, so cards appear in the user's saved arrangement.
+        // Hydrate persisted card order + sort mode for this repo before the
+        // first refresh lands, so cards appear in the user's saved
+        // arrangement. Migration rule: if the user has a saved manual order
+        // but no saved mode (upgraded from before sort modes existed),
+        // default to 'manual' so their drag arrangement isn't silently
+        // overwritten by the new 'recent' default.
         try {
           const order = await readWorktreeOrder(info.path);
           setWorktreeOrder(order);
+          const savedMode = await readWorktreeSortMode(info.path);
+          if (savedMode) {
+            setWorktreeSortMode(savedMode);
+          } else if (order.length > 0) {
+            setWorktreeSortMode('manual');
+          } else {
+            setWorktreeSortMode('recent');
+          }
         } catch {
-          /* best-effort; empty order preserves git's natural ordering */
+          /* best-effort; defaults in the store preserve sane behavior */
         }
         // Run the initial fetch BEFORE starting the refresh loop. Without
         // this, `startRefreshLoop()` synchronously begins its first tick

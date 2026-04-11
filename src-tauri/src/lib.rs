@@ -30,6 +30,8 @@ pub fn run() {
             commands::pr_cache::write_pr_cache,
             commands::worktree_order::read_worktree_order,
             commands::worktree_order::write_worktree_order,
+            commands::worktree_sort_mode::read_worktree_sort_mode,
+            commands::worktree_sort_mode::write_worktree_sort_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
