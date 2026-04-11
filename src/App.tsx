@@ -29,7 +29,7 @@ import { invoke } from './services/tauriBridge';
 // write doesn't roll back the in-memory zoom — the keystroke still feels
 // responsive and the next save will retry. We read+merge the existing config
 // (rather than reconstructing it from store state) because the github_token
-// is not held in the Zustand store, only the boolean `githubTokenSet`. A
+// is not held in the Zustand store, only the derived `githubAuthStatus`. A
 // fresh write_config without merging would silently wipe the user's token.
 async function persistZoom(level: number) {
   try {
@@ -48,7 +48,7 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const repo = useRepoStore((s) => s.repo);
   const error = useRepoStore((s) => s.error);
-  const tokenSet = useRepoStore((s) => s.githubTokenSet);
+  const authStatus = useRepoStore((s) => s.githubAuthStatus);
   const dataRepoPath = useRepoStore((s) => s.dataRepoPath);
   const setError = useRepoStore((s) => s.setError);
   const zoomLevel = useRepoStore((s) => s.zoomLevel);
@@ -173,11 +173,19 @@ export default function App() {
           )}
         </div>
       )}
-      {dataReady && !tokenSet && !error && (
+      {/*
+        Auth warning banner. Coexists with the error banner above — two
+        independent failure surfaces shouldn't hide each other. 'checking'
+        is suppressed so we don't flash a warning during the brief
+        bootstrap validation window.
+      */}
+      {dataReady && authStatus !== 'valid' && authStatus !== 'checking' && (
         <div className="px-6 pt-4 text-xs text-wt-dirty">
-          No GitHub token configured — squash-merge detection from PRs will be limited.{' '}
+          {authStatus === 'invalid'
+            ? 'GitHub token is invalid or expired — PR enrichment and squash-merge detection are degraded.'
+            : 'No GitHub token configured — squash-merge detection from PRs will be limited.'}{' '}
           <button onClick={() => setSettingsOpen(true)} className="underline">
-            Set one
+            {authStatus === 'invalid' ? 'Update it' : 'Set one'}
           </button>
           .
         </div>

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
 import { invoke, isTauri } from '../services/tauriBridge';
-import { hydratePrCache, initGithub } from '../services/githubService';
+import { hydratePrCache, initGithub, validateToken } from '../services/githubService';
 import { getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
 import {
   refreshOnce,
@@ -41,7 +41,7 @@ interface RepoInfo {
 export function useRepoBootstrap() {
   const setRepo = useRepoStore((s) => s.setRepo);
   const setError = useRepoStore((s) => s.setError);
-  const setTokenPresent = useRepoStore((s) => s.setTokenPresent);
+  const setGithubAuthStatus = useRepoStore((s) => s.setGithubAuthStatus);
   const setRefreshInterval = useRepoStore((s) => s.setRefreshInterval);
   const setFetchInterval = useRepoStore((s) => s.setFetchInterval);
   const setZoomLevel = useRepoStore((s) => s.setZoomLevel);
@@ -88,7 +88,18 @@ export function useRepoBootstrap() {
         }
         const cfg = await invoke<AppConfig>('read_config');
         initGithub(cfg.github_token || '');
-        setTokenPresent(!!cfg.github_token);
+        // Kick token validation without awaiting so bootstrap keeps flowing.
+        // The pill starts in 'checking' and flips to the real state within
+        // ~200ms typical; a slow validation can't block the rest of the
+        // boot sequence. `cancelled` is captured so a repo-switch mid-flight
+        // doesn't overwrite the new repo's pill state.
+        if (cfg.github_token) {
+          void validateToken().then((status) => {
+            if (!cancelled) setGithubAuthStatus(status);
+          });
+        } else {
+          setGithubAuthStatus('missing');
+        }
         // Mirror the Rust default (config.rs default_interval = 15_000) and the
         // store default. The previous `|| 5000` silently undermined the
         // documented 15s default whenever the field deserialized to 0.
@@ -222,7 +233,7 @@ export function useRepoBootstrap() {
   }, [
     setRepo,
     setError,
-    setTokenPresent,
+    setGithubAuthStatus,
     setRefreshInterval,
     setFetchInterval,
     setZoomLevel,

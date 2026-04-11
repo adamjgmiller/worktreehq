@@ -18,7 +18,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
   const busy = userRefreshing || fetching;
   const lastRefresh = useRepoStore((s) => s.lastRefresh);
   const lastFetchError = useRepoStore((s) => s.lastFetchError);
-  const tokenSet = useRepoStore((s) => s.githubTokenSet);
+  const authStatus = useRepoStore((s) => s.githubAuthStatus);
   const themePreference = useRepoStore((s) => s.themePreference);
   const setThemePreference = useRepoStore((s) => s.setThemePreference);
   // What the user sees RIGHT NOW. When the preference is "system" this
@@ -80,12 +80,38 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
       >
         <RefreshCw className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />
       </button>
+      {/*
+        Tri-state auth pill. 'checking' renders with the 'missing' yellow so
+        the brief bootstrap transition doesn't flash a fourth color — the
+        user either sees yellow hold steady then go green, or yellow hold
+        steady then go red, both of which read as a settled state.
+      */}
       <div
-        className={`flex items-center gap-1 text-xs ${tokenSet ? 'text-wt-clean' : 'text-wt-dirty'}`}
-        title={tokenSet ? 'GitHub token configured' : 'No GitHub token'}
+        className={`flex items-center gap-1 text-xs ${
+          authStatus === 'valid'
+            ? 'text-wt-clean'
+            : authStatus === 'invalid'
+              ? 'text-wt-conflict'
+              : 'text-wt-dirty'
+        }`}
+        title={
+          authStatus === 'valid'
+            ? 'GitHub token valid'
+            : authStatus === 'invalid'
+              ? 'GitHub token invalid or expired — open Settings to update it'
+              : authStatus === 'checking'
+                ? 'Checking GitHub token…'
+                : 'No GitHub token configured'
+        }
       >
         <Github className="w-4 h-4" />
-        {tokenSet ? 'auth' : 'no token'}
+        {authStatus === 'valid'
+          ? 'auth'
+          : authStatus === 'invalid'
+            ? 'token invalid'
+            : authStatus === 'checking'
+              ? 'checking…'
+              : 'no token'}
       </div>
       {/*
         Theme toggle. The icon shows the DESTINATION (Sun when dark, Moon

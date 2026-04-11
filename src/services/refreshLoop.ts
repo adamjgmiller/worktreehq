@@ -16,6 +16,7 @@ import {
 } from './githubService';
 import { fetchClaudePresence } from './claudeAwarenessService';
 import { detectCrossWorktreeConflicts, type ConflictDetectResult } from './conflictDetector';
+import { classifyFetchError, formatClassifiedError } from './fetchErrorClassifier';
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -324,7 +325,11 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
       // quiet (we don't want a spinner-quiet poll loop spamming errors)
       // but log to console so the failure is debuggable.
       fetchFailed = true;
-      const msg = e instanceof Error ? e.message : String(e);
+      const rawMsg = e instanceof Error ? e.message : String(e);
+      // Classify the stderr so recognizable failures (missing SSH key,
+      // expired HTTPS creds, DNS down) get an actionable hint prepended
+      // to the raw git message. Unknown errors pass through unchanged.
+      const msg = formatClassifiedError(classifyFetchError(rawMsg));
       if (userInitiated) {
         setError(`Fetch failed: ${msg}`);
       } else {
@@ -380,7 +385,8 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     // refresh chain. fetchAllPrune failures are caught above; this path
     // covers everything else.
     if (!fetchFailed) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const rawMsg = e instanceof Error ? e.message : String(e);
+      const msg = formatClassifiedError(classifyFetchError(rawMsg));
       if (userInitiated) {
         setError(`Fetch failed: ${msg}`);
       } else {

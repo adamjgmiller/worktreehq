@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '../../services/tauriBridge';
-import { initGithub } from '../../services/githubService';
+import { initGithub, validateToken } from '../../services/githubService';
 import { useRepoStore } from '../../store/useRepoStore';
 import { X } from 'lucide-react';
 
@@ -13,7 +13,7 @@ type AppConfigShape = Record<string, unknown> & {
 };
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const setTokenPresent = useRepoStore((s) => s.setTokenPresent);
+  const setGithubAuthStatus = useRepoStore((s) => s.setGithubAuthStatus);
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -103,7 +103,16 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         },
       });
       initGithub(token);
-      setTokenPresent(!!token);
+      // Re-validate against GitHub so an expired/revoked token that the user
+      // just re-entered doesn't sit as green "auth" until the next app
+      // restart. Fired without awaiting so the modal closes immediately;
+      // the pill updates when the ~200ms validation resolves.
+      if (token) {
+        setGithubAuthStatus('checking');
+        void validateToken().then(setGithubAuthStatus);
+      } else {
+        setGithubAuthStatus('missing');
+      }
       onClose();
     } catch (e: any) {
       setError(`Save failed: ${e?.message ?? e}`);

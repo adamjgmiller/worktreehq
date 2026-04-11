@@ -11,6 +11,15 @@ import type {
 } from '../types';
 import { initialThemePreference, type ThemePreference } from '../hooks/useTheme';
 
+// GitHub token auth state. Distinguishes "no token configured" from "token
+// configured but rejected by GitHub" so the UI can surface an expired/revoked
+// PAT as loudly as a missing one — previously both showed as green "auth" if
+// the string was non-empty, and a stale token silently stopped enriching PR
+// data with no visible explanation. 'checking' is the transient bootstrap
+// state before validateToken() resolves; displayed as the 'missing' yellow
+// pill color to avoid a fourth visible state.
+export type GithubAuthStatus = 'missing' | 'checking' | 'valid' | 'invalid';
+
 // Zoom is clamped to [ZOOM_MIN, ZOOM_MAX] in the setter. Range matches the
 // Rust-side clamp in src-tauri/src/commands/config.rs and is intentionally
 // wider than the keyboard step (0.10) so the user can land on common stops
@@ -43,7 +52,7 @@ interface StoreState {
   lastFetchError: string | null;
   error: string | null;
   lastRefresh: number;
-  githubTokenSet: boolean;
+  githubAuthStatus: GithubAuthStatus;
   // The repo path the current `worktrees`/`branches`/`mainCommits`/`squashMappings`
   // collections correspond to. Set inside `runRefreshOnce` only on success.
   // App.tsx gates the content region on `dataRepoPath === repo.path` so:
@@ -89,7 +98,7 @@ interface StoreState {
   setFetching: (v: boolean) => void;
   setLastFetchError: (e: string | null) => void;
   setError: (e: string | null) => void;
-  setTokenPresent: (v: boolean) => void;
+  setGithubAuthStatus: (s: GithubAuthStatus) => void;
   setDataRepoPath: (p: string | null) => void;
   setRefreshInterval: (ms: number) => void;
   setFetchInterval: (ms: number) => void;
@@ -124,7 +133,11 @@ export const useRepoStore = create<StoreState>((set) => ({
   lastFetchError: null,
   error: null,
   lastRefresh: 0,
-  githubTokenSet: false,
+  // Start in 'checking' so the bootstrap → validateToken transition doesn't
+  // flash yellow "no token" before resolving to the real state. If bootstrap
+  // never runs (non-Tauri test env, early error), the pill is hidden behind
+  // the error banner anyway, so the initial value is irrelevant in that path.
+  githubAuthStatus: 'checking',
   dataRepoPath: null,
   // 15s default. The watcher (scoped to .git/) covers the immediacy case
   // for actual git changes, so the poll loop just needs to be a safety net.
@@ -155,7 +168,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   setFetching: (fetching) => set({ fetching }),
   setLastFetchError: (lastFetchError) => set({ lastFetchError }),
   setError: (error) => set({ error }),
-  setTokenPresent: (githubTokenSet) => set({ githubTokenSet }),
+  setGithubAuthStatus: (githubAuthStatus) => set({ githubAuthStatus }),
   setDataRepoPath: (dataRepoPath) => set({ dataRepoPath }),
   setRefreshInterval: (refreshIntervalMs) => set({ refreshIntervalMs }),
   setFetchInterval: (fetchIntervalMs) => set({ fetchIntervalMs }),
