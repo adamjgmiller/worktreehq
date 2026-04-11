@@ -9,7 +9,7 @@ import type {
   WorktreePairOverlap,
   WorktreeConflictSummary,
 } from '../types';
-import type { ThemePreference } from '../hooks/useTheme';
+import { initialThemePreference, type ThemePreference } from '../hooks/useTheme';
 
 // Zoom is clamped to [ZOOM_MIN, ZOOM_MAX] in the setter. Range matches the
 // Rust-side clamp in src-tauri/src/commands/config.rs and is intentionally
@@ -66,8 +66,9 @@ interface StoreState {
   // user would see a one-tick flash of stale ordering.
   recentRepoPaths: string[];
   worktreeOrder: string[];
-  // User's theme choice. "system" follows the OS `prefers-color-scheme`
-  // and is the first-run default — see useTheme.ts for the resolution
+  // User's theme choice. "dark" is the first-run default (the app's
+  // established visual identity); "system" is an opt-in that follows
+  // the OS `prefers-color-scheme`. See useTheme.ts for the resolution
   // and DOM-application logic. Persisted to config.toml via
   // persistThemePreference. FOUC is prevented by `bootstrapThemeSync()`
   // in main.tsx, which applies the last-seen theme class from
@@ -134,7 +135,11 @@ export const useRepoStore = create<StoreState>((set) => ({
   zoomLevel: ZOOM_DEFAULT,
   recentRepoPaths: [],
   worktreeOrder: [],
-  themePreference: 'system',
+  // Seed from localStorage (same source bootstrapThemeSync reads) so
+  // useTheme's first-render effect is a no-op that agrees with the
+  // DOM class already set in main.tsx. A naked `'dark'` default here
+  // would clobber a persisted light preference on every page load.
+  themePreference: initialThemePreference(),
 
   setRepo: (repo) => set({ repo }),
   setWorktrees: (worktrees) => set({ worktrees }),

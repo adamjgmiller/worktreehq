@@ -6,7 +6,8 @@ export type ThemePreference = 'light' | 'dark' | 'system';
 
 // The concrete theme we end up rendering, after resolving "system" against
 // the OS `prefers-color-scheme`. This is what actually gets toggled on
-// <html> via the `.dark` class.
+// <html> via the `.light` class. Dark is the app default and lives on
+// `:root` directly, so the dark path is a no-op / class-removal.
 export type ResolvedTheme = 'light' | 'dark';
 
 // Media query handle for `prefers-color-scheme: dark`. Lives at module
@@ -30,16 +31,33 @@ export function resolveTheme(pref: ThemePreference): ResolvedTheme {
 // not wait on matchMedia or config.toml.
 const LAST_THEME_KEY = 'wt-last-theme';
 
-// Apply a resolved theme to the DOM by toggling the `.dark` class on
+// Synchronous initial preference used to SEED the Zustand store before
+// React mounts. Must return the same value as bootstrapThemeSync would
+// apply to the DOM, otherwise useTheme's first-render effect will
+// clobber bootstrapThemeSync's class toggle and the reloaded app
+// flashes back to the default. Gets called twice on cold start (once
+// for the DOM, once for the store) — it's a cheap sync read, not a race.
+export function initialThemePreference(): ThemePreference {
+  try {
+    const stored = localStorage.getItem(LAST_THEME_KEY);
+    if (stored === 'light' || stored === 'dark') return stored;
+  } catch {
+    /* fall through to the default */
+  }
+  return 'dark';
+}
+
+// Apply a resolved theme to the DOM by toggling the `.light` class on
 // <html>. Every wt-* Tailwind utility resolves its color via CSS
-// variables scoped by this class (see src/styles/globals.css), so a
+// variables — `:root` holds the dark defaults and `html.light`
+// overrides them with light values (see src/styles/globals.css). A
 // single class flip re-themes the entire app in one paint.
 export function applyTheme(resolved: ResolvedTheme) {
   const root = document.documentElement;
-  if (resolved === 'dark') {
-    root.classList.add('dark');
+  if (resolved === 'light') {
+    root.classList.add('light');
   } else {
-    root.classList.remove('dark');
+    root.classList.remove('light');
   }
   try {
     localStorage.setItem(LAST_THEME_KEY, resolved);
@@ -49,12 +67,13 @@ export function applyTheme(resolved: ResolvedTheme) {
 }
 
 // Called synchronously from main.tsx BEFORE React mounts to avoid FOUC.
-// Reads the last-applied resolved theme from localStorage and falls back
-// to `prefers-color-scheme` for first launch. The async config hydration
-// in useRepoBootstrap may override this moments later — that's fine, any
-// mismatch is limited to the difference between "what the user last saw"
-// and "what's persisted", which is only visible on the very first launch
-// after an explicit theme change from another session.
+// Reads the last-applied resolved theme from localStorage; on a truly
+// first launch (storage empty) we fall through to the app-wide default
+// of dark. The async config hydration in useRepoBootstrap may override
+// this moments later — that's fine, any mismatch is limited to the
+// difference between "what the user last saw" and "what's persisted",
+// which is only visible on the very first launch after an explicit
+// theme change from another session.
 export function bootstrapThemeSync() {
   try {
     const stored = localStorage.getItem(LAST_THEME_KEY);
@@ -63,15 +82,17 @@ export function bootstrapThemeSync() {
       return;
     }
   } catch {
-    /* fall through to matchMedia */
+    /* fall through to the default */
   }
-  applyTheme(prefersDarkMql?.matches ? 'dark' : 'light');
+  applyTheme('dark');
 }
 
 // Hook that subscribes to the store's theme preference and keeps
-// <html class="dark"> in sync with it. Also listens for OS-level
-// prefers-color-scheme changes so a user on "system" gets a live
-// swap when they flip their OS appearance without relaunching.
+// <html class="light"> in sync with it. Also listens for OS-level
+// prefers-color-scheme changes so a user who has explicitly chosen
+// "system" gets a live swap when they flip their OS appearance
+// without relaunching. The store default is "dark", not "system" —
+// first-launch users see dark regardless of OS preference.
 export function useTheme() {
   const themePreference = useRepoStore((s) => s.themePreference);
   useEffect(() => {

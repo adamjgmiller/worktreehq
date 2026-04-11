@@ -1,7 +1,11 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
-  darkMode: 'class',
+  // No `darkMode` set intentionally. All theming is done through CSS
+  // custom properties (see src/styles/globals.css) — dark is the app
+  // default on `:root` and `html.light` overrides for light mode. The
+  // codebase has zero `dark:` Tailwind variant usages, so Tailwind's
+  // built-in dark-mode switch would be a no-op regardless.
   theme: {
     extend: {
       fontFamily: {

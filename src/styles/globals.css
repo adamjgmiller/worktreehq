@@ -5,38 +5,14 @@
 /* Theme tokens as space-separated RGB triples so Tailwind's
    rgb(var(--token) / <alpha-value>) pattern can apply opacity modifiers
    like bg-wt-info/20. Hex values here would break every /<alpha>
-   utility silently. :root holds the light-mode defaults; html.dark
-   overrides for dark mode. The theme toggle flips the .dark class on
-   <html> and every wt-* utility re-resolves via CSS custom properties
-   — zero touching of the 300+ existing call sites. */
+   utility silently. :root holds the dark-mode defaults (dark is the
+   app's first-run appearance); html.light overrides for light mode.
+   The theme toggle flips the .light class on <html> and every wt-*
+   utility re-resolves via CSS custom properties — zero touching of
+   the 300+ existing call sites. Putting dark on :root means the
+   pre-JS paint is always dark, which matches the default and leaves
+   zero window for a flash of light on cold start. */
 :root {
-  --wt-bg: 246 246 244;
-  --wt-panel: 255 255 255;
-  --wt-border: 231 229 228;
-  --wt-fg: 24 24 27;
-  --wt-fg-2: 63 63 70;
-  --wt-muted: 87 83 78;
-  --wt-muted-2: 120 113 108;
-
-  --wt-clean: 5 150 105;
-  --wt-dirty: 180 83 9;
-  --wt-conflict: 220 38 38;
-  --wt-info: 37 99 235;
-  --wt-squash: 124 58 237;
-  --wt-active: 71 85 105;
-
-  --wt-claude-ide: 2 132 199;
-  --wt-claude-live: 5 150 105;
-  --wt-claude-recent: 161 98 7;
-  --wt-claude-dormant: 161 161 170;
-  --wt-claude-conflict: 194 65 12;
-
-  --wt-scrollbar-track: #f6f6f4;
-  --wt-scrollbar-thumb: #d4d4d8;
-  --wt-scrollbar-thumb-hover: #a1a1aa;
-}
-
-html.dark {
   --wt-bg: 10 10 11;
   --wt-panel: 17 17 20;
   --wt-border: 31 31 36;
@@ -61,6 +37,33 @@ html.dark {
   --wt-scrollbar-track: #0a0a0b;
   --wt-scrollbar-thumb: #27272a;
   --wt-scrollbar-thumb-hover: #3f3f46;
+}
+
+html.light {
+  --wt-bg: 246 246 244;
+  --wt-panel: 255 255 255;
+  --wt-border: 231 229 228;
+  --wt-fg: 24 24 27;
+  --wt-fg-2: 63 63 70;
+  --wt-muted: 87 83 78;
+  --wt-muted-2: 120 113 108;
+
+  --wt-clean: 5 150 105;
+  --wt-dirty: 180 83 9;
+  --wt-conflict: 220 38 38;
+  --wt-info: 37 99 235;
+  --wt-squash: 124 58 237;
+  --wt-active: 71 85 105;
+
+  --wt-claude-ide: 2 132 199;
+  --wt-claude-live: 5 150 105;
+  --wt-claude-recent: 161 98 7;
+  --wt-claude-dormant: 161 161 170;
+  --wt-claude-conflict: 194 65 12;
+
+  --wt-scrollbar-track: #f6f6f4;
+  --wt-scrollbar-thumb: #d4d4d8;
+  --wt-scrollbar-thumb-hover: #a1a1aa;
 }
 
 html, body, #root { height: 100%; }
