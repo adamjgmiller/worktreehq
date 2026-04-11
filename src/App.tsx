@@ -184,7 +184,7 @@ export default function App() {
         id={`panel-${tab}`}
         role="tabpanel"
         aria-labelledby={`tab-${tab}`}
-        className="flex-1 overflow-hidden"
+        className="flex-1 overflow-clip"
       >
         {dataReady ? (
           <>
