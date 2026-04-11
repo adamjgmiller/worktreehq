@@ -58,6 +58,29 @@ export async function readClaudeFirstPrompt(
   }
 }
 
+// Reads the first human-typed prompt from one specific session JSONL,
+// identified by worktree path + session id. Used by the past-sessions list
+// in the worktree card to label each row with what the user originally
+// asked Claude. Same null-on-error contract as readClaudeFirstPrompt — a
+// failure here just means the row falls back to the relative time and the
+// short session id, never an error toast.
+export async function readClaudeSessionFirstPrompt(
+  worktreePath: string,
+  sessionId: string,
+  maxChars: number,
+): Promise<string | null> {
+  try {
+    const result = await invoke<string | null>('read_claude_session_first_prompt', {
+      worktreePath,
+      sessionId,
+      maxChars,
+    });
+    return result ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Plain filesystem existence check. Used to probe in-progress-operation marker files
 // (MERGE_HEAD, rebase-merge/, …) and the on-disk PR cache file.
 export async function pathExists(path: string): Promise<boolean> {

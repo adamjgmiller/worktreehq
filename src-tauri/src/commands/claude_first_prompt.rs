@@ -330,6 +330,49 @@ pub fn read_claude_first_prompt(
     Ok(None)
 }
 
+/// Read the first human-typed prompt from one specific session JSONL,
+/// identified by `worktree_path` + `session_id`. Used by the past-sessions
+/// list in the worktree card to label each row with what the user originally
+/// asked Claude. Returns None when the session can't be located, the JSONL
+/// has no qualifying user record in its first MAX_LINES_SCANNED lines, or
+/// `~/.claude/` doesn't exist (user doesn't use Claude Code).
+///
+/// Safety: `session_id` arrives over IPC. We reject any value containing a
+/// path separator or `..` segment so a hostile caller can't traverse out of
+/// the resolved project dir. Real session ids are UUIDs and never contain
+/// either, so this filter has no false-positive cost.
+#[tauri::command]
+pub fn read_claude_session_first_prompt(
+    worktree_path: String,
+    session_id: String,
+    max_chars: usize,
+) -> AppResult<Option<String>> {
+    if session_id.is_empty()
+        || session_id.contains('/')
+        || session_id.contains('\\')
+        || session_id.contains("..")
+    {
+        return Ok(None);
+    }
+    let Some(claude) = claude_dir() else {
+        return Err(AppError::Msg("no home dir".into()));
+    };
+    if !claude.exists() {
+        return Ok(None);
+    }
+    let Some(project_dir) = find_project_dir(&claude, &worktree_path) else {
+        return Ok(None);
+    };
+    let jsonl = project_dir.join(format!("{}.jsonl", session_id));
+    if !jsonl.exists() {
+        return Ok(None);
+    }
+    match extract_first_user_prompt(&jsonl) {
+        Some(content) => Ok(Some(truncate_on_word_boundary(&content, max_chars))),
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,6 +595,26 @@ mod tests {
         // Should be the 5 emoji, no ellipsis (the original is exactly 5
         // chars before the trailing space).
         assert!(out.starts_with("🌟🌟🌟🌟🌟"));
+    }
+
+    #[test]
+    fn session_first_prompt_rejects_path_traversal_session_id() {
+        // The IPC boundary means session_id is attacker-controllable. Any
+        // value with `/`, `\`, or `..` should bounce out as None without
+        // touching the filesystem. Real session ids are UUIDs and would
+        // never trip this guard.
+        assert!(matches!(
+            read_claude_session_first_prompt("/x".into(), "../etc/passwd".into(), 80),
+            Ok(None)
+        ));
+        assert!(matches!(
+            read_claude_session_first_prompt("/x".into(), "a/b".into(), 80),
+            Ok(None)
+        ));
+        assert!(matches!(
+            read_claude_session_first_prompt("/x".into(), "".into(), 80),
+            Ok(None)
+        ));
     }
 
     #[test]
