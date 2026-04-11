@@ -70,6 +70,7 @@ function resetStore() {
     lastFetchError: null,
     error: null,
     lastRefresh: 0,
+    githubAuthStatus: 'checking',
   });
 }
 
