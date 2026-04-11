@@ -131,7 +131,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             <X className="w-4 h-4" />
           </button>
         </div>
-        <p className="text-sm text-neutral-400 mb-3">
+        <p className="text-sm text-wt-fg-2 mb-3">
           Needed to look up PRs for squash-merge detection. Stored in{' '}
           <code className="font-mono">~/.config/worktreehq/config.toml</code>.
         </p>
@@ -149,7 +149,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             <button
               type="button"
               onClick={clearToken}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-[0.6875rem] uppercase tracking-wide text-neutral-500 hover:text-wt-conflict"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[0.6875rem] uppercase tracking-wide text-wt-muted hover:text-wt-conflict"
             >
               clear
             </button>
@@ -163,7 +163,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="px-3 py-1.5 text-sm text-neutral-400"
+            className="px-3 py-1.5 text-sm text-wt-fg-2"
           >
             Cancel
           </button>

@@ -94,11 +94,11 @@ export function WorktreeArchiveView() {
   return (
     <div className="flex flex-col h-full">
       <div className="px-6 pt-4 pb-3 border-b border-wt-border">
-        <div className="flex items-center gap-2 text-neutral-300">
+        <div className="flex items-center gap-2 text-wt-fg-2">
           <Archive className="w-4 h-4" />
           <h2 className="text-sm font-semibold">Worktree Archive</h2>
         </div>
-        <p className="text-xs text-neutral-500 mt-1 max-w-2xl">
+        <p className="text-xs text-wt-muted mt-1 max-w-2xl">
           Notes from worktrees that no longer exist on disk. When you remove
           a worktree, the notepad entry survives in <code className="font-mono">notepads.json</code>{' '}
           — this view is where you can read it, copy it out, or delete it permanently.
@@ -185,11 +185,11 @@ function ArchiveRow({
     <li className="rounded-lg border border-wt-border bg-wt-panel/40 p-4">
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="min-w-0 flex-1">
-          <div className="font-mono text-sm text-neutral-200 truncate">
+          <div className="font-mono text-sm text-wt-fg truncate">
             {label}
           </div>
           <div
-            className="font-mono text-[0.625rem] text-neutral-600 truncate mt-0.5"
+            className="font-mono text-[0.625rem] text-wt-muted truncate mt-0.5"
             title={entry.path}
           >
             {entry.path}
@@ -199,7 +199,7 @@ function ArchiveRow({
           <button
             onClick={handleCopy}
             disabled={empty}
-            className="flex items-center gap-1 px-2 py-1 text-[0.625rem] text-neutral-400 hover:text-neutral-200 hover:bg-wt-border/40 rounded disabled:opacity-30 disabled:hover:bg-transparent"
+            className="flex items-center gap-1 px-2 py-1 text-[0.625rem] text-wt-fg-2 hover:text-wt-fg hover:bg-wt-border/40 rounded disabled:opacity-30 disabled:hover:bg-transparent"
             aria-label="Copy note"
           >
             {copied ? (
@@ -223,7 +223,7 @@ function ArchiveRow({
             className={`flex items-center gap-1 px-2 py-1 text-[0.625rem] rounded ${
               confirming
                 ? 'bg-wt-conflict/20 border border-wt-conflict/60 text-wt-conflict'
-                : 'text-neutral-400 hover:text-wt-conflict hover:bg-wt-conflict/10'
+                : 'text-wt-fg-2 hover:text-wt-conflict hover:bg-wt-conflict/10'
             }`}
             aria-label={confirming ? 'Confirm delete' : 'Delete note'}
           >
@@ -233,9 +233,9 @@ function ArchiveRow({
         </div>
       </div>
       {empty ? (
-        <div className="text-xs text-neutral-600 italic">(empty note)</div>
+        <div className="text-xs text-wt-muted italic">(empty note)</div>
       ) : (
-        <div className="text-xs text-neutral-300 whitespace-pre-wrap break-words bg-wt-bg/60 border border-wt-border rounded px-3 py-2 max-h-48 overflow-auto">
+        <div className="text-xs text-wt-fg-2 whitespace-pre-wrap break-words bg-wt-bg/60 border border-wt-border rounded px-3 py-2 max-h-48 overflow-auto">
           {entry.content}
         </div>
       )}

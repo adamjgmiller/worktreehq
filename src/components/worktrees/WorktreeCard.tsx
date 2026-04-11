@@ -88,7 +88,7 @@ function CopyableTitle({ path }: { path: string }) {
         type="button"
         onClick={handleCopy}
         aria-label="Copy worktree path"
-        className="block w-full text-left font-mono text-sm text-neutral-100 truncate cursor-copy hover:text-neutral-300 transition-colors"
+        className="block w-full text-left font-mono text-sm text-wt-fg truncate cursor-copy hover:text-wt-fg-2 transition-colors"
       >
         {basename(path)}
       </button>
@@ -273,23 +273,23 @@ export function WorktreeCard({
           */}
           <CopyableTitle path={wt.path} />
           <div
-            className="font-mono text-xs text-neutral-300 mt-0.5 flex items-center gap-1 min-w-0"
+            className="font-mono text-xs text-wt-fg-2 mt-0.5 flex items-center gap-1 min-w-0"
             title={wt.branch}
           >
             <GitBranch className="w-3 h-3 flex-shrink-0" />
             <span className="truncate">{wt.branch}</span>
           </div>
           <div
-            className="font-mono text-[0.6875rem] text-neutral-500 truncate"
+            className="font-mono text-[0.6875rem] text-wt-muted truncate"
             title={wt.upstream ? `tracks ${wt.upstream}` : 'no upstream configured'}
           >
             {wt.upstream ? (
               <>
-                <span className="text-neutral-600">↳ </span>
+                <span className="text-wt-muted">↳ </span>
                 {wt.upstream}
               </>
             ) : (
-              <span className="text-neutral-600 italic">↳ (no upstream)</span>
+              <span className="text-wt-muted italic">↳ (no upstream)</span>
             )}
           </div>
         </div>
@@ -316,7 +316,7 @@ export function WorktreeCard({
             className="p-1 -mt-0.5 rounded hover:bg-wt-border"
             aria-label="worktree actions"
           >
-            <MoreVertical className="w-4 h-4 text-neutral-400" />
+            <MoreVertical className="w-4 h-4 text-wt-fg-2" />
           </button>
           {menuOpen && (
             <div className="absolute right-0 top-full mt-1 z-20 w-48 bg-wt-panel border border-wt-border rounded shadow-lg text-xs">
@@ -325,7 +325,7 @@ export function WorktreeCard({
                 onClick={handleOpenInFileManager}
                 className="w-full text-left px-3 py-2 hover:bg-wt-border flex items-center gap-2"
               >
-                <FolderOpen className="w-3.5 h-3.5 text-neutral-400" />
+                <FolderOpen className="w-3.5 h-3.5 text-wt-fg-2" />
                 {fileManagerLabel()}
               </button>
               <button
@@ -333,7 +333,7 @@ export function WorktreeCard({
                 onClick={handleOpenInTerminal}
                 className="w-full text-left px-3 py-2 hover:bg-wt-border flex items-center gap-2 border-b border-wt-border"
               >
-                <SquareTerminal className="w-3.5 h-3.5 text-neutral-400" />
+                <SquareTerminal className="w-3.5 h-3.5 text-wt-fg-2" />
                 Open in Terminal
               </button>
               {onRemove && (
@@ -399,7 +399,7 @@ export function WorktreeCard({
             <Tooltip
               label={`${branchInfo.aheadOfMain} ahead, ${branchInfo.behindMain} behind ${defaultBranch}`}
             >
-              <span className="font-mono text-[0.625rem] text-neutral-400 cursor-help">
+              <span className="font-mono text-[0.625rem] text-wt-fg-2 cursor-help">
                 {aheadBehind(branchInfo.aheadOfMain, branchInfo.behindMain)} vs{' '}
                 {defaultBranch}
               </span>
@@ -429,7 +429,7 @@ export function WorktreeCard({
           </div>
         </Tooltip>
       )}
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-wt-border py-2 mb-0 font-mono text-[0.75rem] text-neutral-100">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-wt-border py-2 mb-0 font-mono text-[0.75rem] text-wt-fg">
         <StatInline label="untracked" value={wt.untrackedCount} />
         <StatInline label="modified" value={wt.modifiedCount} />
         <StatInline label="staged" value={wt.stagedCount} />
@@ -517,7 +517,7 @@ function OrphanedCard({
               for "which missing folder is this?". */}
           <CopyableTitle path={wt.path} />
           <div
-            className="font-mono text-xs text-neutral-300 mt-0.5 flex items-center gap-1 min-w-0"
+            className="font-mono text-xs text-wt-fg-2 mt-0.5 flex items-center gap-1 min-w-0"
             title={wt.branch}
           >
             <GitBranch className="w-3 h-3 flex-shrink-0" />
@@ -534,7 +534,7 @@ function OrphanedCard({
               className="p-1 -mt-0.5 rounded hover:bg-wt-border"
               aria-label="remove orphaned worktree"
             >
-              <MoreVertical className="w-4 h-4 text-neutral-400" />
+              <MoreVertical className="w-4 h-4 text-wt-fg-2" />
             </button>
           </Tooltip>
         )}
@@ -565,7 +565,7 @@ function OrphanedCard({
 function StatInline({ label, value }: { label: string; value: number | string }) {
   return (
     <span className="inline-flex items-baseline gap-1">
-      <span className="text-[0.625rem] tracking-tight text-neutral-500 font-sans">{label}</span>
+      <span className="text-[0.625rem] tracking-tight text-wt-muted font-sans">{label}</span>
       {value}
     </span>
   );
@@ -709,7 +709,7 @@ function LastCommitFooter({ lastCommit }: { lastCommit: LastCommit }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-1 text-[0.6875rem] text-neutral-500 hover:text-neutral-300 transition-colors"
+        className="w-full flex items-center gap-1 text-[0.6875rem] text-wt-muted hover:text-wt-fg-2 transition-colors"
         aria-expanded={open}
       >
         <ChevronRight
@@ -726,15 +726,15 @@ function LastCommitFooter({ lastCommit }: { lastCommit: LastCommit }) {
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.15 }}
-            className="overflow-hidden mt-2 text-xs text-neutral-400"
+            className="overflow-hidden mt-2 text-xs text-wt-fg-2"
           >
             <div className="truncate" title={lastCommit.message}>
-              <span className="font-mono text-neutral-500">
+              <span className="font-mono text-wt-muted">
                 {shortSha(lastCommit.sha)}
               </span>{' '}
               {lastCommit.message || '(no commits)'}
             </div>
-            <div className="text-neutral-600 mt-1">
+            <div className="text-wt-muted mt-1">
               {lastCommit.author ? `${lastCommit.author} · ${when}` : when}
             </div>
           </motion.div>
@@ -860,19 +860,19 @@ function PastSessionsList({
               return (
                 <li
                   key={s.sessionId}
-                  className="flex items-center gap-2 text-[0.6875rem] text-neutral-400"
+                  className="flex items-center gap-2 text-[0.6875rem] text-wt-fg-2"
                 >
                   <Tooltip label={tooltipLabel} block className="flex-1">
-                    <span className="block truncate text-neutral-300">
+                    <span className="block truncate text-wt-fg-2">
                       {prompt
                         ? prompt
                         : promptFetched
-                          ? <span className="text-neutral-600 italic">no prompt</span>
-                          : <span className="text-neutral-700">…</span>}
+                          ? <span className="text-wt-muted italic">no prompt</span>
+                          : <span className="text-wt-muted-2">…</span>}
                     </span>
                   </Tooltip>
                   <span
-                    className="flex-none text-neutral-600 tabular-nums"
+                    className="flex-none text-wt-muted tabular-nums"
                     title={s.sessionId}
                   >
                     {relativeTime(s.lastActivity)}
@@ -881,7 +881,7 @@ function PastSessionsList({
                     type="button"
                     onClick={() => handleCopy(s.sessionId)}
                     title="Copy `claude --resume` command"
-                    className="flex-none text-neutral-500 hover:text-wt-claude-ide transition-colors"
+                    className="flex-none text-wt-muted hover:text-wt-claude-ide transition-colors"
                   >
                     {copiedId === s.sessionId ? (
                       <Check className="w-3 h-3" />

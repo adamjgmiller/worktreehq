@@ -32,6 +32,14 @@ pub struct AppConfig {
     // setter; out-of-range values from manual edits are clamped on read.
     #[serde(default = "default_zoom_level")]
     pub zoom_level: f64,
+    // UI theme. One of "light", "dark", "system". Default is "dark" —
+    // the app's established visual identity — so a first-launch user
+    // sees dark regardless of OS `prefers-color-scheme`. "system" is
+    // still available as an opt-in preference if the user wants their
+    // OS appearance to drive the app. Any unrecognized value is
+    // coerced back to "dark" on read.
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 // 15s default. The filesystem watcher (scoped to .git/) covers the immediacy
@@ -50,6 +58,10 @@ fn default_fetch_interval() -> u64 {
 
 fn default_zoom_level() -> f64 {
     1.0
+}
+
+fn default_theme() -> String {
+    "dark".to_string()
 }
 
 const ZOOM_MIN: f64 = 0.5;
@@ -79,6 +91,7 @@ pub fn read_config() -> AppResult<AppConfig> {
             last_repo_path: None,
             recent_repo_paths: Vec::new(),
             zoom_level: default_zoom_level(),
+            theme: default_theme(),
         });
     }
     let text = std::fs::read_to_string(&p).map_err(AppError::Io)?;
@@ -109,6 +122,11 @@ pub fn read_config() -> AppResult<AppConfig> {
     // Clamp zoom on read so a hand-edited config can't crash the UI with a wild value.
     if !cfg.zoom_level.is_finite() || cfg.zoom_level < ZOOM_MIN || cfg.zoom_level > ZOOM_MAX {
         cfg.zoom_level = default_zoom_level();
+    }
+    // Coerce unrecognized theme values back to the default ("dark") so
+    // a typo in a hand-edited config can't leave the UI in a wedged state.
+    if !matches!(cfg.theme.as_str(), "light" | "dark" | "system") {
+        cfg.theme = default_theme();
     }
     Ok(cfg)
 }

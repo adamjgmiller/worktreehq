@@ -57,12 +57,12 @@ export function ShortcutHelpOverlay({
     >
       <div className="w-full max-w-md rounded-lg border border-wt-border bg-wt-panel shadow-xl">
         <div className="flex items-center justify-between px-5 py-3 border-b border-wt-border">
-          <h2 className="text-sm font-semibold text-neutral-100">
+          <h2 className="text-sm font-semibold text-wt-fg">
             Keyboard shortcuts
           </h2>
           <button
             onClick={onClose}
-            className="text-neutral-500 hover:text-neutral-200 text-lg leading-none"
+            className="text-wt-muted hover:text-wt-fg text-lg leading-none"
             aria-label="close"
           >
             ×
@@ -71,18 +71,18 @@ export function ShortcutHelpOverlay({
         <div className="px-5 py-4 space-y-5 max-h-[70vh] overflow-y-auto">
           {groups.map((g) => (
             <div key={g.title}>
-              <h3 className="text-xs font-medium text-neutral-500 uppercase tracking-wider mb-2">
+              <h3 className="text-xs font-medium text-wt-muted uppercase tracking-wider mb-2">
                 {g.title}
               </h3>
               <dl className="space-y-1.5">
                 {g.items.map((item) => (
                   <div key={item.keys} className="flex items-baseline gap-3">
                     <dt className="shrink-0 min-w-[8rem] text-right">
-                      <kbd className="px-1.5 py-0.5 text-xs font-mono bg-wt-bg border border-wt-border rounded text-neutral-300">
+                      <kbd className="px-1.5 py-0.5 text-xs font-mono bg-wt-bg border border-wt-border rounded text-wt-fg-2">
                         {item.keys}
                       </kbd>
                     </dt>
-                    <dd className="text-sm text-neutral-400">{item.desc}</dd>
+                    <dd className="text-sm text-wt-fg-2">{item.desc}</dd>
                   </div>
                 ))}
               </dl>

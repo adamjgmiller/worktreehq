@@ -164,9 +164,9 @@ export function Notepad({ worktreePath }: { worktreePath: string }) {
   return (
     <div className="mt-2 border-t border-wt-border pt-3">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[0.625rem] uppercase tracking-wide text-neutral-500">notepad</span>
+        <span className="text-[0.625rem] uppercase tracking-wide text-wt-muted">notepad</span>
         <span
-          className={`text-[0.625rem] ${saveError ? 'text-wt-conflict' : 'text-neutral-600'}`}
+          className={`text-[0.625rem] ${saveError ? 'text-wt-conflict' : 'text-wt-muted'}`}
         >
           {saveError ? 'save failed' : !loaded ? '…' : saving ? 'saving…' : 'saved'}
         </span>
@@ -182,7 +182,7 @@ export function Notepad({ worktreePath }: { worktreePath: string }) {
         rows={5}
         spellCheck={false}
         aria-label="Worktree notepad"
-        className="w-full resize-y bg-wt-bg/60 border border-wt-border rounded px-2 py-1.5 text-xs text-neutral-100 placeholder:text-neutral-600 focus:outline-none focus:border-wt-info"
+        className="w-full resize-y bg-wt-bg/60 border border-wt-border rounded px-2 py-1.5 text-xs text-wt-fg placeholder:text-wt-muted focus:outline-none focus:border-wt-info"
       />
       {saveError && (
         <div

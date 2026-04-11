@@ -67,7 +67,7 @@ export function ForceDeleteSquashDialog({
             <X className="w-4 h-4" />
           </button>
         </div>
-        <p className="text-sm text-neutral-400 mb-3">
+        <p className="text-sm text-wt-fg-2 mb-3">
           Git refused to delete {rejected.length}{' '}
           {rejected.length === 1 ? 'branch' : 'branches'} because they don't look merged from
           git's perspective. WorktreeHQ detected them as squash-merged via the PR merge commit.
@@ -85,7 +85,7 @@ export function ForceDeleteSquashDialog({
         </div>
         {requiresType && (
           <div className="mb-3">
-            <label className="text-xs text-neutral-400">
+            <label className="text-xs text-wt-fg-2">
               Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
             </label>
             <input
@@ -101,7 +101,7 @@ export function ForceDeleteSquashDialog({
             ref={cancelRef}
             onClick={onCancel}
             disabled={submitting}
-            className="px-3 py-1.5 text-sm text-neutral-400 rounded focus:outline-none focus:ring-2 focus:ring-wt-info/40 disabled:opacity-50"
+            className="px-3 py-1.5 text-sm text-wt-fg-2 rounded focus:outline-none focus:ring-2 focus:ring-wt-info/40 disabled:opacity-50"
           >
             Cancel
           </button>

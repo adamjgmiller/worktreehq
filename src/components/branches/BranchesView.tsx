@@ -192,7 +192,7 @@ export function BranchesView() {
           <div className="flex-1 whitespace-pre-wrap">{deleteErrors.join('\n')}</div>
           <button
             onClick={() => setDeleteErrors([])}
-            className="text-neutral-400 hover:text-neutral-200"
+            className="text-wt-fg-2 hover:text-wt-fg"
             aria-label="dismiss errors"
           >
             ×

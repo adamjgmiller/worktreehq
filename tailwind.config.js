@@ -1,7 +1,11 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
-  darkMode: 'class',
+  // No `darkMode` set intentionally. All theming is done through CSS
+  // custom properties (see src/styles/globals.css) — dark is the app
+  // default on `:root` and `html.light` overrides for light mode. The
+  // codebase has zero `dark:` Tailwind variant usages, so Tailwind's
+  // built-in dark-mode switch would be a no-op regardless.
   theme: {
     extend: {
       fontFamily: {
@@ -21,33 +25,60 @@ export default {
         shimmer: 'shimmer 1.8s ease-in-out infinite',
       },
       colors: {
+        // Every wt-* token resolves to a CSS variable defined in
+        // src/styles/globals.css. The `rgb(var(--token) / <alpha-value>)`
+        // shape is load-bearing: it's what lets opacity modifiers like
+        // bg-wt-info/20 still work with a CSS-variable-backed color. The
+        // variables themselves are stored as space-separated RGB triples
+        // (e.g. `59 130 246`) so this expansion produces valid CSS.
+        // Theme swap happens by toggling the `.dark` class on <html>; the
+        // 300+ existing bg-wt-*/text-wt-*/border-wt-* sites re-resolve
+        // automatically with no call-site changes. See useTheme.ts for
+        // the class-toggle and persistence wiring.
         wt: {
-          bg: '#0a0a0b',
-          panel: '#111114',
-          border: '#1f1f24',
-          muted: '#6b7280',
-          clean: '#10b981',
-          dirty: '#f59e0b',
-          conflict: '#ef4444',
-          info: '#3b82f6',
-          squash: '#a855f7',
+          bg: 'rgb(var(--wt-bg) / <alpha-value>)',
+          panel: 'rgb(var(--wt-panel) / <alpha-value>)',
+          border: 'rgb(var(--wt-border) / <alpha-value>)',
+          // Text hierarchy. `fg` is primary body text, `fg-2` is secondary,
+          // `muted` is tertiary/label. Replaces the old hardcoded
+          // text-neutral-{100,200,300,400,500,600} calls which don't
+          // auto-swap when the theme changes.
+          fg: 'rgb(var(--wt-fg) / <alpha-value>)',
+          'fg-2': 'rgb(var(--wt-fg-2) / <alpha-value>)',
+          muted: 'rgb(var(--wt-muted) / <alpha-value>)',
+          // Dimmer tier than `muted`. Dark mode goes darker (zinc-600, recedes
+          // harder against near-black), light mode goes lighter (stone-500,
+          // recedes harder against paper). Retargeted onto the specific call
+          // sites where the pre-theme code used neutral-600/neutral-700 to
+          // signal "even quieter than normal muted" — auxiliary Tabs,
+          // "no worktree" pill, and the loading ellipsis in PastSessionsList.
+          'muted-2': 'rgb(var(--wt-muted-2) / <alpha-value>)',
+          // Status tokens. Dark mode uses the saturated Tailwind 500-level
+          // shades (#10b981, #f59e0b, etc.); light mode darkens each one
+          // ~1 shade so they clear WCAG AA on a white background. See
+          // globals.css :root vs html.dark for the exact values.
+          clean: 'rgb(var(--wt-clean) / <alpha-value>)',
+          dirty: 'rgb(var(--wt-dirty) / <alpha-value>)',
+          conflict: 'rgb(var(--wt-conflict) / <alpha-value>)',
+          info: 'rgb(var(--wt-info) / <alpha-value>)',
+          squash: 'rgb(var(--wt-squash) / <alpha-value>)',
           // Slate. Used as the worktree-card border when the working tree is
           // clean but the branch hasn't yet landed in main (normal OR squash
           // merge). Deliberately quiet — green is reserved for "actually
           // merged", so a dashboard scan immediately reveals what's safe to
           // delete vs what's still parked in flight. See worktreeStatusClass
           // in src/lib/colors.ts for the layered priority.
-          active: '#64748b',
+          active: 'rgb(var(--wt-active) / <alpha-value>)',
           // Claude Code awareness badge colors. Two live variants so we can
           // distinguish IDE-attached from CLI-only sessions at a glance.
-          'claude-ide': '#38bdf8', // sky — IDE-attached live session
-          'claude-live': '#10b981', // emerald — CLI live session (matches clean)
-          'claude-recent': '#eab308', // amber — active within last 10 min
-          'claude-dormant': '#52525b', // zinc — has history, nothing recent
+          'claude-ide': 'rgb(var(--wt-claude-ide) / <alpha-value>)',
+          'claude-live': 'rgb(var(--wt-claude-live) / <alpha-value>)',
+          'claude-recent': 'rgb(var(--wt-claude-recent) / <alpha-value>)',
+          'claude-dormant': 'rgb(var(--wt-claude-dormant) / <alpha-value>)',
           // True orange — distinct from `dirty` amber and `conflict` red.
           // Used to warn when ≥2 Claudes are live in the same worktree, since
           // they can clobber each other's edits without realizing.
-          'claude-conflict': '#f97316',
+          'claude-conflict': 'rgb(var(--wt-claude-conflict) / <alpha-value>)',
         },
       },
     },

@@ -89,10 +89,10 @@ export function RemoveWorktreeDialog({
             <X className="w-4 h-4" />
           </button>
         </div>
-        <p className="text-sm text-neutral-300 mb-2">
+        <p className="text-sm text-wt-fg-2 mb-2">
           Removing <span className="font-mono">{worktree.branch}</span>:
         </p>
-        <div className="font-mono text-xs text-neutral-500 mb-3 break-all">
+        <div className="font-mono text-xs text-wt-muted mb-3 break-all">
           {worktree.path}
         </div>
         {requiresForce ? (
@@ -100,7 +100,7 @@ export function RemoveWorktreeDialog({
             <div className="font-semibold">
               This worktree has uncommitted state. Force-removing will discard:
             </div>
-            <ul className="ml-4 list-disc text-neutral-300">
+            <ul className="ml-4 list-disc text-wt-fg-2">
               {worktree.untrackedCount > 0 && (
                 <li>{worktree.untrackedCount} untracked file(s)</li>
               )}
@@ -123,7 +123,7 @@ export function RemoveWorktreeDialog({
             </ul>
           </div>
         ) : (
-          <div className="bg-wt-clean/10 border border-wt-clean/40 rounded p-3 mb-3 text-xs text-neutral-300">
+          <div className="bg-wt-clean/10 border border-wt-clean/40 rounded p-3 mb-3 text-xs text-wt-fg-2">
             Worktree is clean.{' '}
             {canCleanup
               ? 'You can also delete its branch below.'
@@ -133,7 +133,7 @@ export function RemoveWorktreeDialog({
           </div>
         )}
         {!requiresForce && canCleanup && (
-          <label className="flex items-start gap-2 mb-3 text-xs text-neutral-300 cursor-pointer select-none">
+          <label className="flex items-start gap-2 mb-3 text-xs text-wt-fg-2 cursor-pointer select-none">
             <input
               type="checkbox"
               checked={cleanupBranches}
@@ -150,7 +150,7 @@ export function RemoveWorktreeDialog({
                 : 'remote'}{' '}
               branch <span className="font-mono">{worktree.branch}</span>
               {hasRemoteBranch && (
-                <span className="text-neutral-500">
+                <span className="text-wt-muted">
                   {' '}
                   (pushes <span className="font-mono">--delete</span> to origin)
                 </span>
@@ -160,7 +160,7 @@ export function RemoveWorktreeDialog({
         )}
         {requiresForce && (
           <div className="mb-3">
-            <label className="text-xs text-neutral-400">
+            <label className="text-xs text-wt-fg-2">
               Type{' '}
               <code className="font-mono text-wt-conflict">{worktree.branch}</code>{' '}
               to confirm force-removal:
@@ -183,7 +183,7 @@ export function RemoveWorktreeDialog({
             ref={cancelRef}
             onClick={onCancel}
             disabled={submitting}
-            className="px-3 py-1.5 text-sm text-neutral-400 disabled:opacity-50"
+            className="px-3 py-1.5 text-sm text-wt-fg-2 disabled:opacity-50"
           >
             Cancel
           </button>

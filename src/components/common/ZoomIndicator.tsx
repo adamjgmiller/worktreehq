@@ -32,7 +32,7 @@ export function ZoomIndicator({
       // Position is fixed in viewport — by design, NOT inside the zoom-scaled
       // root, so the indicator stays the same size at every zoom level. Uses
       // raw px units rather than rem for the same reason.
-      className={`fixed bottom-6 right-6 z-50 px-3 py-1.5 rounded-full bg-wt-panel border border-wt-border shadow-lg text-sm font-mono text-neutral-200 transition-opacity duration-200 ${
+      className={`fixed bottom-6 right-6 z-50 px-3 py-1.5 rounded-full bg-wt-panel border border-wt-border shadow-lg text-sm font-mono text-wt-fg transition-opacity duration-200 ${
         visible ? 'opacity-100' : 'opacity-0 pointer-events-none'
       }`}
       style={{ fontSize: '13px' }}

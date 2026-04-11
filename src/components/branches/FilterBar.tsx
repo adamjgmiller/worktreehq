@@ -50,7 +50,7 @@ export function FilterBar({
                   'px-3 py-1.5 text-xs rounded-full border transition-colors',
                   value === p.key
                     ? 'border-wt-info bg-wt-info/15 text-wt-info'
-                    : 'border-wt-border text-neutral-400 hover:text-neutral-200',
+                    : 'border-wt-border text-wt-fg-2 hover:text-wt-fg',
                 )}
               >
                 {p.label}
@@ -59,7 +59,7 @@ export function FilterBar({
           ))}
         </div>
         <Tooltip label="Further filter to branches whose last commit matches your git email. Local empty branches are included since they have no meaningful author.">
-          <label className="flex items-center gap-1.5 text-xs text-neutral-400 hover:text-neutral-200 cursor-pointer select-none">
+          <label className="flex items-center gap-1.5 text-xs text-wt-fg-2 hover:text-wt-fg cursor-pointer select-none">
             <input
               type="checkbox"
               checked={mine}
@@ -78,7 +78,7 @@ export function FilterBar({
         />
       </div>
       {description && (
-        <div className="px-4 pb-3 text-xs text-neutral-500">
+        <div className="px-4 pb-3 text-xs text-wt-muted">
           {description}
         </div>
       )}

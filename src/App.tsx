@@ -21,6 +21,7 @@ import {
 } from './store/useRepoStore';
 import { useRepoBootstrap } from './hooks/useRepoBootstrap';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useTheme } from './hooks/useTheme';
 import { pickAndLoadRepo } from './services/repoSelect';
 import { invoke } from './services/tauriBridge';
 
@@ -57,6 +58,7 @@ export default function App() {
   // its first render (no flash on launch).
   const [zoomTick, setZoomTick] = useState(0);
   useRepoBootstrap();
+  useTheme();
   useKeyboardShortcuts({
     tab,
     setTab,
@@ -150,14 +152,14 @@ export default function App() {
   const showContentSkeleton = !dataReady && !showRepoPicker;
 
   return (
-    <div className="h-screen flex flex-col bg-wt-bg text-neutral-100">
+    <div className="h-screen flex flex-col bg-wt-bg text-wt-fg">
       <RepoBar onSettings={() => setSettingsOpen(true)} />
       <Tabs value={tab} onChange={setTab} />
       {error && (
         <div className="p-4 space-y-2">
           <ErrorBanner message={error} onDismiss={() => setError(null)} />
           {showRepoPicker && (
-            <div className="text-xs text-neutral-400">
+            <div className="text-xs text-wt-fg-2">
               <button
                 onClick={() => void pickAndLoadRepo()}
                 className="px-3 py-1.5 bg-wt-info/20 border border-wt-info/50 text-wt-info rounded hover:bg-wt-info/30"
@@ -203,10 +205,10 @@ export default function App() {
       <ZoomIndicator zoomLevel={zoomLevel} pulseKey={zoomTick} />
       <button
         onClick={() => setHelpOpen(true)}
-        className="fixed bottom-4 right-6 z-10 flex items-center gap-1.5 text-[11px] text-neutral-600 hover:text-neutral-400 transition-colors"
+        className="fixed bottom-4 right-6 z-10 flex items-center gap-1.5 text-[11px] text-wt-muted hover:text-wt-fg-2 transition-colors"
         style={{ fontSize: '11px' }}
       >
-        <kbd className="px-1 py-0.5 rounded border border-neutral-700/60 bg-neutral-800/50 text-neutral-500 font-mono text-[10px] leading-none">?</kbd>
+        <kbd className="px-1 py-0.5 rounded border border-wt-fg-2/20 bg-wt-fg-2/10 text-wt-muted font-mono text-[10px] leading-none">?</kbd>
         shortcuts
       </button>
       <ShortcutHelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />

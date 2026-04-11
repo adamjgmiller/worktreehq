@@ -102,7 +102,7 @@ function BranchesSkeleton() {
         <Skel className="h-7 w-48" />
       </div>
       <div className="flex-1 overflow-hidden">
-        <div className="px-3 py-2 grid grid-cols-[2.5rem_2fr_1fr_1.5fr_1fr_1fr_1fr] gap-3 text-[0.625rem] uppercase tracking-wide text-neutral-600">
+        <div className="px-3 py-2 grid grid-cols-[2.5rem_2fr_1fr_1.5fr_1fr_1fr_1fr] gap-3 text-[0.625rem] uppercase tracking-wide text-wt-muted">
           <div />
           <div>Branch</div>
           <div>Where</div>
