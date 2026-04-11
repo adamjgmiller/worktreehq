@@ -95,7 +95,12 @@ async function runRefreshOnce(): Promise<void> {
     const wtByBranch = new Map(wts.map((w) => [w.branch, w.path]));
     let enrichedBranches = branches.map((b) => {
       const wp = wtByBranch.get(b.name);
-      return wp ? { ...b, worktreePath: wp } : b;
+      if (!wp) return b;
+      // A branch checked out in a worktree may have uncommitted work even
+      // when its tip sits at main — calling it "empty" is misleading. Revert
+      // to "unmerged" so the UI treats it as in-progress work.
+      const mergeStatus = b.mergeStatus === 'empty' ? 'unmerged' : b.mergeStatus;
+      return { ...b, worktreePath: wp, mergeStatus };
     });
 
     // Attach open PRs to branches. The REST list only populates isDraft; we

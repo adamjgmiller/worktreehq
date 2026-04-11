@@ -5,7 +5,7 @@ import { BranchTable } from './BranchTable';
 import { BulkActionBar } from './BulkActionBar';
 import { ConfirmDeleteDialog, type DeleteMode } from './ConfirmDeleteDialog';
 import { ForceDeleteSquashDialog, type RejectedSquash } from './ForceDeleteSquashDialog';
-import { applyPreset, searchBranches, type FilterPreset } from '../../lib/filters';
+import { applyPreset, filterMine, searchBranches, type FilterPreset } from '../../lib/filters';
 import {
   deleteLocalBranch,
   deleteRemoteBranch,
@@ -20,6 +20,7 @@ export function BranchesView() {
   const branches = useRepoStore((s) => s.branches);
   const repo = useRepoStore((s) => s.repo);
   const [preset, setPreset] = useState<FilterPreset>('all');
+  const [mine, setMine] = useState(false);
   const [search, setSearch] = useState('');
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<DeleteMode | null>(null);
@@ -65,14 +66,11 @@ export function BranchesView() {
     };
   });
 
-  const filtered = useMemo(
-    () =>
-      searchBranches(
-        applyPreset(branches, preset, { userEmail, defaultBranch: repo?.defaultBranch }),
-        search,
-      ),
-    [branches, preset, search, userEmail, repo?.defaultBranch],
-  );
+  const filtered = useMemo(() => {
+    let result = applyPreset(branches, preset, { defaultBranch: repo?.defaultBranch });
+    if (mine) result = filterMine(result, userEmail);
+    return searchBranches(result, search);
+  }, [branches, preset, mine, search, userEmail, repo?.defaultBranch]);
   const selectedBranches = filtered.filter((b) => selection.has(b.name));
 
   const toggle = (name: string) =>
@@ -188,7 +186,7 @@ export function BranchesView() {
 
   return (
     <div className="flex flex-col h-full">
-      <FilterBar value={preset} onChange={setPreset} search={search} onSearch={setSearch} />
+      <FilterBar value={preset} onChange={setPreset} mine={mine} onMineChange={setMine} search={search} onSearch={setSearch} />
       {deleteErrors.length > 0 && (
         <div className="px-4 py-2 bg-wt-conflict/10 border-b border-wt-conflict/40 text-xs text-wt-conflict font-mono flex items-start gap-3">
           <div className="flex-1 whitespace-pre-wrap">{deleteErrors.join('\n')}</div>

@@ -1,31 +1,38 @@
 import type { Branch } from '../types';
 
-export type FilterPreset = 'all' | 'mine' | 'safe-to-delete' | 'stale' | 'active' | 'orphaned';
+export type FilterPreset = 'all' | 'safe-to-delete' | 'empty' | 'stale' | 'active' | 'orphaned';
 
-// `mine` is resolved by passing the current user's git email through to the filter —
-// we keep the fn pure so tests don't have to stub gitService.
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+function isEmptyAndAbandoned(b: Branch, now = Date.now()): boolean {
+  if (b.mergeStatus !== 'empty') return false;
+  if (!b.lastCommitDate) return true; // no date → assume old
+  const t = new Date(b.lastCommitDate).getTime();
+  if (Number.isNaN(t)) return true;
+  return now - t >= ONE_DAY_MS;
+}
+
 export function applyPreset(
   branches: Branch[],
   preset: FilterPreset,
-  ctx: { userEmail?: string; defaultBranch?: string } = {},
+  ctx: { defaultBranch?: string } = {},
 ): Branch[] {
   const isDefault = (b: Branch) =>
     !!ctx.defaultBranch && b.name === ctx.defaultBranch;
   switch (preset) {
     case 'all':
       return branches;
-    case 'mine': {
-      const email = ctx.userEmail?.trim().toLowerCase();
-      if (!email) return [];
-      return branches.filter((b) => b.authorEmail?.trim().toLowerCase() === email);
-    }
     case 'safe-to-delete':
       return branches.filter(
         (b) =>
-          (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged') &&
+          !isDefault(b) &&
           !b.worktreePath &&
-          !isDefault(b),
+          (b.mergeStatus === 'merged-normally' ||
+            b.mergeStatus === 'squash-merged' ||
+            isEmptyAndAbandoned(b)),
       );
+    case 'empty':
+      return branches.filter((b) => b.mergeStatus === 'empty' && !isDefault(b));
     case 'stale':
       return branches.filter((b) => b.mergeStatus === 'stale' && !isDefault(b));
     case 'active':
@@ -37,6 +44,21 @@ export function applyPreset(
         (b) => b.hasLocal && (b.upstreamGone || !b.hasRemote) && !isDefault(b),
       );
   }
+}
+
+// Layered "mine" filter — applied on top of any preset. Empty branches have
+// no unique commits, so authorEmail is meaningless (it reflects the main
+// commit they point at). Use hasLocal as a proxy: if a local ref exists you
+// at least checked it out, so it's reasonable to surface. Remote-only empty
+// branches are likely someone else's and get filtered out.
+export function filterMine(branches: Branch[], userEmail: string | undefined): Branch[] {
+  const email = userEmail?.trim().toLowerCase();
+  if (!email) return [];
+  return branches.filter(
+    (b) =>
+      (b.mergeStatus === 'empty' && b.hasLocal) ||
+      b.authorEmail?.trim().toLowerCase() === email,
+  );
 }
 
 export function searchBranches(branches: Branch[], q: string): Branch[] {
