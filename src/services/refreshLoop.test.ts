@@ -446,9 +446,9 @@ describe('runFetchOnce skip-when-unchanged', () => {
     const p = runFetchOnce({ userInitiated: true });
     // Drain microtasks AND macrotasks until both the optimistic refreshOnce
     // AND the fetch body's snapshot/fetchAllPrune steps have landed. A
-    // plain `await Promise.resolve()` only drains microtasks, but refreshOnce
-    // uses `yieldToMain` (MessageChannel-based) between phases which needs
-    // macrotask advances — setTimeout(0) advances one macrotask per await.
+    // plain `await Promise.resolve()` only drains microtasks; we rely on
+    // setTimeout(0) advances to settle the whole chain including the
+    // fetch-body IIFE and the dedupe bookkeeping.
     const tick = () => new Promise<void>((r) => setTimeout(r, 0));
     for (let i = 0; i < 5; i++) await tick();
     expect(useRepoStore.getState().userRefreshing).toBe(true);

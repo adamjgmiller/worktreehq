@@ -35,7 +35,6 @@ import {
 } from '../../services/worktreeOrderService';
 import { sortWorktrees } from '../../lib/worktreeOrder';
 import { WorktreeSortMenu } from './WorktreeSortMenu';
-import { attachInteractionListeners } from '../../services/interactionBusy';
 import type { Branch, Worktree, WorktreeSortMode } from '../../types';
 
 // Walk up from the pointer-event target to the card boundary. If we hit an
@@ -98,26 +97,6 @@ export function WorktreesView() {
   // handleSortModeChange below for the why.
   const [animateLayout, setAnimateLayout] = useState(false);
   const animateTimerRef = useRef<number | null>(null);
-  // Callback ref for the scroll container. Tracks scroll/pointer activity
-  // on the grid so the refresh commit can defer itself until the user is
-  // idle. See services/interactionBusy.ts — listeners are passive so they
-  // never block scroll themselves; they just poke a module-level busy-until
-  // timestamp that waitForInteractionIdle polls.
-  //
-  // Using a callback ref (rather than useRef + useEffect) ties listener
-  // lifetime to the actual DOM node's mount/unmount, so any remount of the
-  // container cleanly detaches from the old node and re-attaches to the new.
-  // The inner ref holds the detach fn from the previously-attached node.
-  const scrollListenerCleanupRef = useRef<(() => void) | null>(null);
-  const scrollContainerRef = useCallback((el: HTMLDivElement | null) => {
-    if (scrollListenerCleanupRef.current) {
-      scrollListenerCleanupRef.current();
-      scrollListenerCleanupRef.current = null;
-    }
-    if (el) {
-      scrollListenerCleanupRef.current = attachInteractionListeners(el);
-    }
-  }, []);
   useEffect(() => {
     return () => {
       if (animateTimerRef.current != null) {
@@ -431,13 +410,12 @@ export function WorktreesView() {
         // parent (which is `flex-1 overflow-hidden` in App.tsx) and lower
         // cards are simply clipped — there's no way to scroll to them.
         // Dim the grid slightly while a user-initiated refresh is in flight.
-        // This render lands in the first React commit after the click (just
-        // the `fetching`/`userRefreshing` flag flips on), so the user sees
-        // immediate feedback even if the post-commit render is heavy enough
-        // to briefly block scroll. Kept subtle so it doesn't feel like a
-        // full-on modal loading state.
+        // userRefreshing is owned by runFetchOnce for click-triggered
+        // refreshes (flipped ON at the start, OFF in the body's finally
+        // after both optimistic and post-fetch pipelines drain), so the
+        // grey stays pinned for the whole click instead of flickering
+        // ON→OFF→ON→OFF across the two internal refreshOnce calls.
         <div
-          ref={scrollContainerRef}
           className={clsx(
             'flex-1 overflow-auto transition-opacity duration-150',
             userRefreshing && 'opacity-70',
