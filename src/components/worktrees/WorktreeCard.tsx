@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Copy,
   Check,
+  Play,
   GitBranch,
   MoreVertical,
   ExternalLink,
@@ -29,7 +30,11 @@ import { relativeTime, shortSha, aheadBehind, basename } from '../../lib/format'
 import { resumeCommand } from '../../services/claudeAwarenessService';
 import { pullFastForward } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
-import { readClaudeSessionFirstPrompt, shellOpen } from '../../services/tauriBridge';
+import {
+  openClaudeSession,
+  readClaudeSessionFirstPrompt,
+  shellOpen,
+} from '../../services/tauriBridge';
 import { fileManagerLabel } from '../../lib/platform';
 import { useRepoStore } from '../../store/useRepoStore';
 import { Tooltip } from '../common/Tooltip';
@@ -757,7 +762,10 @@ function LastCommitFooter({ lastCommit }: { lastCommit: LastCommit }) {
 // Default-collapsed expandable list of Claude sessions previously opened in
 // this worktree. Each row shows the first user prompt (truncated visually
 // to fit, with the full ~200-char version on hover), the relative time, and
-// a button that copies a `claude --resume <id>` command to the clipboard.
+// two actions: a Copy button that puts a `cd <path> && claude --resume <id>`
+// one-liner on the clipboard (handy for pasting into an existing terminal),
+// and an Open button that spawns a fresh terminal already running the
+// command in the worktree directory.
 //
 // First prompts are loaded lazily on expand and cached in component state:
 // they're immutable per session id, so re-fetching on every collapse/expand
@@ -786,6 +794,7 @@ function PastSessionsList({
 }) {
   const [open, setOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const setError = useRepoStore((s) => s.setError);
   // undefined = not yet fetched, null = fetched but no qualifying prompt,
   // string = the fetched prompt. Keeping all three states in one map lets
   // the render decide whether to show a skeleton, a fallback, or the text
@@ -833,6 +842,15 @@ function PastSessionsList({
     } catch {
       // Clipboard API blocked — fall back to a prompt so the user can copy manually.
       window.prompt('Copy this command:', cmd);
+    }
+  };
+
+  const handleResume = async (sessionId: string) => {
+    setError(null);
+    try {
+      await openClaudeSession(worktreePath, sessionId);
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
     }
   };
 
@@ -887,18 +905,37 @@ function PastSessionsList({
                   >
                     {relativeTime(s.lastActivity)}
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(s.sessionId)}
-                    title="Copy `claude --resume` command"
-                    className="flex-none text-neutral-500 hover:text-wt-claude-ide transition-colors"
+                  <Tooltip label="Copy `cd … && claude --resume` to clipboard">
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(s.sessionId)}
+                      aria-label="Copy claude --resume command"
+                      className="flex-none text-neutral-500 hover:text-wt-claude-ide transition-colors"
+                    >
+                      {copiedId === s.sessionId ? (
+                        <Check className="w-3 h-3" />
+                      ) : (
+                        <Copy className="w-3 h-3" />
+                      )}
+                    </button>
+                  </Tooltip>
+                  <Tooltip
+                    label={
+                      <>
+                        Resume this Claude session in a new terminal at{' '}
+                        <span className="font-mono">{basename(worktreePath)}</span>
+                      </>
+                    }
                   >
-                    {copiedId === s.sessionId ? (
-                      <Check className="w-3 h-3" />
-                    ) : (
-                      <Copy className="w-3 h-3" />
-                    )}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => handleResume(s.sessionId)}
+                      aria-label="Resume this Claude session"
+                      className="flex-none text-neutral-500 hover:text-wt-claude-ide transition-colors"
+                    >
+                      <Play className="w-3 h-3" />
+                    </button>
+                  </Tooltip>
                 </li>
               );
             })}

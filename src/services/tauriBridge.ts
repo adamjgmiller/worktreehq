@@ -101,6 +101,17 @@ export async function shellOpen(path: string, action: ShellOpenAction): Promise<
   await invoke<void>('shell_open', { path, action });
 }
 
+// Launch a fresh terminal that runs `claude --resume <sessionId>` in the given
+// worktree directory. Fire-and-forget: resolves as soon as the subprocess is
+// spawned. Errors surface for invalid session ids, missing paths, or (on
+// Linux) no terminal emulator installed.
+export async function openClaudeSession(
+  path: string,
+  sessionId: string,
+): Promise<void> {
+  await invoke<void>('open_claude_session', { path, sessionId });
+}
+
 export async function readPrCacheFile(): Promise<string> {
   try {
     return await invoke<string>('read_pr_cache');
