@@ -17,6 +17,14 @@ import {
 import { fetchClaudePresence } from './claudeAwarenessService';
 import { detectCrossWorktreeConflicts, type ConflictDetectResult } from './conflictDetector';
 import { classifyFetchError, formatClassifiedError } from './fetchErrorClassifier';
+import {
+  reconcileWorktrees,
+  reconcileBranches,
+  reconcileClaudePresence,
+  reconcileConflictSummary,
+} from '../lib/structuralShare';
+import { yieldToMain } from '../lib/yieldToMain';
+import { waitForInteractionIdle } from './interactionBusy';
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -60,22 +68,12 @@ export interface RefreshOptions {
   userInitiated?: boolean;
 }
 
-async function runRefreshOnce(): Promise<void> {
-  const {
-    repo,
-    setWorktrees,
-    setBranches,
-    setMainCommits,
-    setSquashMappings,
-    setClaudePresence,
-    setCrossWorktreeConflicts,
-    setError,
-    markRefreshed,
-    setLoading,
-    setDataRepoPath,
-  } = useRepoStore.getState();
+async function runRefreshOnce(opts?: { userInitiated?: boolean }): Promise<void> {
+  const state = useRepoStore.getState();
+  const { repo, setError, setLoading, commitRefreshResult } = state;
   if (!repo) return;
   setLoading(true);
+  const userInitiated = opts?.userInitiated === true;
   // Note: do NOT setError(null) here. User-initiated mutations
   // (createWorktree, removeWorktree, prune, etc.) report errors via the
   // store, and clearing on every poll tick made those errors flash and
@@ -95,6 +93,11 @@ async function runRefreshOnce(): Promise<void> {
     ]);
     const { commits: mainCommits, total: mainCommitsTotal } = mainCommitsResult;
     const remote = { owner: repo.owner, name: repo.name };
+
+    // Yield between heavy phases so a long sync parse doesn't block scroll.
+    // Background ticks yield; user-initiated refreshes skip all yields so
+    // click→result latency stays tight.
+    if (!userInitiated) await yieldToMain();
 
     // Attach worktree paths to branches. Build new objects rather than
     // mutating the entries returned by listBranches so that any future
@@ -138,6 +141,8 @@ async function runRefreshOnce(): Promise<void> {
       return pr ? { ...b, pr } : b;
     });
 
+    if (!userInitiated) await yieldToMain();
+
     const detect = await detectSquashMerges({
       repoPath: repo.path,
       defaultBranch: repo.defaultBranch,
@@ -147,6 +152,8 @@ async function runRefreshOnce(): Promise<void> {
       owner: remote.owner,
       name: remote.name,
     });
+
+    if (!userInitiated) await yieldToMain();
 
     // Claude Code awareness + cross-worktree conflict detection both depend
     // only on `wts` and are independent of each other — run in parallel.
@@ -166,28 +173,53 @@ async function runRefreshOnce(): Promise<void> {
       }),
     ]);
 
-    setWorktrees(wts);
-    setBranches(detect.updatedBranches);
-    setMainCommits(mainCommits, mainCommitsTotal);
-    setSquashMappings(detect.mappings);
-    setClaudePresence(presence);
-    setCrossWorktreeConflicts(conflictResult.pairs, conflictResult.summaryByPath);
-    // Mark the in-store collections as belonging to this repo path. App.tsx
-    // gates the content region on `dataRepoPath === repo.path`, so this is
-    // what lifts the shimmer skeleton on first load and after a repo switch.
-    // Set ONLY on success (never in finally) — a failed first refresh leaves
-    // the gate closed so we keep showing the skeleton + error banner instead
-    // of falling back to the empty states, which would lie about the repo's
-    // contents.
-    setDataRepoPath(repo.path);
-    markRefreshed();
-    // Clear any prior pipeline error now that this tick succeeded. We don't
-    // clear at the START of the tick because user-action errors (set by
-    // WorktreesView etc.) need to survive across the next poll.
-    setError(null);
+    // Structural-share against the previous store state BEFORE committing.
+    // Any element whose content didn't change is reused by reference, so
+    // downstream React.memo on WorktreeCard can skip re-render for cards
+    // whose own data didn't move. Read the pre-commit snapshot fresh rather
+    // than reusing the `state` captured at the top of runRefreshOnce —
+    // another tick may have committed in between if the pipeline was long.
+    const before = useRepoStore.getState();
+    const reconciledWts = reconcileWorktrees(before.worktrees, wts);
+    const reconciledBranches = reconcileBranches(
+      before.branches,
+      detect.updatedBranches,
+    );
+    const reconciledPresence = reconcileClaudePresence(
+      before.claudePresence,
+      presence,
+    );
+    const reconciledConflictSummary = reconcileConflictSummary(
+      before.conflictSummaryByPath,
+      conflictResult.summaryByPath,
+    );
+
+    // Defer the commit if the user is actively scrolling or dragging. The
+    // pipeline already ran; we just hold the render wave until they pause.
+    // Capped at MAX_DEFER_MS inside waitForInteractionIdle so data can't
+    // stall indefinitely. User-initiated refreshes bypass entirely — they
+    // should always feel immediate.
+    if (!userInitiated) {
+      await waitForInteractionIdle();
+    }
+
+    // Atomic commit — a single setState triggers exactly one render pass.
+    // dataRepoPath is set ONLY on success (never in a finally) so a failed
+    // first refresh leaves the gate closed and we keep showing the shimmer
+    // + error banner instead of lying about the repo's contents.
+    commitRefreshResult({
+      worktrees: reconciledWts,
+      branches: reconciledBranches,
+      mainCommits,
+      mainCommitsTotal,
+      squashMappings: detect.mappings,
+      claudePresence: reconciledPresence,
+      crossWorktreeConflicts: conflictResult.pairs,
+      conflictSummaryByPath: reconciledConflictSummary,
+      dataRepoPath: repo.path,
+    });
   } catch (e) {
     setError(e instanceof Error ? e.message : String(e));
-  } finally {
     setLoading(false);
   }
 }
@@ -233,8 +265,8 @@ export function refreshOnce(opts?: RefreshOptions): Promise<void> {
     pendingBackgroundRefresh = true;
     return existing;
   }
-  const launch = (): Promise<void> => {
-    refreshInFlight = runRefreshOnce().finally(() => {
+  const launch = (launchUserInitiated: boolean): Promise<void> => {
+    refreshInFlight = runRefreshOnce({ userInitiated: launchUserInitiated }).finally(() => {
       refreshInFlight = null;
       // If a user-initiated refresh joined while we were running, drain
       // the queue with a single follow-up run. We clear the flag BEFORE
@@ -244,17 +276,17 @@ export function refreshOnce(opts?: RefreshOptions): Promise<void> {
       if (pendingUserRefresh) {
         pendingUserRefresh = false;
         pendingBackgroundRefresh = false;
-        launch();
+        launch(true);
       } else if (pendingBackgroundRefresh) {
         pendingBackgroundRefresh = false;
-        launch();
+        launch(false);
       } else if (userInitiated) {
         useRepoStore.getState().setUserRefreshing(false);
       }
     });
     return refreshInFlight;
   };
-  return launch();
+  return launch(userInitiated);
 }
 
 export function startRefreshLoop(): void {

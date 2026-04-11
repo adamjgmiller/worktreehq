@@ -17,9 +17,26 @@ const CHANGED_FILES_CACHE_MAX = 200;
 const mergeBaseCache = new Map<string, string>();
 const MERGE_BASE_CACHE_MAX = 500;
 
+// Top-level result cache keyed by the full set of inputs that can affect
+// the result: the repo path, the default branch, and a sorted signature of
+// every candidate worktree's (path, branch, head). Any change to a branch
+// tip — which is the only thing that can change conflict outcomes — moves
+// `head`, which moves the signature, which invalidates the cache.
+//
+// Filesystem state (uncommitted edits, staged files) does NOT affect
+// conflict detection because everything here operates on committed SHAs
+// via git merge-tree. So caching by (path, branch, head) is content-
+// addressed and safe — a quiet tick with no commits is a pure cache hit.
+interface TopLevelCacheEntry {
+  signature: string;
+  result: ConflictDetectResult;
+}
+let topLevelCache: TopLevelCacheEntry | null = null;
+
 export function _clearConflictCacheForTests(): void {
   changedFilesCache.clear();
   mergeBaseCache.clear();
+  topLevelCache = null;
 }
 
 // ─── Concurrency limiter ───────────────────────────────────────────────
@@ -118,11 +135,17 @@ export interface ConflictDetectResult {
   summaryByPath: Map<string, WorktreeConflictSummary>;
 }
 
+// Stable reference for the trivial case (<2 candidates) so consecutive
+// trivial ticks structurally share the same empty result.
+const EMPTY_RESULT: ConflictDetectResult = {
+  pairs: [],
+  summaryByPath: new Map(),
+};
+
 export async function detectCrossWorktreeConflicts(
   input: ConflictDetectInput,
 ): Promise<ConflictDetectResult> {
   const { repoPath, defaultBranch, worktrees } = input;
-  const empty: ConflictDetectResult = { pairs: [], summaryByPath: new Map() };
 
   // ── Filter candidates ──────────────────────────────────────────────
   // Skip: primary worktree (IS the default branch), prunable/orphaned,
@@ -130,7 +153,28 @@ export async function detectCrossWorktreeConflicts(
   const candidates = worktrees.filter(
     (w) => !w.isPrimary && !w.prunable && w.branch && w.branch !== 'HEAD',
   );
-  if (candidates.length < 2) return empty;
+
+  // Top-level cache check. Signature captures every input that could move
+  // the result; on a quiet tick (no commits anywhere) this returns the
+  // previous result by reference, which structural sharing upstream relies
+  // on to skip re-renders.
+  const signature =
+    repoPath +
+    '\0' +
+    defaultBranch +
+    '\0' +
+    candidates
+      .map((w) => `${w.path}\t${w.branch}\t${w.head}`)
+      .sort()
+      .join('\n');
+  if (topLevelCache && topLevelCache.signature === signature) {
+    return topLevelCache.result;
+  }
+
+  if (candidates.length < 2) {
+    topLevelCache = { signature, result: EMPTY_RESULT };
+    return EMPTY_RESULT;
+  }
 
   // ── Phase 1: changed-file sets (parallel, cached) ──────────────────
   // Trim cache if it's grown too large
@@ -288,5 +332,7 @@ export async function detectCrossWorktreeConflicts(
     }
   }
 
-  return { pairs: allPairs, summaryByPath };
+  const result: ConflictDetectResult = { pairs: allPairs, summaryByPath };
+  topLevelCache = { signature, result };
+  return result;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -22,7 +22,14 @@ import {
 } from 'lucide-react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { ClaudePresence, LastCommit, Worktree, InProgressOp } from '../../types';
+import type {
+  Branch,
+  ClaudePresence,
+  LastCommit,
+  Worktree,
+  InProgressOp,
+  WorktreeConflictSummary,
+} from '../../types';
 import { worktreeStatusClass } from '../../lib/colors';
 import { branchDisposition, type BranchDispositionAction } from '../../lib/branchDisposition';
 import { relativeTime, shortSha, aheadBehind, basename } from '../../lib/format';
@@ -96,45 +103,48 @@ function CopyableTitle({ path }: { path: string }) {
   );
 }
 
-export function WorktreeCard({
-  wt,
-  onRemove,
-  onPrune,
-  onPruneOrphan,
-  isDragging,
-  isAnyDragging,
-  isOverlay,
-}: {
+export interface WorktreeCardProps {
   wt: Worktree;
+  // All per-card store data is prop-drilled from the parent so React.memo
+  // can short-circuit re-renders for cards whose own data didn't move.
+  // Reading these from the store per-card would fire on every refresh tick
+  // because the store replaces the whole branches array / presence Map,
+  // bypassing the memo shallow compare.
+  branchInfo: Branch | undefined;
+  presence: ClaudePresence | undefined;
+  conflictSummary: WorktreeConflictSummary | undefined;
+  defaultBranch: string;
   onRemove?: (wt: Worktree) => void;
   onPrune?: () => void;
   onPruneOrphan?: () => void;
   isDragging?: boolean;
-  isAnyDragging?: boolean;
+  animateLayout?: boolean;
   isOverlay?: boolean;
-}) {
+}
+
+function WorktreeCardInner({
+  wt,
+  branchInfo,
+  presence,
+  conflictSummary,
+  defaultBranch,
+  onRemove,
+  onPrune,
+  onPruneOrphan,
+  isDragging,
+  animateLayout,
+  isOverlay,
+}: WorktreeCardProps) {
   // Orphaned branch: bookkeeping survives but the directory doesn't. Branch
-  // out before reading any per-worktree store state — none of it would be
-  // meaningful for a ghost, and most of the normal card render would either
-  // crash or paint dishonest "all good" indicators (clean status, 0/0
-  // ahead/behind, green border via PR #16's merge-status logic). The
-  // OrphanedCard variant uses the same outer motion shape so the layout
-  // animation between states is smooth when the user clicks Prune.
+  // out before touching any live-card state — none of it would be meaningful
+  // for a ghost, and most of the normal card render would either crash or
+  // paint dishonest "all good" indicators (clean status, 0/0 ahead/behind,
+  // green border via PR #16's merge-status logic). The OrphanedCard variant
+  // uses the same outer shape so the transition between states stays smooth
+  // when the user clicks Prune.
   if (wt.prunable) {
-    return <OrphanedCard wt={wt} onPruneOrphan={onPruneOrphan} onRemove={onRemove} isDragging={isDragging} isAnyDragging={isAnyDragging} isOverlay={isOverlay} />;
+    return <OrphanedCard wt={wt} onPruneOrphan={onPruneOrphan} onRemove={onRemove} isDragging={isDragging} animateLayout={animateLayout} isOverlay={isOverlay} />;
   }
-  const presence = useRepoStore((s) => s.claudePresence.get(wt.path));
-  const conflictSummary = useRepoStore((s) => s.conflictSummaryByPath.get(wt.path));
-  // Join the worktree to its branch entry so we can render lifecycle state
-  // (merge status, ahead-of-main, PR) on the card. The data already exists
-  // in the store; the type split between Worktree (filesystem) and Branch
-  // (lifecycle) just meant the WorktreeCard never read it. Detached HEADs
-  // and main itself aren't in the branches list, so this can be undefined —
-  // the badge row only renders when it's defined.
-  const branchInfo = useRepoStore((s) =>
-    s.branches.find((b) => b.name === wt.branch),
-  );
-  const defaultBranch = useRepoStore((s) => s.repo?.defaultBranch ?? 'main');
   const setError = useRepoStore((s) => s.setError);
   // Composite pill that respects BOTH the branch's commit-history merge
   // status and the worktree's filesystem state, and replaces the lineage
@@ -244,7 +254,7 @@ export function WorktreeCard({
       role="group"
     >
     <motion.div
-      layout={!isAnyDragging && !isOverlay}
+      layout={!!animateLayout && !isOverlay}
       animate={{ opacity: 1 }}
       initial={isOverlay ? false : { opacity: 0, y: 4 }}
       transition={{ duration: 0.15 }}
@@ -458,14 +468,14 @@ function OrphanedCard({
   onPruneOrphan,
   onRemove,
   isDragging,
-  isAnyDragging,
+  animateLayout,
   isOverlay,
 }: {
   wt: Worktree;
   onPruneOrphan?: () => void;
   onRemove?: (wt: Worktree) => void;
   isDragging?: boolean;
-  isAnyDragging?: boolean;
+  animateLayout?: boolean;
   isOverlay?: boolean;
 }) {
   const {
@@ -491,7 +501,7 @@ function OrphanedCard({
       role="group"
     >
     <motion.div
-      layout={!isAnyDragging && !isOverlay}
+      layout={!!animateLayout && !isOverlay}
       animate={{ opacity: 1 }}
       initial={isOverlay ? false : { opacity: 0, y: 4 }}
       transition={{ duration: 0.15 }}
@@ -898,3 +908,11 @@ function PastSessionsList({
     </div>
   );
 }
+
+// Memoized export. Default shallow-prop equality is sufficient because the
+// parent passes structurally-shared references (see src/lib/structuralShare.ts):
+// a card whose own Worktree/Branch/ClaudePresence/WorktreeConflictSummary
+// didn't change gets the exact same prop references across ticks and skips
+// render entirely. Without the structural sharing upstream, the shallow
+// compare would still see new references each tick and re-render anyway.
+export const WorktreeCard = memo(WorktreeCardInner);

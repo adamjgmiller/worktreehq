@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Plus } from 'lucide-react';
 import {
   DndContext,
@@ -33,7 +34,8 @@ import {
 } from '../../services/worktreeOrderService';
 import { sortWorktrees } from '../../lib/worktreeOrder';
 import { WorktreeSortMenu } from './WorktreeSortMenu';
-import type { Worktree, WorktreeSortMode } from '../../types';
+import { attachInteractionListeners } from '../../services/interactionBusy';
+import type { Branch, Worktree, WorktreeSortMode } from '../../types';
 
 // Walk up from the pointer-event target to the card boundary. If we hit an
 // interactive element first, suppress drag so clicks on buttons/links/
@@ -74,6 +76,7 @@ export function WorktreesView() {
   const worktreeSortMode = useRepoStore((s) => s.worktreeSortMode);
   const setWorktreeSortMode = useRepoStore((s) => s.setWorktreeSortMode);
   const claudePresence = useRepoStore((s) => s.claudePresence);
+  const conflictSummaryByPath = useRepoStore((s) => s.conflictSummaryByPath);
   const [createOpen, setCreateOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Worktree | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -81,6 +84,32 @@ export function WorktreesView() {
   // the Create dialog opens so edits made in Settings between creations
   // are reflected. The dialog seeds its own editable state from this.
   const [defaultPostCreate, setDefaultPostCreate] = useState('');
+  // Enables framer-motion's layout animation on the card shell. Kept OFF by
+  // default so refresh ticks don't pay the per-card getBoundingClientRect
+  // cost. Flipped ON just before an explicit reorder (sort-mode change) via
+  // flushSync, then back OFF after the 600ms animation window. See
+  // handleSortModeChange below for the why.
+  const [animateLayout, setAnimateLayout] = useState(false);
+  const animateTimerRef = useRef<number | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    return () => {
+      if (animateTimerRef.current != null) {
+        window.clearTimeout(animateTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Track scroll/pointer activity on the grid container so the refresh
+  // commit can defer itself until the user is idle. See
+  // services/interactionBusy.ts — listeners are passive so they never block
+  // scroll themselves; they just poke a module-level busy-until timestamp
+  // that waitForInteractionIdle polls.
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    return attachInteractionListeners(el);
+  }, [worktrees.length === 0]);
 
   const sensors = useSensors(
     useSensor(CardPointerSensor, { activationConstraint: { distance: 8 } }),
@@ -98,6 +127,16 @@ export function WorktreesView() {
     () => orderedWorktrees.map((w) => w.path),
     [orderedWorktrees],
   );
+  // Precompute the branch-by-name lookup so each card gets O(1) access to
+  // its branch entry — the old approach had every card run `.find()` over
+  // the whole branches array on every render, which is what made
+  // `setBranches` cascade into N linear scans per tick.
+  const branchByName = useMemo(() => {
+    const m = new Map<string, Branch>();
+    for (const b of branches) m.set(b.name, b);
+    return m;
+  }, [branches]);
+  const defaultBranch = repo?.defaultBranch ?? 'main';
   const activeWorktree = activeId
     ? orderedWorktrees.find((w) => w.path === activeId) ?? null
     : null;
@@ -110,11 +149,36 @@ export function WorktreesView() {
     setActiveId(null);
   }
 
+  // Explicit sort-mode change is the one moment we want a layout animation:
+  // the user clicked a new mode and should see cards slide into their new
+  // positions. The trick is that framer-motion's `layout` prop needs to be
+  // TRUE during both the "before" render (to capture old positions via its
+  // useLayoutEffect) and the "after" render (to measure and animate to new
+  // positions). If we just toggle it in the same event handler as the sort
+  // change, React batches both into one render and framer never sees the
+  // "before" state — no animation.
+  //
+  // flushSync forces the first setState to commit synchronously. By the
+  // time we call setWorktreeSortMode, framer has already measured the old
+  // positions in its layout effect. The second commit re-renders with the
+  // new data, framer compares, and the FLIP animation runs. After ~600ms
+  // (cover the 300ms default + easing headroom) we flip animateLayout back
+  // OFF so subsequent refresh ticks skip the per-card measurement cost.
   function handleSortModeChange(next: WorktreeSortMode) {
+    if (worktreeSortMode !== next) {
+      flushSync(() => setAnimateLayout(true));
+    }
     setWorktreeSortMode(next);
     if (repo) {
       void writeWorktreeSortMode(repo.path, next);
     }
+    if (animateTimerRef.current != null) {
+      window.clearTimeout(animateTimerRef.current);
+    }
+    animateTimerRef.current = window.setTimeout(() => {
+      setAnimateLayout(false);
+      animateTimerRef.current = null;
+    }, 600);
   }
 
   function handleDragEnd(event: DragEndEvent) {
@@ -313,7 +377,7 @@ export function WorktreesView() {
         // viewport are reachable. Without this the grid spills out of the
         // parent (which is `flex-1 overflow-hidden` in App.tsx) and lower
         // cards are simply clipped — there's no way to scroll to them.
-        <div className="flex-1 overflow-auto">
+        <div ref={scrollContainerRef} className="flex-1 overflow-auto">
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
@@ -327,11 +391,15 @@ export function WorktreesView() {
                   <WorktreeCard
                     key={w.prunable ? `orphan:${w.path}` : w.path}
                     wt={w}
+                    branchInfo={branchByName.get(w.branch)}
+                    presence={claudePresence.get(w.path)}
+                    conflictSummary={conflictSummaryByPath.get(w.path)}
+                    defaultBranch={defaultBranch}
                     onRemove={handleRemove}
                     onPrune={handlePrune}
                     onPruneOrphan={handlePruneOrphan}
                     isDragging={activeId === w.path}
-                    isAnyDragging={activeId !== null}
+                    animateLayout={animateLayout}
                   />
                 ))}
               </div>
@@ -340,6 +408,10 @@ export function WorktreesView() {
               {activeWorktree && (
                 <WorktreeCard
                   wt={activeWorktree}
+                  branchInfo={branchByName.get(activeWorktree.branch)}
+                  presence={claudePresence.get(activeWorktree.path)}
+                  conflictSummary={conflictSummaryByPath.get(activeWorktree.path)}
+                  defaultBranch={defaultBranch}
                   isOverlay
                 />
               )}
