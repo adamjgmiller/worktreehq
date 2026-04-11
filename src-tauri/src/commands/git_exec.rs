@@ -23,14 +23,40 @@ pub struct GitExecResult {
 const GIT_EXEC_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[tauri::command]
-pub fn git_exec(repo_path: String, args: Vec<String>) -> AppResult<GitExecResult> {
+pub async fn git_exec(repo_path: String, args: Vec<String>) -> AppResult<GitExecResult> {
+    // Off-load the entire subprocess dance to Tauri's blocking threadpool.
+    //
+    // Why this is load-bearing: Tauri v2's `#[tauri::command]` on a plain
+    // `fn` generates `body_blocking` (see tauri-macros/src/command/wrapper.rs),
+    // which calls the function synchronously inside the IPC dispatch — which
+    // runs on the main thread. Every sync command we invoke from JS
+    // therefore blocks the UI thread for the entire duration of the
+    // subprocess. A single refresh tick fires ~30 git subprocesses
+    // (worktrees list + branches list + per-branch ahead/behind + merge-base +
+    // merge-tree + fetch), so the main thread was spending hundreds of ms
+    // (often 1-2 seconds) inside git_exec per click, completely blocking
+    // scroll, clicks, and even the refresh button's own spin animation.
+    //
+    // Marking the wrapper `async fn` flips the macro to the async body,
+    // which dispatches to Tauri's async runtime. That alone unblocks the
+    // main thread, but calling `child.wait()` from the async context would
+    // still block a tokio worker. Wrapping the whole body in
+    // `spawn_blocking` puts the subprocess on a thread dedicated to
+    // blocking I/O, so parallel `Promise.all` git calls from JS actually
+    // run in parallel instead of serializing through one blocked worker.
+    tauri::async_runtime::spawn_blocking(move || git_exec_blocking(repo_path, args))
+        .await
+        .map_err(|e| AppError::Msg(format!("git_exec join error: {e}")))?
+}
+
+fn git_exec_blocking(repo_path: String, args: Vec<String>) -> AppResult<GitExecResult> {
     if repo_path.is_empty() {
         return Err(AppError::Msg("git_exec: repo_path is empty".into()));
     }
 
-    // Note: args are passed positionally as a Vec<String> to git via Command;
-    // there is no shell interpolation, so this is the safe equivalent of
-    // execFile (not shell exec).
+    // Args are passed positionally as a Vec<String> to git via Command; there
+    // is no shell interpolation, so this is the safe equivalent of running a
+    // named binary with an args array.
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(&repo_path).args(&args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());

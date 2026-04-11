@@ -396,9 +396,14 @@ describe('runFetchOnce skip-when-unchanged', () => {
 
     await runFetchOnce({ userInitiated: true });
 
-    // The skip path is bypassed for user-initiated fetches because the user
-    // may be trying to surface PR-state-only changes that don't move refs.
-    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(1);
+    // User-initiated fetches run refreshOnce TWICE: once optimistically
+    // (immediate local re-derive, fires before fetchAllPrune) and once
+    // post-fetch (fresh-remote re-derive). Each pipeline calls
+    // listWorktrees as the first element of its Promise.all, so the mock
+    // records two invocations. The skip path for unchanged refs is also
+    // bypassed for user-initiated because the user may be surfacing
+    // PR-state-only changes that don't move refs.
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(2);
     expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
     // The per-PR detail cache must ALSO be invalidated on user-initiated
     // fetches. Without this, squashDetector pass 1 reads the still-cached
@@ -426,20 +431,38 @@ describe('runFetchOnce skip-when-unchanged', () => {
     useRepoStore.setState({
       repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
     });
-    let release: (v: unknown) => void = () => {};
+    // Optimistic refresh means a user click fires refreshOnce twice: once
+    // immediately against local state (the optimistic phase) and once
+    // post-fetch against fresh remote refs. Each pipeline calls
+    // listWorktrees as the first subprocess in its Promise.all, so we
+    // queue release handles and resolve them in sequence — the post-fetch
+    // refreshOnce dedupes into the optimistic via pendingUserRefresh, so
+    // the follow-up only launches after the optimistic drains.
+    const releases: Array<(v: unknown) => void> = [];
     asMock(git.listWorktrees).mockImplementation(
-      () => new Promise((r) => { release = r; }),
+      () => new Promise((r) => { releases.push(r); }),
     );
 
     const p = runFetchOnce({ userInitiated: true });
-    // Yield so runFetchOnce gets past its synchronous prefix and into the
-    // chained refreshOnce, which is where userRefreshing flips on.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // Drain microtasks AND macrotasks until both the optimistic refreshOnce
+    // AND the fetch body's snapshot/fetchAllPrune steps have landed. A
+    // plain `await Promise.resolve()` only drains microtasks; we rely on
+    // setTimeout(0) advances to settle the whole chain including the
+    // fetch-body IIFE and the dedupe bookkeeping.
+    const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+    for (let i = 0; i < 5; i++) await tick();
     expect(useRepoStore.getState().userRefreshing).toBe(true);
+    expect(releases.length).toBe(1);
 
-    release([]);
+    // Release the optimistic's listWorktrees. Its pipeline drains, then
+    // the finally block launches the queued follow-up which calls
+    // listWorktrees again, pushing a second release handle.
+    releases[0]([]);
+    for (let i = 0; i < 10; i++) await tick();
+    expect(releases.length).toBe(2);
+
+    // Release the follow-up and let the whole chain resolve.
+    releases[1]([]);
     await p;
     expect(useRepoStore.getState().userRefreshing).toBe(false);
   });

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { RefreshCw, Settings, Github, Download, AlertTriangle, Sun, Moon } from 'lucide-react';
 import { useRepoStore } from '../store/useRepoStore';
 import { isMac } from '../lib/platform';
@@ -17,6 +18,19 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
   const fetching = useRepoStore((s) => s.fetching);
   const busy = userRefreshing || fetching;
   const lastRefresh = useRepoStore((s) => s.lastRefresh);
+  // Force a re-render once a second so the "updated X ago" label ticks
+  // forward between refresh commits. Without this, the label is frozen
+  // to whatever relativeTime() returned at the moment of the last commit
+  // (always "0 seconds ago" because lastRefresh === Date.now() at that
+  // instant) and never ages visibly — RepoBar only re-renders when one
+  // of its subscribed store fields changes, not on wall-clock advance.
+  // 1s keeps the first-minute transitions smooth; the 15s poll tick
+  // resets lastRefresh before we reach the minute boundary anyway.
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setClockTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
   const lastFetchError = useRepoStore((s) => s.lastFetchError);
   const authStatus = useRepoStore((s) => s.githubAuthStatus);
   const themePreference = useRepoStore((s) => s.themePreference);

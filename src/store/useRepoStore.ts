@@ -99,6 +99,13 @@ interface StoreState {
   setSquashMappings: (s: SquashMapping[]) => void;
   setClaudePresence: (p: Map<string, ClaudePresence>) => void;
   setCrossWorktreeConflicts: (pairs: WorktreePairOverlap[], summary: Map<string, WorktreeConflictSummary>) => void;
+  // Single atomic commit for a successful refresh tick. Bundles all pipeline
+  // outputs into one store update so the cascade of re-renders from 6
+  // sequential setters collapses into a single render pass. React 18
+  // auto-batching already does this for async code, but expressing it as
+  // one call is clearer and guarantees atomicity if the pipeline ever moves
+  // into a sync context (event handler, RAF callback, etc.).
+  commitRefreshResult: (payload: RefreshCommitPayload) => void;
   setLoading: (v: boolean) => void;
   setUserRefreshing: (v: boolean) => void;
   setFetching: (v: boolean) => void;
@@ -113,7 +120,20 @@ interface StoreState {
   setWorktreeOrder: (order: string[]) => void;
   setWorktreeSortMode: (mode: WorktreeSortMode) => void;
   setThemePreference: (pref: ThemePreference) => void;
-  markRefreshed: () => void;
+}
+
+// Shape passed to commitRefreshResult. Mirrors the fields runRefreshOnce
+// used to dribble in via 6 separate setters.
+export interface RefreshCommitPayload {
+  worktrees: Worktree[];
+  branches: Branch[];
+  mainCommits: MainCommit[];
+  mainCommitsTotal: number;
+  squashMappings: SquashMapping[];
+  claudePresence: Map<string, ClaudePresence>;
+  crossWorktreeConflicts: WorktreePairOverlap[];
+  conflictSummaryByPath: Map<string, WorktreeConflictSummary>;
+  dataRepoPath: string;
 }
 
 // Round to 2 decimals so floating-point drift from repeated +0.1 doesn't
@@ -171,6 +191,21 @@ export const useRepoStore = create<StoreState>((set) => ({
   setClaudePresence: (claudePresence) => set({ claudePresence }),
   setCrossWorktreeConflicts: (crossWorktreeConflicts, conflictSummaryByPath) =>
     set({ crossWorktreeConflicts, conflictSummaryByPath }),
+  commitRefreshResult: (payload) =>
+    set({
+      worktrees: payload.worktrees,
+      branches: payload.branches,
+      mainCommits: payload.mainCommits,
+      mainCommitsTotal: payload.mainCommitsTotal,
+      squashMappings: payload.squashMappings,
+      claudePresence: payload.claudePresence,
+      crossWorktreeConflicts: payload.crossWorktreeConflicts,
+      conflictSummaryByPath: payload.conflictSummaryByPath,
+      dataRepoPath: payload.dataRepoPath,
+      lastRefresh: Date.now(),
+      loading: false,
+      error: null,
+    }),
   setLoading: (loading) => set({ loading }),
   setUserRefreshing: (userRefreshing) => set({ userRefreshing }),
   setFetching: (fetching) => set({ fetching }),
@@ -185,5 +220,4 @@ export const useRepoStore = create<StoreState>((set) => ({
   setWorktreeOrder: (worktreeOrder) => set({ worktreeOrder }),
   setWorktreeSortMode: (worktreeSortMode) => set({ worktreeSortMode }),
   setThemePreference: (themePreference) => set({ themePreference }),
-  markRefreshed: () => set({ lastRefresh: Date.now() }),
 }));

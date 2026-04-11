@@ -56,52 +56,72 @@ export function Notepad({ worktreePath }: { worktreePath: string }) {
   // become no-ops. So this effect is self-terminating without needing its
   // own "did we already try" tracking.
   //
-  // We subscribe to lastRefresh as a primitive selector — Zustand only
-  // re-renders this component when the timestamp actually changes, not on
-  // every store mutation.
-  const lastRefresh = useRepoStore((s) => s.lastRefresh);
+  // IMPORTANT: subscribe to the store IMPERATIVELY via useRepoStore.subscribe,
+  // NOT reactively via useRepoStore((s) => s.lastRefresh). A reactive
+  // subscription re-renders this Notepad on every successful refresh commit,
+  // and with ~50 worktree cards that's 50 wasted re-renders on every tick
+  // (and every manual refresh click) — one of the two root causes of the
+  // 1-2s freeze the user reported on click. The imperative subscribe fires
+  // the autofill check when `lastRefresh` changes without touching React's
+  // render cycle.
   useEffect(() => {
-    // Wait for the initial load to settle. Until `loaded` flips, latestRef
-    // still holds the default '' from useState, NOT the persisted notepad
-    // value, and we'd race with the load effect.
     if (!loaded) return;
-    // Bail if anything is in flight or the notepad already has content.
-    // Read latestRef rather than `value` because `value` is captured at
-    // effect-schedule time and can lag behind the most recent keystroke.
-    if (latestRef.current !== '' || dirtyRef.current || timerRef.current != null) {
-      return;
-    }
 
-    let cancelled = false;
-    computeNotepadAutofill(worktreePath)
-      .then((seed) => {
-        // Re-check guards after the async hop. The user could have started
-        // typing during the autofill fetch, in which case we drop the
-        // seed on the floor rather than clobbering input.
-        if (cancelled || !seed) return;
-        if (latestRef.current !== '' || dirtyRef.current) return;
-        setValue(seed);
-        latestRef.current = seed;
-        // Persisting is what sets the touched flag in notepads.json, which
-        // prevents this autofill from firing again on subsequent ticks
-        // (or on a future mount). System-driven write — bypass the
-        // scheduleSave/flush UI machinery so 'saving…' doesn't flash.
-        writeNotepad(worktreePath, seed).catch(() => {
-          // Persist failure is non-fatal: the seed stays on screen, the
-          // user can edit normally. The touched flag won't be set, so the
-          // next refresh tick would re-attempt — acceptable for a disk-
-          // full / permissions edge case.
+    let unmounted = false;
+    let prevLastRefresh = useRepoStore.getState().lastRefresh;
+
+    const check = () => {
+      if (unmounted) return;
+      // Bail if anything is in flight or the notepad already has content.
+      // Read latestRef rather than `value` because `value` is captured at
+      // effect-schedule time and can lag behind the most recent keystroke.
+      if (latestRef.current !== '' || dirtyRef.current || timerRef.current != null) {
+        return;
+      }
+      void computeNotepadAutofill(worktreePath)
+        .then((seed) => {
+          // Re-check guards after the async hop. The user could have started
+          // typing during the autofill fetch, in which case we drop the
+          // seed on the floor rather than clobbering input.
+          if (unmounted || !seed) return;
+          if (latestRef.current !== '' || dirtyRef.current) return;
+          setValue(seed);
+          latestRef.current = seed;
+          // Persisting is what sets the touched flag in notepads.json, which
+          // prevents this autofill from firing again on subsequent ticks
+          // (or on a future mount). System-driven write — bypass the
+          // scheduleSave/flush UI machinery so 'saving…' doesn't flash.
+          writeNotepad(worktreePath, seed).catch(() => {
+            // Persist failure is non-fatal: the seed stays on screen, the
+            // user can edit normally. The touched flag won't be set, so the
+            // next refresh tick would re-attempt — acceptable for a disk-
+            // full / permissions edge case.
+          });
+        })
+        .catch(() => {
+          // Any error in the autofill path is purely cosmetic — leave the
+          // notepad empty and wait for the next tick.
         });
-      })
-      .catch(() => {
-        // Any error in the autofill path is purely cosmetic — leave the
-        // notepad empty and wait for the next tick.
-      });
+    };
+
+    // Initial check once the persisted value has loaded.
+    check();
+
+    // Fire on every store update where lastRefresh moved. We walk every
+    // set() call and filter inside — Zustand's plain `subscribe` has no
+    // built-in selector without the subscribeWithSelector middleware, and
+    // the per-call cost of comparing one number is negligible.
+    const unsub = useRepoStore.subscribe((state) => {
+      if (state.lastRefresh === prevLastRefresh) return;
+      prevLastRefresh = state.lastRefresh;
+      check();
+    });
 
     return () => {
-      cancelled = true;
+      unmounted = true;
+      unsub();
     };
-  }, [worktreePath, lastRefresh, loaded]);
+  }, [worktreePath, loaded]);
 
   // Flush any pending save on unmount (e.g. worktree removed, app closing).
   useEffect(() => {

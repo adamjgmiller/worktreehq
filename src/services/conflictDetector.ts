@@ -5,7 +5,7 @@ import type {
   OverlapSeverity,
   WorktreeConflictSummary,
 } from '../types';
-import { getChangedFiles, getMergeBase, simulateMerge } from './gitService';
+import { getChangedFiles, getMergeBase, resolveRef, simulateMerge } from './gitService';
 
 // ─── Caches ────────────────────────────────────────────────────────────
 // Content-addressed by branch + head SHA so entries auto-invalidate when
@@ -17,9 +17,26 @@ const CHANGED_FILES_CACHE_MAX = 200;
 const mergeBaseCache = new Map<string, string>();
 const MERGE_BASE_CACHE_MAX = 500;
 
+// Top-level result cache keyed by the full set of inputs that can affect
+// the result: the repo path, the default branch, and a sorted signature of
+// every candidate worktree's (path, branch, head). Any change to a branch
+// tip — which is the only thing that can change conflict outcomes — moves
+// `head`, which moves the signature, which invalidates the cache.
+//
+// Filesystem state (uncommitted edits, staged files) does NOT affect
+// conflict detection because everything here operates on committed SHAs
+// via git merge-tree. So caching by (path, branch, head) is content-
+// addressed and safe — a quiet tick with no commits is a pure cache hit.
+interface TopLevelCacheEntry {
+  signature: string;
+  result: ConflictDetectResult;
+}
+let topLevelCache: TopLevelCacheEntry | null = null;
+
 export function _clearConflictCacheForTests(): void {
   changedFilesCache.clear();
   mergeBaseCache.clear();
+  topLevelCache = null;
 }
 
 // ─── Concurrency limiter ───────────────────────────────────────────────
@@ -118,11 +135,17 @@ export interface ConflictDetectResult {
   summaryByPath: Map<string, WorktreeConflictSummary>;
 }
 
+// Stable reference for the trivial case (<2 candidates) so consecutive
+// trivial ticks structurally share the same empty result.
+const EMPTY_RESULT: ConflictDetectResult = {
+  pairs: [],
+  summaryByPath: new Map(),
+};
+
 export async function detectCrossWorktreeConflicts(
   input: ConflictDetectInput,
 ): Promise<ConflictDetectResult> {
   const { repoPath, defaultBranch, worktrees } = input;
-  const empty: ConflictDetectResult = { pairs: [], summaryByPath: new Map() };
 
   // ── Filter candidates ──────────────────────────────────────────────
   // Skip: primary worktree (IS the default branch), prunable/orphaned,
@@ -130,7 +153,40 @@ export async function detectCrossWorktreeConflicts(
   const candidates = worktrees.filter(
     (w) => !w.isPrimary && !w.prunable && w.branch && w.branch !== 'HEAD',
   );
-  if (candidates.length < 2) return empty;
+
+  // Resolve the baseline `origin/<defaultBranch>` SHA up front. This is part
+  // of BOTH the top-level signature and the inner changedFilesCache key
+  // because `getChangedFiles` diffs against `origin/${defaultBranch}` — if a
+  // fetch advances the remote baseline without any feature branch HEAD
+  // moving, the candidate signatures alone wouldn't change and both caches
+  // would serve stale results. Do NOT "simplify" this out of either key.
+  // Empty string is fine (missing remote ref) — it still flips when the ref
+  // appears later, which invalidates the cache correctly.
+  const baselineSha = await resolveRef(repoPath, `origin/${defaultBranch}`);
+
+  // Top-level cache check. Signature captures every input that could move
+  // the result; on a quiet tick (no commits anywhere) this returns the
+  // previous result by reference, which structural sharing upstream relies
+  // on to skip re-renders.
+  const signature =
+    repoPath +
+    '\0' +
+    defaultBranch +
+    '\0' +
+    baselineSha +
+    '\0' +
+    candidates
+      .map((w) => `${w.path}\t${w.branch}\t${w.head}`)
+      .sort()
+      .join('\n');
+  if (topLevelCache && topLevelCache.signature === signature) {
+    return topLevelCache.result;
+  }
+
+  if (candidates.length < 2) {
+    topLevelCache = { signature, result: EMPTY_RESULT };
+    return EMPTY_RESULT;
+  }
 
   // ── Phase 1: changed-file sets (parallel, cached) ──────────────────
   // Trim cache if it's grown too large
@@ -144,7 +200,11 @@ export async function detectCrossWorktreeConflicts(
   const filesByBranch = new Map<string, Set<string>>();
   await Promise.all(
     candidates.map(async (wt) => {
-      const cacheKey = `${wt.branch}:${wt.head}`;
+      // baselineSha is part of the key because getChangedFiles diffs against
+      // `origin/${defaultBranch}` — a fetch that advances the remote without
+      // moving wt.head must still invalidate this entry. See the comment
+      // above where baselineSha is resolved.
+      const cacheKey = `${baselineSha}:${wt.branch}:${wt.head}`;
       let files = changedFilesCache.get(cacheKey);
       if (!files) {
         files = await getChangedFiles(repoPath, defaultBranch, wt.branch);
@@ -288,5 +348,7 @@ export async function detectCrossWorktreeConflicts(
     }
   }
 
-  return { pairs: allPairs, summaryByPath };
+  const result: ConflictDetectResult = { pairs: allPairs, summaryByPath };
+  topLevelCache = { signature, result };
+  return result;
 }

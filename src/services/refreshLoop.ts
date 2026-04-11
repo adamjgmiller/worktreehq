@@ -17,6 +17,12 @@ import {
 import { fetchClaudePresence } from './claudeAwarenessService';
 import { detectCrossWorktreeConflicts, type ConflictDetectResult } from './conflictDetector';
 import { classifyFetchError, formatClassifiedError } from './fetchErrorClassifier';
+import {
+  reconcileWorktrees,
+  reconcileBranches,
+  reconcileClaudePresence,
+  reconcileConflictSummary,
+} from '../lib/structuralShare';
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -55,25 +61,20 @@ let pendingBackgroundRefresh = false;
 
 export interface RefreshOptions {
   // When true, flips the store `userRefreshing` flag so the RepoBar spinner
-  // animates. Background ticks leave it false so the spinner doesn't spin
-  // on every heartbeat — the user only sees it when they asked for a refresh.
+  // animates and the grid grey-out wrapper dims. Background ticks leave it
+  // false — the spinner would otherwise animate on every 15s heartbeat.
   userInitiated?: boolean;
+  // Internal: when true, refreshOnce skips its own userRefreshing flips and
+  // leaves spinner management to the caller. Currently only runFetchOnce
+  // uses this — it needs to pin userRefreshing across both the optimistic
+  // and post-fetch refreshOnce calls so the grid's grey-out wrapper doesn't
+  // flicker ON→OFF→ON→OFF across a single refresh click.
+  _spinnerManagedByCaller?: boolean;
 }
 
 async function runRefreshOnce(): Promise<void> {
-  const {
-    repo,
-    setWorktrees,
-    setBranches,
-    setMainCommits,
-    setSquashMappings,
-    setClaudePresence,
-    setCrossWorktreeConflicts,
-    setError,
-    markRefreshed,
-    setLoading,
-    setDataRepoPath,
-  } = useRepoStore.getState();
+  const state = useRepoStore.getState();
+  const { repo, setError, setLoading, commitRefreshResult } = state;
   if (!repo) return;
   setLoading(true);
   // Note: do NOT setError(null) here. User-initiated mutations
@@ -166,28 +167,56 @@ async function runRefreshOnce(): Promise<void> {
       }),
     ]);
 
-    setWorktrees(wts);
-    setBranches(detect.updatedBranches);
-    setMainCommits(mainCommits, mainCommitsTotal);
-    setSquashMappings(detect.mappings);
-    setClaudePresence(presence);
-    setCrossWorktreeConflicts(conflictResult.pairs, conflictResult.summaryByPath);
-    // Mark the in-store collections as belonging to this repo path. App.tsx
-    // gates the content region on `dataRepoPath === repo.path`, so this is
-    // what lifts the shimmer skeleton on first load and after a repo switch.
-    // Set ONLY on success (never in finally) — a failed first refresh leaves
-    // the gate closed so we keep showing the skeleton + error banner instead
-    // of falling back to the empty states, which would lie about the repo's
-    // contents.
-    setDataRepoPath(repo.path);
-    markRefreshed();
-    // Clear any prior pipeline error now that this tick succeeded. We don't
-    // clear at the START of the tick because user-action errors (set by
-    // WorktreesView etc.) need to survive across the next poll.
-    setError(null);
+    // Structural-share against the previous store state BEFORE committing.
+    // Any element whose content didn't change is reused by reference, so
+    // downstream React.memo on WorktreeCard can skip re-render for cards
+    // whose own data didn't move. Read the pre-commit snapshot fresh rather
+    // than reusing the `state` captured at the top of runRefreshOnce —
+    // another tick may have committed in between if the pipeline was long.
+    const before = useRepoStore.getState();
+    const reconciledWts = reconcileWorktrees(before.worktrees, wts);
+    const reconciledBranches = reconcileBranches(
+      before.branches,
+      detect.updatedBranches,
+    );
+    const reconciledPresence = reconcileClaudePresence(
+      before.claudePresence,
+      presence,
+    );
+    const reconciledConflictSummary = reconcileConflictSummary(
+      before.conflictSummaryByPath,
+      conflictResult.summaryByPath,
+    );
+
+    // The pipeline started against `repo` captured at the top of this run,
+    // but many awaits (subprocess IPC, GitHub network calls, squash
+    // detection) sit between that capture and here — collectively 1-5s
+    // on a busy repo. If the user switched repos during any of those
+    // awaits, committing now would clobber the NEW repo's data with this
+    // OLD repo's pipeline results and set `dataRepoPath` to the old path —
+    // re-opening the exact stale-flash window that PR #22 closed (1-5s of
+    // previous repo's data after a switch). Bail silently instead; the
+    // new repo's own refresh is already managing its loading state, so
+    // don't touch `loading` here.
+    if (useRepoStore.getState().repo?.path !== repo.path) return;
+
+    // Atomic commit — a single setState triggers exactly one render pass.
+    // dataRepoPath is set ONLY on success (never in a finally) so a failed
+    // first refresh leaves the gate closed and we keep showing the shimmer
+    // + error banner instead of lying about the repo's contents.
+    commitRefreshResult({
+      worktrees: reconciledWts,
+      branches: reconciledBranches,
+      mainCommits,
+      mainCommitsTotal,
+      squashMappings: detect.mappings,
+      claudePresence: reconciledPresence,
+      crossWorktreeConflicts: conflictResult.pairs,
+      conflictSummaryByPath: reconciledConflictSummary,
+      dataRepoPath: repo.path,
+    });
   } catch (e) {
     setError(e instanceof Error ? e.message : String(e));
-  } finally {
     setLoading(false);
   }
 }
@@ -205,7 +234,13 @@ async function runRefreshOnce(): Promise<void> {
 // The returned promise resolves only after that follow-up has finished.
 export function refreshOnce(opts?: RefreshOptions): Promise<void> {
   const userInitiated = opts?.userInitiated === true;
-  if (userInitiated) {
+  // `manageSpinner` — are we responsible for flipping userRefreshing, or has
+  // the caller claimed ownership? runFetchOnce passes
+  // `_spinnerManagedByCaller: true` so the grid's grey-out stays pinned for
+  // the full click (optimistic + post-fetch), rather than flipping twice as
+  // each refreshOnce independently owned its own short lifecycle.
+  const manageSpinner = userInitiated && opts?._spinnerManagedByCaller !== true;
+  if (manageSpinner) {
     useRepoStore.getState().setUserRefreshing(true);
   }
   const existing = refreshInFlight;
@@ -221,9 +256,11 @@ export function refreshOnce(opts?: RefreshOptions): Promise<void> {
         const next = refreshInFlight;
         return next ?? Promise.resolve();
       });
-      void wait.finally(() => {
-        useRepoStore.getState().setUserRefreshing(false);
-      });
+      if (manageSpinner) {
+        void wait.finally(() => {
+          useRepoStore.getState().setUserRefreshing(false);
+        });
+      }
       return wait;
     }
     // Background callers (e.g. fetch loop's chained refresh) also need a
@@ -236,19 +273,18 @@ export function refreshOnce(opts?: RefreshOptions): Promise<void> {
   const launch = (): Promise<void> => {
     refreshInFlight = runRefreshOnce().finally(() => {
       refreshInFlight = null;
-      // If a user-initiated refresh joined while we were running, drain
-      // the queue with a single follow-up run. We clear the flag BEFORE
-      // launching so a second user click during the follow-up gets its
-      // own queue slot. pendingUserRefresh takes priority (it carries the
-      // spinner lifecycle); a background pending is cheaper — just re-run.
-      if (pendingUserRefresh) {
+      // If another caller joined while we were running, drain the queue
+      // with a single follow-up run. We clear both flags BEFORE launching
+      // so any caller that lands during the follow-up gets its own slot.
+      // Both pending paths collapse into the same re-launch now that
+      // runRefreshOnce no longer branches on userInitiated — the flags
+      // still differ in whether the original caller awaits the follow-up
+      // (see the dedupe branch above) but the re-launch itself is identical.
+      if (pendingUserRefresh || pendingBackgroundRefresh) {
         pendingUserRefresh = false;
         pendingBackgroundRefresh = false;
         launch();
-      } else if (pendingBackgroundRefresh) {
-        pendingBackgroundRefresh = false;
-        launch();
-      } else if (userInitiated) {
+      } else if (manageSpinner) {
         useRepoStore.getState().setUserRefreshing(false);
       }
     });
@@ -301,15 +337,61 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     // user's click produces the feedback (and post-fetch refresh) they
     // expect. Background calls during an in-flight fetch remain dropped.
     if (userInitiated && fetchInFlightPromise) {
-      await fetchInFlightPromise.catch(() => {});
-      await refreshOnce(opts);
+      // Own the userRefreshing lifecycle for the whole click: flip on
+      // now, flip off after both the optimistic AND post-fetch refreshes
+      // have drained. Without this, each inner refreshOnce would flip the
+      // spinner independently and the grid's grey-out wrapper would see
+      // ON→OFF→ON→OFF across a single click.
+      const store = useRepoStore.getState();
+      store.setUserRefreshing(true);
+      try {
+        // Fire an optimistic local re-derive immediately so the UI responds
+        // within one frame even though the fetch we're joining may still be
+        // seconds away from completing. Fire-and-forget: the post-fetch
+        // refreshOnce() below will re-derive a second time against the
+        // freshly-fetched refs, sequenced behind this one via refreshOnce's
+        // pendingUserRefresh dedupe. Both pass `_spinnerManagedByCaller`
+        // so refreshOnce leaves the spinner alone — we own it here.
+        void refreshOnce({ userInitiated: true, _spinnerManagedByCaller: true });
+        await fetchInFlightPromise.catch(() => {});
+        await refreshOnce({ ...opts, _spinnerManagedByCaller: true });
+      } finally {
+        useRepoStore.getState().setUserRefreshing(false);
+      }
     }
     return;
   }
-  const { repo, setFetching, setLastFetchError, setError } = useRepoStore.getState();
+  const { repo, setFetching, setLastFetchError, setError, setUserRefreshing } = useRepoStore.getState();
   if (!repo) return;
   fetchInFlight = true;
   setFetching(true);
+  // Own the userRefreshing lifecycle for the whole click. Flipping it on
+  // BEFORE the void refreshOnce() call means the grid's grey-out wrapper
+  // commits in React's first frame after the click and stays pinned until
+  // the body's finally clears it below — one ON, one OFF for the full
+  // click duration. See the `_spinnerManagedByCaller` comment on
+  // RefreshOptions for the bug this fixes.
+  if (userInitiated) {
+    setUserRefreshing(true);
+  }
+  // Optimistic refresh. User-initiated clicks fire an immediate refreshOnce
+  // against LOCAL state (no waiting for the network fetch) so cards update
+  // within ~half a second instead of after the 1-2 seconds the remote takes
+  // to respond. The real fetch runs in parallel below; once it completes,
+  // `await refreshOnce(opts)` re-derives a second time with the fresh remote
+  // refs. Dedupe semantics in refreshOnce handle the sequencing: if the
+  // optimistic is still in flight when the post-fetch call fires, the
+  // post-fetch call queues as pendingUserRefresh and runs automatically
+  // after the optimistic completes. If the optimistic has already finished,
+  // the post-fetch call starts a fresh pipeline.
+  //
+  // Fire-and-forget (`void`) because awaiting it would serialize with the
+  // fetch and cost us the parallelism that makes this feel instant. The
+  // `fetching` flag (set here) + the `userRefreshing` flag (set above)
+  // keep the RepoBar spinner + grid grey-out pinned through both phases.
+  if (userInitiated) {
+    void refreshOnce({ userInitiated: true, _spinnerManagedByCaller: true });
+  }
   let fetchFailed = false;
   const body = (async () => {
   try {
@@ -349,7 +431,7 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
       // user click would leave the shimmer in place if the very first
       // refresh of the session also coincided with a network failure.
       if (userInitiated) {
-        await refreshOnce(opts);
+        await refreshOnce({ ...opts, _spinnerManagedByCaller: true });
       }
       return;
     }
@@ -378,8 +460,11 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     }
     // Fetch changed remote refs on disk (or this is a user-initiated fetch
     // and we want guaranteed visible feedback); trigger a refresh so the UI
-    // reflects the new state.
-    await refreshOnce(opts);
+    // reflects the new state. Background ticks don't need the
+    // `_spinnerManagedByCaller` flag — their `userInitiated` is false so
+    // the spinner gate in refreshOnce is a no-op either way, but passing
+    // the flag unconditionally keeps the semantics obvious.
+    await refreshOnce({ ...opts, _spinnerManagedByCaller: true });
   } catch (e) {
     // Catches snapshotRemoteRefs failures and any unhandled error from the
     // refresh chain. fetchAllPrune failures are caught above; this path
@@ -397,6 +482,12 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     setFetching(false);
     fetchInFlight = false;
     fetchInFlightPromise = null;
+    // Clear userRefreshing in the same finally as setFetching so the grid's
+    // grey-out disappears exactly when the refresh button's spin animation
+    // stops — one coordinated transition instead of two.
+    if (userInitiated) {
+      useRepoStore.getState().setUserRefreshing(false);
+    }
   }
   })();
   fetchInFlightPromise = body;

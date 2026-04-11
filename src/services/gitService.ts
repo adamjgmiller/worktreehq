@@ -885,6 +885,15 @@ export async function getChangedFiles(
   return out.split('\n').filter(Boolean);
 }
 
+/**
+ * Resolve a ref (branch, tag, remote ref, SHA) to its full commit SHA.
+ * Returns empty string if the ref can't be resolved (missing remote ref,
+ * unreachable object, etc.) so callers can degrade gracefully.
+ */
+export async function resolveRef(repo: string, ref: string): Promise<string> {
+  return (await tryRun(repo, ['rev-parse', '--verify', ref])).trim();
+}
+
 /** Common ancestor of two refs. Returns empty string on failure. */
 export async function getMergeBase(
   repo: string,
