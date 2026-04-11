@@ -159,7 +159,8 @@ export function useRepoBootstrap() {
         // Respect `fetchIntervalMs === 0` so users who explicitly
         // disabled auto-fetch don't get a surprise startup network call.
         const { fetchIntervalMs } = useRepoStore.getState();
-        if (fetchIntervalMs > 0) {
+        const ranInitialFetch = fetchIntervalMs > 0;
+        if (ranInitialFetch) {
           try {
             await runFetchOnce();
           } catch {
@@ -168,7 +169,12 @@ export function useRepoBootstrap() {
           if (cancelled) return;
         }
         startRefreshLoop();
-        startFetchLoop();
+        // When we already ran an initial fetch above, suppress startFetchLoop's
+        // immediate first tick — otherwise it would fire a second back-to-back
+        // `fetchAllPrune` subprocess against refs that were JUST fetched (the
+        // `fetchInFlight` guard can't dedupe it because the awaited fetch
+        // already cleared the flag). Waste is minor per launch but real.
+        startFetchLoop({ skipFirstTick: ranInitialFetch });
 
         // Wire the filesystem watcher events to a debounced refresh tick.
         try {

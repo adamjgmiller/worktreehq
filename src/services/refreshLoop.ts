@@ -397,7 +397,12 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   await body;
 }
 
-export function startFetchLoop(): void {
+// `skipFirstTick` suppresses the immediate fetch on startup so callers that
+// already ran an initial `runFetchOnce()` themselves (e.g. the bootstrap,
+// which awaits one before the loops start to avoid a stale-refs flash) don't
+// trigger a redundant back-to-back `fetchAllPrune` subprocess. When skipped,
+// the first tick is scheduled after the normal interval instead.
+export function startFetchLoop(opts?: { skipFirstTick?: boolean }): void {
   if (fetchRunning) return;
   fetchRunning = true;
   const tick = async () => {
@@ -415,7 +420,13 @@ export function startFetchLoop(): void {
     const delay = next > 0 ? next : 60_000;
     fetchTimer = setTimeout(tick, delay);
   };
-  tick();
+  if (opts?.skipFirstTick) {
+    const { fetchIntervalMs } = useRepoStore.getState();
+    const delay = fetchIntervalMs > 0 ? fetchIntervalMs : 60_000;
+    fetchTimer = setTimeout(tick, delay);
+  } else {
+    tick();
+  }
 }
 
 export function stopFetchLoop(): void {
