@@ -94,10 +94,15 @@ async function runRefreshOnce(opts?: { userInitiated?: boolean }): Promise<void>
     const { commits: mainCommits, total: mainCommitsTotal } = mainCommitsResult;
     const remote = { owner: repo.owner, name: repo.name };
 
-    // Yield between heavy phases so a long sync parse doesn't block scroll.
-    // Background ticks yield; user-initiated refreshes skip all yields so
-    // click→result latency stays tight.
-    if (!userInitiated) await yieldToMain();
+    // Yield between heavy phases so a long sync parse doesn't block scroll
+    // (or the spinner / hover / click feedback on a user-initiated refresh).
+    // Costs ~4 microtask-length yields across the whole pipeline — a total
+    // of maybe 10-30ms added latency, well under the threshold of noticing —
+    // and in exchange the main thread stays responsive while the work runs.
+    // The earlier "skip yields when userInitiated for click-to-result
+    // latency" heuristic was wrong: responsiveness during the run matters
+    // more than shaving sub-frame latency off the end.
+    await yieldToMain();
 
     // Attach worktree paths to branches. Build new objects rather than
     // mutating the entries returned by listBranches so that any future
@@ -141,7 +146,7 @@ async function runRefreshOnce(opts?: { userInitiated?: boolean }): Promise<void>
       return pr ? { ...b, pr } : b;
     });
 
-    if (!userInitiated) await yieldToMain();
+    await yieldToMain();
 
     const detect = await detectSquashMerges({
       repoPath: repo.path,
@@ -153,7 +158,7 @@ async function runRefreshOnce(opts?: { userInitiated?: boolean }): Promise<void>
       name: remote.name,
     });
 
-    if (!userInitiated) await yieldToMain();
+    await yieldToMain();
 
     // Claude Code awareness + cross-worktree conflict detection both depend
     // only on `wts` and are independent of each other — run in parallel.
