@@ -161,13 +161,16 @@ export function useRepoBootstrap() {
         const { fetchIntervalMs } = useRepoStore.getState();
         let initialFetchSucceeded = false;
         if (fetchIntervalMs > 0) {
-          try {
-            await runFetchOnce();
-            initialFetchSucceeded = true;
-          } catch {
-            /* best-effort; runFetchOnce handles its own errors internally */
-          }
+          await runFetchOnce();
           if (cancelled) return;
+          // `runFetchOnce` swallows all errors internally (see
+          // refreshLoop.ts:313-397), so a try/catch here would never fire.
+          // The reliable signal is `lastFetchError`: on background fetch
+          // success it's cleared to null, on background fetch failure it's
+          // set to the error message. This is the same signal the RepoBar
+          // indicator reads and is covered by the `sets lastFetchError on
+          // background fetch failure` test in refreshLoop.test.ts.
+          initialFetchSucceeded = useRepoStore.getState().lastFetchError === null;
         }
         startRefreshLoop();
         // When the initial fetch actually succeeded, suppress startFetchLoop's
@@ -178,8 +181,7 @@ export function useRepoBootstrap() {
         // network blip, SSH agent not yet unlocked at login, etc.), we do NOT
         // skip — we want the fetch loop's immediate tick to retry right away
         // instead of making the user wait a full `fetchIntervalMs` for fresh
-        // data. `runFetchOnce` swallows its own errors, so the retry can't
-        // break the loop.
+        // data.
         startFetchLoop({ skipFirstTick: initialFetchSucceeded });
 
         // Wire the filesystem watcher events to a debounced refresh tick.
