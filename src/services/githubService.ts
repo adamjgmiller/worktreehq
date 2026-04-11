@@ -21,6 +21,32 @@ export function hasGithubAuth(): boolean {
   return !!currentToken;
 }
 
+// Validate the currently-initialized token against GitHub's API. Called at
+// bootstrap and after a Settings save to distinguish a missing token from
+// one that's configured-but-rejected (expired, revoked, or wrong scopes).
+// Previously the app treated any non-empty token string as "valid" and a
+// stale PAT silently stopped enriching PR data with no UI signal.
+//
+// Returns 'missing' when no token is set, 'valid' on a 200, 'invalid' on a
+// 401/403 (the definitive "GitHub says this token is bad" response). For
+// network/5xx/unknown errors we cannot prove invalidity, so we report
+// 'valid' — matching the pre-change behavior where any present token was
+// assumed good, and avoiding a misleading "token invalid" pill during an
+// airport-wifi outage. Subsequent PR-fetch 401s (from getPR/batchFetchPRs)
+// are still logged via their own warnings if the token is actually bad.
+export async function validateToken(): Promise<'missing' | 'valid' | 'invalid'> {
+  if (!currentToken) return 'missing';
+  if (!octokit) initGithub(currentToken);
+  try {
+    await octokit!.users.getAuthenticated();
+    return 'valid';
+  } catch (e: any) {
+    if (e?.status === 401 || e?.status === 403) return 'invalid';
+    console.warn('[githubService] validateToken inconclusive:', e?.status, e?.message);
+    return 'valid';
+  }
+}
+
 interface CacheEntry {
   at: number;
   pr: PRInfo | null;

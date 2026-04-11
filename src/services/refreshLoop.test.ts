@@ -352,6 +352,20 @@ describe('runFetchOnce', () => {
 
     expect(useRepoStore.getState().lastFetchError).toBeNull();
   });
+
+  it('prepends an actionable hint to recognized fetch errors (SSH publickey)', async () => {
+    asMock(git.fetchAllPrune).mockRejectedValueOnce(
+      new Error('git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.'),
+    );
+
+    await runFetchOnce();
+    const msg = useRepoStore.getState().lastFetchError ?? '';
+    // Hint line from fetchErrorClassifier — asserts the wiring, not the
+    // exact copy, so a future hint rewording doesn't break this test.
+    expect(msg).toMatch(/SSH key/i);
+    // Raw git stderr is preserved for debugging.
+    expect(msg).toContain('Permission denied (publickey)');
+  });
 });
 
 describe('runFetchOnce skip-when-unchanged', () => {

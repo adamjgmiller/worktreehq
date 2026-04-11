@@ -13,11 +13,13 @@ const readPrCacheFileMock = readPrCacheFile as unknown as ReturnType<typeof vi.f
 // them per-case. Mirrors the hoisting pattern used elsewhere in the file.
 const graphqlMock = vi.fn();
 const paginateMock = vi.fn();
+const usersGetAuthenticatedMock = vi.fn();
 vi.mock('@octokit/rest', () => ({
   Octokit: vi.fn().mockImplementation(() => ({
     graphql: graphqlMock,
     pulls: { list: vi.fn(), get: vi.fn() },
     paginate: paginateMock,
+    users: { getAuthenticated: usersGetAuthenticatedMock },
   })),
 }));
 
@@ -32,6 +34,7 @@ import {
   listOpenPRsForBranches,
   invalidateOpenPrListCache,
   invalidatePrCacheForRepo,
+  validateToken,
   _clearPrCacheForTests,
   _getPrCacheKeysForTests,
 } from './githubService';
@@ -352,6 +355,55 @@ describe('listOpenPRsForBranches caching', () => {
     // (rather than crashing the refresh loop).
     const out = await listOpenPRsForBranches('o', 'r', ['feat/a']);
     expect(out.size).toBe(0);
+  });
+});
+
+describe('validateToken', () => {
+  beforeEach(() => {
+    usersGetAuthenticatedMock.mockReset();
+  });
+
+  it('returns "missing" when no token is set without calling the API', async () => {
+    initGithub('');
+    const result = await validateToken();
+    expect(result).toBe('missing');
+    expect(usersGetAuthenticatedMock).not.toHaveBeenCalled();
+  });
+
+  it('returns "valid" on a 200 response', async () => {
+    initGithub('good-token');
+    usersGetAuthenticatedMock.mockResolvedValue({ data: { login: 'octocat' } });
+    expect(await validateToken()).toBe('valid');
+    expect(usersGetAuthenticatedMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns "invalid" on 401 (bad credentials)', async () => {
+    initGithub('expired-token');
+    usersGetAuthenticatedMock.mockRejectedValue({ status: 401, message: 'Bad credentials' });
+    expect(await validateToken()).toBe('invalid');
+  });
+
+  it('returns "invalid" on 403 (forbidden / revoked)', async () => {
+    initGithub('revoked-token');
+    usersGetAuthenticatedMock.mockRejectedValue({ status: 403, message: 'Forbidden' });
+    expect(await validateToken()).toBe('invalid');
+  });
+
+  it('falls back to "valid" on inconclusive network errors so an offline launch doesn\'t false-flag a working token', async () => {
+    initGithub('token-during-outage');
+    usersGetAuthenticatedMock.mockRejectedValue(new Error('ENOTFOUND api.github.com'));
+    // Silence the console.warn the implementation emits for inconclusive errors.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await validateToken()).toBe('valid');
+    warnSpy.mockRestore();
+  });
+
+  it('falls back to "valid" on 5xx server errors', async () => {
+    initGithub('token-during-github-outage');
+    usersGetAuthenticatedMock.mockRejectedValue({ status: 503, message: 'Service Unavailable' });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await validateToken()).toBe('valid');
+    warnSpy.mockRestore();
   });
 });
 

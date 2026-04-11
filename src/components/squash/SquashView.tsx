@@ -8,7 +8,7 @@ import { Archive } from 'lucide-react';
 export function SquashView() {
   const commits = useRepoStore((s) => s.mainCommits);
   const mappings = useRepoStore((s) => s.squashMappings);
-  const tokenSet = useRepoStore((s) => s.githubTokenSet);
+  const authStatus = useRepoStore((s) => s.githubAuthStatus);
   const [selected, setSelected] = useState<string | null>(null);
   const mapBySha = new Map(mappings.map((m) => [m.squashCommitSha, m]));
 
@@ -19,11 +19,11 @@ export function SquashView() {
 
   return (
     <div className="flex h-full flex-col">
-      {!tokenSet && (
+      {authStatus !== 'valid' && authStatus !== 'checking' && (
         <div className="px-4 py-2 bg-wt-dirty/10 border-b border-wt-dirty/40 text-xs text-wt-dirty">
-          No GitHub token configured — squash archaeology relies on PR metadata
-          and will be empty for every commit. Add a token in Settings to enable
-          squash detection.
+          {authStatus === 'invalid'
+            ? 'GitHub token is invalid or expired — squash archaeology relies on PR metadata and will be empty. Update your token in Settings.'
+            : 'No GitHub token configured — squash archaeology relies on PR metadata and will be empty for every commit. Add a token in Settings to enable squash detection.'}
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
