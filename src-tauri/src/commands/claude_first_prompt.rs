@@ -303,7 +303,22 @@ pub(crate) fn truncate_on_word_boundary(text: &str, max_chars: usize) -> String 
 }
 
 #[tauri::command]
-pub fn read_claude_first_prompt(
+pub async fn read_claude_first_prompt(
+    worktree_path: String,
+    max_chars: usize,
+) -> AppResult<Option<String>> {
+    // See git_exec.rs for the writeup — sync `#[tauri::command]` on a
+    // plain `fn` blocks the main thread for the whole duration of the
+    // JSONL walk. This runs per Notepad mount (one per worktree card),
+    // so the cumulative cost compounds on repo switch.
+    tauri::async_runtime::spawn_blocking(move || {
+        read_claude_first_prompt_blocking(worktree_path, max_chars)
+    })
+    .await
+    .map_err(|e| AppError::Msg(format!("read_claude_first_prompt join error: {e}")))?
+}
+
+fn read_claude_first_prompt_blocking(
     worktree_path: String,
     max_chars: usize,
 ) -> AppResult<Option<String>> {
@@ -342,7 +357,20 @@ pub fn read_claude_first_prompt(
 /// the resolved project dir. Real session ids are UUIDs and never contain
 /// either, so this filter has no false-positive cost.
 #[tauri::command]
-pub fn read_claude_session_first_prompt(
+pub async fn read_claude_session_first_prompt(
+    worktree_path: String,
+    session_id: String,
+    max_chars: usize,
+) -> AppResult<Option<String>> {
+    // Blocking-threadpool offload; see git_exec.rs.
+    tauri::async_runtime::spawn_blocking(move || {
+        read_claude_session_first_prompt_blocking(worktree_path, session_id, max_chars)
+    })
+    .await
+    .map_err(|e| AppError::Msg(format!("read_claude_session_first_prompt join error: {e}")))?
+}
+
+fn read_claude_session_first_prompt_blocking(
     worktree_path: String,
     session_id: String,
     max_chars: usize,

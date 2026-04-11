@@ -515,7 +515,20 @@ fn compute_projects_fingerprint(claude: &Path) -> String {
 }
 
 #[tauri::command]
-pub fn read_claude_state(expected_fingerprint: Option<String>) -> AppResult<ClaudeState> {
+pub async fn read_claude_state(
+    expected_fingerprint: Option<String>,
+) -> AppResult<ClaudeState> {
+    // Off-load to the blocking threadpool for the same reason git_exec does:
+    // Tauri v2's sync-fn command generator runs the function body inline on
+    // the main thread, which blocks the UI for the full duration of the
+    // filesystem scan + lsof process lookup (can easily be 50-300ms on a
+    // machine with many projects). See git_exec.rs for the detailed writeup.
+    tauri::async_runtime::spawn_blocking(move || read_claude_state_blocking(expected_fingerprint))
+        .await
+        .map_err(|e| AppError::Msg(format!("read_claude_state join error: {e}")))?
+}
+
+fn read_claude_state_blocking(expected_fingerprint: Option<String>) -> AppResult<ClaudeState> {
     let Some(claude) = claude_dir() else {
         return Err(AppError::Msg("no home dir".into()));
     };
