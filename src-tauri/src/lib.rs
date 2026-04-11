@@ -25,6 +25,7 @@ pub fn run() {
             commands::claude_first_prompt::read_claude_first_prompt,
             commands::claude_first_prompt::read_claude_session_first_prompt,
             commands::fs_probe::path_exists,
+            commands::shell_exec::run_shell_commands,
             commands::shell_open::shell_open,
             commands::pr_cache::read_pr_cache,
             commands::pr_cache::write_pr_cache,

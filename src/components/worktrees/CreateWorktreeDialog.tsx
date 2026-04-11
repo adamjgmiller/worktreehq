@@ -7,6 +7,7 @@ export interface CreateWorktreeValue {
   path: string;
   branch: string;
   newBranch: boolean;
+  postCreateCommands: string;
 }
 
 // Dialog for `git worktree add` — picks a target directory and a branch
@@ -15,12 +16,14 @@ export interface CreateWorktreeValue {
 export function CreateWorktreeDialog({
   branches,
   defaultBranch,
+  defaultPostCreateCommands,
   onCancel,
   onConfirm,
   onPickDirectory,
 }: {
   branches: Branch[];
   defaultBranch: string;
+  defaultPostCreateCommands: string;
   onCancel: () => void;
   onConfirm: (v: CreateWorktreeValue) => void;
   onPickDirectory: () => Promise<string | null>;
@@ -29,6 +32,11 @@ export function CreateWorktreeDialog({
   const [mode, setMode] = useState<'existing' | 'new'>('existing');
   const [existingBranch, setExistingBranch] = useState<string>(defaultBranch);
   const [newBranchName, setNewBranchName] = useState('');
+  // Seeded from the saved default but live-editable before submit. A user
+  // might keep `npm install` as the default but, for this particular
+  // creation, also want `cp ../main/.env .env`. The parent re-reads config
+  // each time the dialog opens so this reflects the latest saved default.
+  const [postCreateCommands, setPostCreateCommands] = useState(defaultPostCreateCommands);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -83,7 +91,12 @@ export function CreateWorktreeDialog({
         setError(`Path already exists: ${trimmed}`);
         return;
       }
-      onConfirm({ path: trimmed, branch, newBranch: mode === 'new' });
+      onConfirm({
+        path: trimmed,
+        branch,
+        newBranch: mode === 'new',
+        postCreateCommands,
+      });
     } finally {
       setSubmitting(false);
     }
@@ -167,6 +180,34 @@ export function CreateWorktreeDialog({
                 className="w-full bg-wt-bg border border-wt-border rounded px-3 py-2 font-mono text-sm"
               />
             )}
+          </div>
+          <div>
+            <div className="flex items-baseline justify-between">
+              <label className="text-xs uppercase tracking-wide text-wt-muted">
+                Post-create commands
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent('wthq:open-settings'));
+                }}
+                className="text-[11px] text-wt-info hover:underline"
+              >
+                Edit default in Settings
+              </button>
+            </div>
+            <textarea
+              value={postCreateCommands}
+              onChange={(e) => setPostCreateCommands(e.target.value)}
+              placeholder={'cp ../main/.env .env\nnpm install'}
+              rows={4}
+              spellCheck={false}
+              className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-3 py-2 font-mono text-xs resize-y"
+            />
+            <p className="mt-1 text-[11px] text-wt-fg-2">
+              Runs in the new worktree via <code className="font-mono">/bin/sh</code>.
+              Non-zero exit surfaces an error but does not undo the worktree.
+            </p>
           </div>
           {error && <div className="text-xs text-wt-conflict">{error}</div>}
         </div>
