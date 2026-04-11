@@ -71,7 +71,7 @@ export function ConfirmDeleteDialog({
             <X className="w-4 h-4" />
           </button>
         </div>
-        <p className="text-sm text-neutral-400 mb-3">
+        <p className="text-sm text-wt-fg-2 mb-3">
           The following refs will be removed ({modeHeadline[mode]}):
         </p>
         <div className="flex-1 overflow-auto border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4">
@@ -84,13 +84,13 @@ export function ConfirmDeleteDialog({
           ))}
         </div>
         {mode === 'archive-and-delete' && (
-          <p className="text-xs text-neutral-500 mb-3">
+          <p className="text-xs text-wt-muted mb-3">
             Archive tags preserve the original commits so Squash Archaeology can recover them later.
           </p>
         )}
         {requiresType && (
           <div className="mb-3">
-            <label className="text-xs text-neutral-400">
+            <label className="text-xs text-wt-fg-2">
               Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
             </label>
             <input
@@ -106,7 +106,7 @@ export function ConfirmDeleteDialog({
             ref={cancelRef}
             onClick={onCancel}
             disabled={submitting}
-            className="px-3 py-1.5 text-sm text-neutral-400 rounded focus:outline-none focus:ring-2 focus:ring-wt-info/40 disabled:opacity-50"
+            className="px-3 py-1.5 text-sm text-wt-fg-2 rounded focus:outline-none focus:ring-2 focus:ring-wt-info/40 disabled:opacity-50"
           >
             Cancel
           </button>

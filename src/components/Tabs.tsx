@@ -46,13 +46,13 @@ export function Tabs({ value, onChange }: { value: TabKey; onChange: (v: TabKey)
         className={clsx(
           'flex items-center gap-2 px-4 py-3 text-sm border-b-2 -mb-px transition-colors',
           selected
-            ? 'border-wt-info text-neutral-100'
+            ? 'border-wt-info text-wt-fg'
             : auxiliary
             ? // Auxiliary unselected: dimmer baseline so the eye lands on
               // core tabs first. Hover restores them to a normal-secondary
               // brightness so the affordance is still obvious.
-              'border-transparent text-neutral-600 hover:text-neutral-400'
-            : 'border-transparent text-neutral-500 hover:text-neutral-300',
+              'border-transparent text-wt-muted hover:text-wt-fg-2'
+            : 'border-transparent text-wt-muted hover:text-wt-fg-2',
         )}
       >
         <Icon

@@ -188,17 +188,17 @@ export function RecentReposMenu() {
         title={repo?.path ?? 'Open a repository'}
         className="flex items-center gap-2 px-2 py-1 rounded hover:bg-wt-border text-left"
       >
-        <FolderOpen className="w-4 h-4 text-neutral-400 shrink-0" />
+        <FolderOpen className="w-4 h-4 text-wt-fg-2 shrink-0" />
         <div className="flex flex-col leading-tight">
-          <span className="text-sm font-mono text-neutral-100">
+          <span className="text-sm font-mono text-wt-fg">
             {triggerLabel}
           </span>
-          <span className="text-[10px] font-mono text-neutral-500 max-w-[20rem] truncate">
+          <span className="text-[10px] font-mono text-wt-muted max-w-[20rem] truncate">
             {triggerSubtitle}
           </span>
         </div>
         <ChevronDown
-          className={`w-3.5 h-3.5 text-neutral-500 transition-transform ${open ? 'rotate-180' : ''}`}
+          className={`w-3.5 h-3.5 text-wt-muted transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </button>
 
@@ -216,7 +216,7 @@ export function RecentReposMenu() {
                 <span className="text-sm font-mono truncate">
                   {splitPath(repo.path).base}
                 </span>
-                <span className="text-[10px] font-mono text-neutral-500 truncate">
+                <span className="text-[10px] font-mono text-wt-muted truncate">
                   {tildify(splitPath(repo.path).parent, homeDir)}
                 </span>
               </div>
@@ -255,7 +255,7 @@ export function RecentReposMenu() {
                         <span className="text-sm font-mono truncate">
                           {base}
                         </span>
-                        <span className="text-[10px] font-mono text-neutral-500 truncate">
+                        <span className="text-[10px] font-mono text-wt-muted truncate">
                           {tildify(parent, homeDir)}
                           {missing && (
                             <span className="ml-2 text-wt-dirty">missing</span>
@@ -270,7 +270,7 @@ export function RecentReposMenu() {
                           e.stopPropagation();
                           void removeFromRecents(path);
                         }}
-                        className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-wt-bg text-neutral-500 hover:text-neutral-200 shrink-0"
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-wt-bg text-wt-muted hover:text-wt-fg shrink-0"
                         title="Remove from recents"
                       >
                         <X className="w-3.5 h-3.5" />
@@ -294,7 +294,7 @@ export function RecentReposMenu() {
               activeIdx === others.length ? 'bg-wt-border' : 'hover:bg-wt-border'
             }`}
           >
-            <FolderOpen className="w-4 h-4 text-neutral-400" />
+            <FolderOpen className="w-4 h-4 text-wt-fg-2" />
             <span>Open another repository…</span>
           </button>
         </div>

@@ -30,6 +30,7 @@ interface AppConfig {
   last_repo_path?: string;
   recent_repo_paths?: string[];
   zoom_level?: number;
+  theme?: 'light' | 'dark' | 'system';
 }
 
 interface RepoInfo {
@@ -46,6 +47,7 @@ export function useRepoBootstrap() {
   const setZoomLevel = useRepoStore((s) => s.setZoomLevel);
   const setRecentRepoPaths = useRepoStore((s) => s.setRecentRepoPaths);
   const setWorktreeOrder = useRepoStore((s) => s.setWorktreeOrder);
+  const setThemePreference = useRepoStore((s) => s.setThemePreference);
   // Derive just the sorted-paths key so the watcher effect only re-runs when the
   // actual path SET changes — not on every refresh tick when other worktree
   // fields (branch name, commit count, etc.) churn.
@@ -95,6 +97,11 @@ export function useRepoBootstrap() {
         // Hydrate persisted zoom. The Rust side already clamps and falls back
         // to 1.0 for malformed values, so we can trust whatever it returned.
         if (typeof cfg.zoom_level === 'number') setZoomLevel(cfg.zoom_level);
+        // Hydrate the theme preference. The Rust side coerces unrecognized
+        // values to "system", so whatever comes back is safe to trust. The
+        // useTheme hook (mounted in App.tsx) picks up the change and applies
+        // the .dark class on <html>.
+        if (cfg.theme) setThemePreference(cfg.theme);
         // Hydrate recents into the store before any UI mounts that might
         // read it. Rust seeds this from `last_repo_path` on first read of an
         // older config so the list is non-empty for upgraders.
@@ -221,6 +228,7 @@ export function useRepoBootstrap() {
     setZoomLevel,
     setRecentRepoPaths,
     setWorktreeOrder,
+    setThemePreference,
   ]);
 
   // Re-register the watcher on the Rust side whenever the set of worktree paths changes.

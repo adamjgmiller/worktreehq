@@ -1,9 +1,10 @@
-import { RefreshCw, Settings, Github, Download, AlertTriangle } from 'lucide-react';
+import { RefreshCw, Settings, Github, Download, AlertTriangle, Sun, Moon } from 'lucide-react';
 import { useRepoStore } from '../store/useRepoStore';
 import { isMac } from '../lib/platform';
 import { runFetchOnce } from '../services/refreshLoop';
 import { relativeTime } from '../lib/format';
 import { RecentReposMenu } from './RecentReposMenu';
+import { persistThemePreference, resolveTheme } from '../hooks/useTheme';
 
 const MOD_KEY = isMac ? '⌘' : 'Ctrl+';
 
@@ -18,6 +19,19 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
   const lastRefresh = useRepoStore((s) => s.lastRefresh);
   const lastFetchError = useRepoStore((s) => s.lastFetchError);
   const tokenSet = useRepoStore((s) => s.githubTokenSet);
+  const themePreference = useRepoStore((s) => s.themePreference);
+  const setThemePreference = useRepoStore((s) => s.setThemePreference);
+  // What the user sees RIGHT NOW. When the preference is "system" this
+  // resolves against the OS media query; the toggle flips to the opposite
+  // concrete value so a click always visibly inverts the theme (never a
+  // no-op where the user's pref changes from "system" → "dark" while they
+  // were already on dark).
+  const currentlyDark = resolveTheme(themePreference) === 'dark';
+  const onToggleTheme = () => {
+    const next = currentlyDark ? 'light' : 'dark';
+    setThemePreference(next);
+    void persistThemePreference(next);
+  };
   return (
     <div className="flex items-center gap-4 px-6 py-3 border-b border-wt-border bg-wt-panel">
       {/* Repo switcher: dropdown trigger that lists recently-opened repos
@@ -25,7 +39,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
           label and the standalone folder-icon button — one affordance,
           not two. See src/components/RecentReposMenu.tsx for the menu. */}
       <RecentReposMenu />
-      <div className="text-xs text-neutral-500">
+      <div className="text-xs text-wt-muted">
         default: <span className="font-mono">{repo?.defaultBranch ?? '—'}</span>
       </div>
       <div className="flex-1" />
@@ -45,7 +59,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
           fetch failed
         </button>
       )}
-      <div className="text-xs text-neutral-500">
+      <div className="text-xs text-wt-muted">
         {lastRefresh ? `updated ${relativeTime(new Date(lastRefresh).toISOString())}` : 'never'}
       </div>
       {/*
@@ -73,6 +87,20 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
         <Github className="w-4 h-4" />
         {tokenSet ? 'auth' : 'no token'}
       </div>
+      {/*
+        Theme toggle. The icon shows the DESTINATION (Sun when dark, Moon
+        when light) — iA Writer / GitHub convention. Kept visually quiet
+        (inherits text-wt-muted) so it doesn't compete with the status
+        colors next to it in a data-dense header.
+      */}
+      <button
+        onClick={onToggleTheme}
+        className="p-1.5 rounded text-wt-muted hover:text-wt-fg hover:bg-wt-border transition-colors"
+        aria-label={currentlyDark ? 'switch to light mode' : 'switch to dark mode'}
+        title={currentlyDark ? 'Switch to light mode' : 'Switch to dark mode'}
+      >
+        {currentlyDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+      </button>
       <button
         onClick={onSettings}
         className="p-1.5 rounded hover:bg-wt-border"

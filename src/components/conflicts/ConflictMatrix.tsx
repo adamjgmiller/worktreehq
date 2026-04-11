@@ -40,7 +40,7 @@ function PairRow({
           ? isConflict
             ? 'border-wt-conflict/60 bg-wt-conflict/[0.08]'
             : 'border-wt-dirty/60 bg-wt-dirty/[0.08]'
-          : 'border-wt-border hover:border-neutral-600 bg-wt-panel/60 hover:bg-wt-panel',
+          : 'border-wt-border hover:border-wt-border bg-wt-panel/60 hover:bg-wt-panel',
       )}
     >
       {/* Severity accent — left edge stripe */}
@@ -56,8 +56,8 @@ function PairRow({
         {/* Branch pair header */}
         <div className="flex items-center gap-2 mb-2">
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
-            <GitBranch className="w-3 h-3 text-neutral-500 flex-shrink-0" />
-            <span className="font-mono text-xs text-neutral-200 truncate">
+            <GitBranch className="w-3 h-3 text-wt-muted flex-shrink-0" />
+            <span className="font-mono text-xs text-wt-fg truncate">
               {basename(wtA.path)}
             </span>
           </div>
@@ -80,10 +80,10 @@ function PairRow({
           </div>
 
           <div className="flex items-center gap-1.5 min-w-0 flex-1 justify-end">
-            <span className="font-mono text-xs text-neutral-200 truncate text-right">
+            <span className="font-mono text-xs text-wt-fg truncate text-right">
               {basename(wtB.path)}
             </span>
-            <GitBranch className="w-3 h-3 text-neutral-500 flex-shrink-0" />
+            <GitBranch className="w-3 h-3 text-wt-muted flex-shrink-0" />
           </div>
         </div>
 
@@ -105,8 +105,8 @@ function PairRow({
           </div>
           <ChevronDown
             className={clsx(
-              'w-3.5 h-3.5 text-neutral-600 transition-transform duration-150',
-              isSelected && 'rotate-180 text-neutral-400',
+              'w-3.5 h-3.5 text-wt-muted transition-transform duration-150',
+              isSelected && 'rotate-180 text-wt-fg-2',
             )}
           />
         </div>
@@ -153,7 +153,7 @@ function SummaryBar({
       </div>
 
       {/* Legend counts */}
-      <div className="flex items-center gap-4 text-[0.625rem] font-mono text-neutral-500">
+      <div className="flex items-center gap-4 text-[0.625rem] font-mono text-wt-muted">
         {conflictPairs > 0 && (
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-sm bg-wt-conflict" />
@@ -170,7 +170,7 @@ function SummaryBar({
           <span className="w-2 h-2 rounded-sm bg-wt-clean/30 border border-wt-clean/30" />
           <span className="text-wt-clean">{safePairs}</span> clear
         </span>
-        <span className="ml-auto text-neutral-600">
+        <span className="ml-auto text-wt-muted">
           {totalPairs} pair{totalPairs !== 1 ? 's' : ''} total
         </span>
       </div>
@@ -220,13 +220,13 @@ export function ConflictMatrix({
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-sm font-medium text-neutral-200">
+        <h3 className="text-sm font-medium text-wt-fg">
           Worktree Overlaps
         </h3>
         {cleanPairs.length > 0 && conflictPairs.length > 0 && (
           <button
             onClick={() => setShowClean(!showClean)}
-            className="text-[0.625rem] font-mono text-neutral-500 hover:text-neutral-300 transition-colors"
+            className="text-[0.625rem] font-mono text-wt-muted hover:text-wt-fg-2 transition-colors"
           >
             {showClean ? 'hide clean' : 'show clean'}
           </button>
@@ -244,10 +244,10 @@ export function ConflictMatrix({
       {/* Pair list */}
       <div className="flex-1 overflow-y-auto min-h-0 -mx-1 px-1">
         {visiblePairs.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-neutral-500">
+          <div className="flex flex-col items-center justify-center py-12 text-wt-muted">
             <Check className="w-8 h-8 mb-2 text-wt-clean/50" />
             <span className="text-sm">No file overlap detected</span>
-            <span className="text-xs text-neutral-600 mt-1">
+            <span className="text-xs text-wt-muted mt-1">
               {worktrees.length} worktrees checked, all clear
             </span>
           </div>

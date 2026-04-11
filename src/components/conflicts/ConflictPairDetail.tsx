@@ -27,20 +27,20 @@ function FileRow({ file }: { file: ConflictFile }) {
         disabled={!hasMarkers}
       >
         {severityDot(file.severity)}
-        <span className="font-mono text-xs text-neutral-200 truncate flex-1">
+        <span className="font-mono text-xs text-wt-fg truncate flex-1">
           {file.path}
         </span>
         {hasMarkers && (
           <ChevronRight
             className={clsx(
-              'w-3.5 h-3.5 text-neutral-500 transition-transform',
+              'w-3.5 h-3.5 text-wt-muted transition-transform',
               expanded && 'rotate-90',
             )}
           />
         )}
       </button>
       {expanded && file.conflictMarkers && (
-        <pre className="px-4 py-3 mx-3 mb-2 rounded bg-wt-bg text-[0.6875rem] leading-relaxed font-mono text-neutral-300 overflow-x-auto max-h-64 overflow-y-auto border border-wt-border/40">
+        <pre className="px-4 py-3 mx-3 mb-2 rounded bg-wt-bg text-[0.6875rem] leading-relaxed font-mono text-wt-fg-2 overflow-x-auto max-h-64 overflow-y-auto border border-wt-border/40">
           {file.conflictMarkers}
         </pre>
       )}
@@ -55,12 +55,12 @@ export function ConflictPairDetail({ pair }: { pair: WorktreePairOverlap }) {
   return (
     <div>
       <div className="mb-4">
-        <h3 className="text-sm font-medium text-neutral-100 mb-1">
+        <h3 className="text-sm font-medium text-wt-fg mb-1">
           <span className="font-mono">{pair.branchA}</span>
-          <span className="text-neutral-500 mx-2">vs</span>
+          <span className="text-wt-muted mx-2">vs</span>
           <span className="font-mono">{pair.branchB}</span>
         </h3>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-wt-muted">
           {pair.files.length} shared file{pair.files.length !== 1 ? 's' : ''}
           {conflictFiles.length > 0 && (
             <span className="text-wt-conflict">

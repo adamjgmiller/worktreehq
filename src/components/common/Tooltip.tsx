@@ -153,7 +153,7 @@ export function Tooltip({
             ref={bubbleRef}
             id={id}
             role="tooltip"
-            className="fixed z-50 whitespace-normal break-words bg-wt-panel border border-wt-border rounded px-2 py-1 shadow-lg text-[0.6875rem] leading-snug text-neutral-200 pointer-events-none"
+            className="fixed z-50 whitespace-normal break-words bg-wt-panel border border-wt-border rounded px-2 py-1 shadow-lg text-[0.6875rem] leading-snug text-wt-fg pointer-events-none"
             style={{
               top: coords.top,
               left: coords.left,

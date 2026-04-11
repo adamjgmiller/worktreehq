@@ -45,7 +45,7 @@ export function ConflictsView() {
           {detail ? (
             <ConflictPairDetail pair={detail} />
           ) : (
-            <div className="flex items-center justify-center h-full text-neutral-500 text-sm">
+            <div className="flex items-center justify-center h-full text-wt-muted text-sm">
               {hasAnyOverlap
                 ? 'Click a cell to see conflict details'
                 : 'No file overlap detected between any worktree pairs'}

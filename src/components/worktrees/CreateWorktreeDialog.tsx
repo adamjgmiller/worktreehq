@@ -105,7 +105,7 @@ export function CreateWorktreeDialog({
         </div>
         <div className="space-y-4">
           <div>
-            <label className="text-xs uppercase tracking-wide text-neutral-500">Path</label>
+            <label className="text-xs uppercase tracking-wide text-wt-muted">Path</label>
             <div className="mt-1 flex gap-2">
               <input
                 value={path}
@@ -130,7 +130,7 @@ export function CreateWorktreeDialog({
                 className={
                   mode === 'existing'
                     ? 'px-3 py-1 rounded-full border border-wt-info bg-wt-info/15 text-wt-info'
-                    : 'px-3 py-1 rounded-full border border-wt-border text-neutral-400'
+                    : 'px-3 py-1 rounded-full border border-wt-border text-wt-fg-2'
                 }
               >
                 Existing branch
@@ -141,7 +141,7 @@ export function CreateWorktreeDialog({
                 className={
                   mode === 'new'
                     ? 'px-3 py-1 rounded-full border border-wt-info bg-wt-info/15 text-wt-info'
-                    : 'px-3 py-1 rounded-full border border-wt-border text-neutral-400'
+                    : 'px-3 py-1 rounded-full border border-wt-border text-wt-fg-2'
                 }
               >
                 New branch
@@ -175,7 +175,7 @@ export function CreateWorktreeDialog({
             ref={cancelRef}
             onClick={onCancel}
             disabled={submitting}
-            className="px-3 py-1.5 text-sm text-neutral-400 disabled:opacity-50"
+            className="px-3 py-1.5 text-sm text-wt-fg-2 disabled:opacity-50"
           >
             Cancel
           </button>

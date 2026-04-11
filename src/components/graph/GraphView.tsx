@@ -41,16 +41,16 @@ export function GraphView() {
 
   return (
     <div className="p-6 overflow-auto h-full">
-      <div className="text-xs text-neutral-500 uppercase tracking-wide mb-3">
+      <div className="text-xs text-wt-muted uppercase tracking-wide mb-3">
         main (first-parent) ·{' '}
         {truncated
           ? `showing most recent ${commits.length} of ${total} commits`
           : `${commits.length} commits`}
       </div>
       {truncated && (
-        <div className="mb-3 px-3 py-2 rounded border border-wt-border bg-wt-bg/60 text-[0.6875rem] text-neutral-400">
+        <div className="mb-3 px-3 py-2 rounded border border-wt-border bg-wt-bg/60 text-[0.6875rem] text-wt-fg-2">
           History truncated to the most recent {commits.length} commits on{' '}
-          <span className="font-mono text-neutral-300">main</span>. Older commits exist but
+          <span className="font-mono text-wt-fg-2">main</span>. Older commits exist but
           aren't rendered in the graph.
         </div>
       )}
@@ -94,7 +94,7 @@ export function GraphView() {
 
 function Legend({ color, label }: { color: string; label: string }) {
   return (
-    <div className="flex items-center gap-1.5 text-neutral-400">
+    <div className="flex items-center gap-1.5 text-wt-fg-2">
       <span className="w-3 h-3 rounded-full" style={{ background: color }} />
       {label}
     </div>

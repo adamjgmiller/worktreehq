@@ -40,7 +40,7 @@ export function SquashView() {
               }`}
             >
               <div className="flex items-center gap-2">
-                <span className="font-mono text-xs text-neutral-500">{shortSha(c.sha)}</span>
+                <span className="font-mono text-xs text-wt-muted">{shortSha(c.sha)}</span>
                 {m && (
                   <span className="flex items-center gap-1 text-[0.625rem] text-wt-squash">
                     <Archive className="w-3 h-3" /> squash
@@ -50,8 +50,8 @@ export function SquashView() {
                   <span className="text-[0.625rem] text-wt-info font-mono">#{c.prNumber}</span>
                 )}
               </div>
-              <div className="text-sm text-neutral-200 truncate">{c.subject}</div>
-              <div className="text-[0.625rem] text-neutral-600">{relativeTime(c.date)}</div>
+              <div className="text-sm text-wt-fg truncate">{c.subject}</div>
+              <div className="text-[0.625rem] text-wt-muted">{relativeTime(c.date)}</div>
             </button>
           );
         })}

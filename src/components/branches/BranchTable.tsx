@@ -16,7 +16,7 @@ export function BranchTable({
   return (
     <div className="overflow-auto">
       <table className="w-full text-left">
-        <thead className="text-[0.625rem] uppercase tracking-wide text-neutral-500 bg-wt-bg sticky top-0">
+        <thead className="text-[0.625rem] uppercase tracking-wide text-wt-muted bg-wt-bg sticky top-0">
           <tr>
             <th className="px-3 py-2 w-10">
               <input type="checkbox" checked={allSelected} onChange={onToggleAll} />

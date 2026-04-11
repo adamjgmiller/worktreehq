@@ -9,6 +9,7 @@ import type {
   WorktreePairOverlap,
   WorktreeConflictSummary,
 } from '../types';
+import type { ThemePreference } from '../hooks/useTheme';
 
 // Zoom is clamped to [ZOOM_MIN, ZOOM_MAX] in the setter. Range matches the
 // Rust-side clamp in src-tauri/src/commands/config.rs and is intentionally
@@ -65,6 +66,12 @@ interface StoreState {
   // user would see a one-tick flash of stale ordering.
   recentRepoPaths: string[];
   worktreeOrder: string[];
+  // User's theme choice. "system" follows the OS `prefers-color-scheme`
+  // and is the first-run default — see useTheme.ts for the resolution
+  // and DOM-application logic. Persisted to config.toml via
+  // persistThemePreference; the initial value is hydrated in the
+  // bootstrap hook before any UI mounts so there's no FOUC.
+  themePreference: ThemePreference;
 
   setRepo: (r: RepoState) => void;
   setWorktrees: (w: Worktree[]) => void;
@@ -85,6 +92,7 @@ interface StoreState {
   setZoomLevel: (z: number) => void;
   setRecentRepoPaths: (paths: string[]) => void;
   setWorktreeOrder: (order: string[]) => void;
+  setThemePreference: (pref: ThemePreference) => void;
   markRefreshed: () => void;
 }
 
@@ -123,6 +131,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   zoomLevel: ZOOM_DEFAULT,
   recentRepoPaths: [],
   worktreeOrder: [],
+  themePreference: 'system',
 
   setRepo: (repo) => set({ repo }),
   setWorktrees: (worktrees) => set({ worktrees }),
@@ -145,5 +154,6 @@ export const useRepoStore = create<StoreState>((set) => ({
   setZoomLevel: (z) => set({ zoomLevel: clampZoom(z) }),
   setRecentRepoPaths: (recentRepoPaths) => set({ recentRepoPaths }),
   setWorktreeOrder: (worktreeOrder) => set({ worktreeOrder }),
+  setThemePreference: (themePreference) => set({ themePreference }),
   markRefreshed: () => set({ lastRefresh: Date.now() }),
 }));

@@ -57,7 +57,7 @@ function ReviewIcon({ decision }: { decision: ReviewDecision }) {
   }
   return (
     <Tooltip label="Review required — no review yet">
-      <span className="text-neutral-500 inline-flex">
+      <span className="text-wt-muted inline-flex">
         <Clock className="w-3 h-3" />
       </span>
     </Tooltip>
@@ -78,7 +78,7 @@ export function BranchRow({
       <td className="px-3 py-3">
         <input type="checkbox" checked={selected} onChange={onToggle} />
       </td>
-      <td className="px-3 py-3 font-mono text-sm text-neutral-100">
+      <td className="px-3 py-3 font-mono text-sm text-wt-fg">
         <div className="flex items-center gap-2">
           <span>{branch.name}</span>
           {branch.worktreePath && (
@@ -98,11 +98,11 @@ export function BranchRow({
           )}
           {branch.mergeStatus === 'empty' && (
             <Tooltip label="Not checked out in any worktree — probably abandoned">
-              <span className="text-neutral-600 text-[0.5625rem] font-mono">no worktree</span>
+              <span className="text-wt-muted text-[0.5625rem] font-mono">no worktree</span>
             </Tooltip>
           )}
         </div>
-        <div className="text-[0.625rem] text-neutral-600 font-mono">{shortSha(branch.lastCommitSha)}</div>
+        <div className="text-[0.625rem] text-wt-muted font-mono">{shortSha(branch.lastCommitSha)}</div>
       </td>
       <td className="px-3 py-3">
         <div className="flex gap-1 text-[0.625rem] font-mono">
@@ -145,7 +145,7 @@ export function BranchRow({
           return tooltip ? <Tooltip label={tooltip}>{pill}</Tooltip> : pill;
         })()}
       </td>
-      <td className="px-3 py-3 font-mono text-xs text-neutral-400">
+      <td className="px-3 py-3 font-mono text-xs text-wt-fg-2">
         {aheadBehind(branch.aheadOfMain, branch.behindMain)}
       </td>
       <td className="px-3 py-3 text-xs">
@@ -162,7 +162,7 @@ export function BranchRow({
             </a>
             {branch.pr.isDraft && (
               <Tooltip label="Draft PR — not yet ready for review">
-                <span className="px-1.5 py-0.5 text-[0.5625rem] font-mono border border-neutral-600 text-neutral-400 rounded uppercase">
+                <span className="px-1.5 py-0.5 text-[0.5625rem] font-mono border border-wt-border text-wt-fg-2 rounded uppercase">
                   draft
                 </span>
               </Tooltip>
@@ -185,10 +185,10 @@ export function BranchRow({
             )}
           </div>
         ) : (
-          <span className="text-neutral-600">—</span>
+          <span className="text-wt-muted">—</span>
         )}
       </td>
-      <td className="px-3 py-3 text-xs text-neutral-500">{relativeTime(branch.lastCommitDate)}</td>
+      <td className="px-3 py-3 text-xs text-wt-muted">{relativeTime(branch.lastCommitDate)}</td>
     </tr>
   );
 }
