@@ -5,6 +5,9 @@ export type MergeStatus =
   | 'empty'
   | 'stale';
 export type WorktreeStatus = 'clean' | 'dirty' | 'conflict' | 'diverged';
+// How the Worktrees tab orders cards. 'manual' means honor the user's saved
+// drag arrangement; every other mode is a recomputed sort.
+export type WorktreeSortMode = 'recent' | 'name' | 'status' | 'manual';
 export type InProgressOp = 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect';
 export type ChecksStatus = 'success' | 'failure' | 'pending' | 'none';
 export type ReviewDecision = 'approved' | 'changes_requested' | 'review_required' | null;

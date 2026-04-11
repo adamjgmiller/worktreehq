@@ -9,3 +9,4 @@ pub mod repo;
 pub mod shell_open;
 pub mod watcher;
 pub mod worktree_order;
+pub mod worktree_sort_mode;

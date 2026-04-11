@@ -25,9 +25,13 @@ import {
 } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
 import { pickDirectory } from '../../services/repoSelect';
-import { writeWorktreeOrder } from '../../services/worktreeOrderService';
-import { reconcileOrder } from '../../lib/worktreeOrder';
-import type { Worktree } from '../../types';
+import {
+  writeWorktreeOrder,
+  writeWorktreeSortMode,
+} from '../../services/worktreeOrderService';
+import { sortWorktrees } from '../../lib/worktreeOrder';
+import { WorktreeSortMenu } from './WorktreeSortMenu';
+import type { Worktree, WorktreeSortMode } from '../../types';
 
 // Walk up from the pointer-event target to the card boundary. If we hit an
 // interactive element first, suppress drag so clicks on buttons/links/
@@ -65,6 +69,9 @@ export function WorktreesView() {
   const setError = useRepoStore((s) => s.setError);
   const worktreeOrder = useRepoStore((s) => s.worktreeOrder);
   const setWorktreeOrder = useRepoStore((s) => s.setWorktreeOrder);
+  const worktreeSortMode = useRepoStore((s) => s.worktreeSortMode);
+  const setWorktreeSortMode = useRepoStore((s) => s.setWorktreeSortMode);
+  const claudePresence = useRepoStore((s) => s.claudePresence);
   const [createOpen, setCreateOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Worktree | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -74,8 +81,12 @@ export function WorktreesView() {
   );
 
   const orderedWorktrees = useMemo(
-    () => reconcileOrder(worktrees, worktreeOrder),
-    [worktrees, worktreeOrder],
+    () =>
+      sortWorktrees(worktrees, worktreeSortMode, {
+        claudePresence,
+        manualOrder: worktreeOrder,
+      }),
+    [worktrees, worktreeSortMode, claudePresence, worktreeOrder],
   );
   const sortableIds = useMemo(
     () => orderedWorktrees.map((w) => w.path),
@@ -93,6 +104,13 @@ export function WorktreesView() {
     setActiveId(null);
   }
 
+  function handleSortModeChange(next: WorktreeSortMode) {
+    setWorktreeSortMode(next);
+    if (repo) {
+      void writeWorktreeSortMode(repo.path, next);
+    }
+  }
+
   function handleDragEnd(event: DragEndEvent) {
     setActiveId(null);
     const { active, over } = event;
@@ -104,6 +122,14 @@ export function WorktreesView() {
     newOrder.splice(oldIndex, 1);
     newOrder.splice(newIndex, 0, active.id as string);
     setWorktreeOrder(newOrder);
+    // Dragging always implies the user wants their manual arrangement honored
+    // from now on. If they were previously on an auto-sort mode, flip to
+    // 'manual' so their drag doesn't get immediately re-sorted away on the
+    // next activity tick. The sort menu is the escape hatch back.
+    if (worktreeSortMode !== 'manual') {
+      setWorktreeSortMode('manual');
+      if (repo) void writeWorktreeSortMode(repo.path, 'manual');
+    }
     if (repo) {
       void writeWorktreeOrder(repo.path, newOrder);
     }
@@ -225,6 +251,10 @@ export function WorktreesView() {
         >
           <Plus className="w-3.5 h-3.5" /> New worktree <kbd className="ml-1 text-[10px] opacity-60">N</kbd>
         </button>
+        <WorktreeSortMenu
+          mode={worktreeSortMode}
+          onChange={handleSortModeChange}
+        />
       </div>
       {worktrees.length === 0 ? (
         // A valid git repo always has at least the primary worktree, so an
