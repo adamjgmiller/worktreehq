@@ -5,6 +5,7 @@ import { hydratePrCache, initGithub } from '../services/githubService';
 import { getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
 import {
   refreshOnce,
+  runFetchOnce,
   startFetchLoop,
   startRefreshLoop,
   stopFetchLoop,
@@ -142,8 +143,38 @@ export function useRepoBootstrap() {
         } catch {
           /* best-effort; empty order preserves git's natural ordering */
         }
+        // Run the initial fetch BEFORE starting the refresh loop. Without
+        // this, `startRefreshLoop()` synchronously begins its first tick
+        // (and thus `runRefreshOnce`) BEFORE `startFetchLoop()` has even
+        // been called — so runRefreshOnce reads a stale
+        // `origin/<defaultBranch>` and squash-merged branches that landed
+        // while the app was closed briefly render as "unmerged" until the
+        // fetch-chained follow-up refresh corrects them. The recent
+        // `pendingBackgroundRefresh` fix only rescues the race where the
+        // fetch wins; when the first refresh wins, stale data gets
+        // committed to the store and the shimmer lifts on it. Awaiting
+        // runFetchOnce here guarantees the first data the user sees is
+        // post-fetch — its internal chained refreshOnce populates the
+        // store with up-to-date refs before the shimmer is lifted.
+        // Respect `fetchIntervalMs === 0` so users who explicitly
+        // disabled auto-fetch don't get a surprise startup network call.
+        const { fetchIntervalMs } = useRepoStore.getState();
+        const ranInitialFetch = fetchIntervalMs > 0;
+        if (ranInitialFetch) {
+          try {
+            await runFetchOnce();
+          } catch {
+            /* best-effort; runFetchOnce handles its own errors internally */
+          }
+          if (cancelled) return;
+        }
         startRefreshLoop();
-        startFetchLoop();
+        // When we already ran an initial fetch above, suppress startFetchLoop's
+        // immediate first tick — otherwise it would fire a second back-to-back
+        // `fetchAllPrune` subprocess against refs that were JUST fetched (the
+        // `fetchInFlight` guard can't dedupe it because the awaited fetch
+        // already cleared the flag). Waste is minor per launch but real.
+        startFetchLoop({ skipFirstTick: ranInitialFetch });
 
         // Wire the filesystem watcher events to a debounced refresh tick.
         try {
