@@ -60,6 +60,7 @@ interface StoreState {
   // RecentReposMenu re-renders instantly after a switch — otherwise the
   // user would see a one-tick flash of stale ordering.
   recentRepoPaths: string[];
+  worktreeOrder: string[];
 
   setRepo: (r: RepoState) => void;
   setWorktrees: (w: Worktree[]) => void;
@@ -78,6 +79,7 @@ interface StoreState {
   setFetchInterval: (ms: number) => void;
   setZoomLevel: (z: number) => void;
   setRecentRepoPaths: (paths: string[]) => void;
+  setWorktreeOrder: (order: string[]) => void;
   markRefreshed: () => void;
 }
 
@@ -113,6 +115,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   fetchIntervalMs: 60_000,
   zoomLevel: ZOOM_DEFAULT,
   recentRepoPaths: [],
+  worktreeOrder: [],
 
   setRepo: (repo) => set({ repo }),
   setWorktrees: (worktrees) => set({ worktrees }),
@@ -132,5 +135,6 @@ export const useRepoStore = create<StoreState>((set) => ({
   setFetchInterval: (fetchIntervalMs) => set({ fetchIntervalMs }),
   setZoomLevel: (z) => set({ zoomLevel: clampZoom(z) }),
   setRecentRepoPaths: (recentRepoPaths) => set({ recentRepoPaths }),
+  setWorktreeOrder: (worktreeOrder) => set({ worktreeOrder }),
   markRefreshed: () => set({ lastRefresh: Date.now() }),
 }));

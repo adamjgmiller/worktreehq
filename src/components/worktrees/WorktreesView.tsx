@@ -1,5 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Plus } from 'lucide-react';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragStartEvent,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable';
 import { useRepoStore } from '../../store/useRepoStore';
 import { WorktreeCard } from './WorktreeCard';
 import { EmptyState } from '../common/EmptyState';
@@ -14,15 +25,89 @@ import {
 } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
 import { pickDirectory } from '../../services/repoSelect';
+import { writeWorktreeOrder } from '../../services/worktreeOrderService';
+import { reconcileOrder } from '../../lib/worktreeOrder';
 import type { Worktree } from '../../types';
+
+// Walk up from the pointer-event target to the card boundary. If we hit an
+// interactive element first, suppress drag so clicks on buttons/links/
+// textareas/menus behave normally. Everything else on the card is fair game.
+function isInteractiveElement(el: HTMLElement | null): boolean {
+  while (el) {
+    if (el.dataset.dndCard !== undefined) return false;
+    const tag = el.tagName;
+    if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' ||
+        tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (el.isContentEditable) return true;
+    el = el.parentElement;
+  }
+  return false;
+}
+
+// PointerSensor subclass that skips drags originating from interactive
+// elements inside the card. This lets the whole card surface be draggable
+// without needing a dedicated drag handle.
+class CardPointerSensor extends PointerSensor {
+  static activators = [
+    {
+      eventName: 'onPointerDown' as const,
+      handler: (event: React.PointerEvent) => {
+        return !isInteractiveElement(event.nativeEvent.target as HTMLElement);
+      },
+    },
+  ];
+}
 
 export function WorktreesView() {
   const worktrees = useRepoStore((s) => s.worktrees);
   const branches = useRepoStore((s) => s.branches);
   const repo = useRepoStore((s) => s.repo);
   const setError = useRepoStore((s) => s.setError);
+  const worktreeOrder = useRepoStore((s) => s.worktreeOrder);
+  const setWorktreeOrder = useRepoStore((s) => s.setWorktreeOrder);
   const [createOpen, setCreateOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Worktree | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+
+  const sensors = useSensors(
+    useSensor(CardPointerSensor, { activationConstraint: { distance: 8 } }),
+  );
+
+  const orderedWorktrees = useMemo(
+    () => reconcileOrder(worktrees, worktreeOrder),
+    [worktrees, worktreeOrder],
+  );
+  const sortableIds = useMemo(
+    () => orderedWorktrees.map((w) => w.path),
+    [orderedWorktrees],
+  );
+  const activeWorktree = activeId
+    ? orderedWorktrees.find((w) => w.path === activeId) ?? null
+    : null;
+
+  function handleDragStart(event: DragStartEvent) {
+    setActiveId(event.active.id as string);
+  }
+
+  function handleDragCancel() {
+    setActiveId(null);
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    setActiveId(null);
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = sortableIds.indexOf(active.id as string);
+    const newIndex = sortableIds.indexOf(over.id as string);
+    if (oldIndex === -1 || newIndex === -1) return;
+    const newOrder = [...sortableIds];
+    newOrder.splice(oldIndex, 1);
+    newOrder.splice(newIndex, 0, active.id as string);
+    setWorktreeOrder(newOrder);
+    if (repo) {
+      void writeWorktreeOrder(repo.path, newOrder);
+    }
+  }
 
   // Listen for the global keyboard shortcut (N) to open the Create dialog.
   useEffect(() => {
@@ -156,32 +241,37 @@ export function WorktreesView() {
         // parent (which is `flex-1 overflow-hidden` in App.tsx) and lower
         // cards are simply clipped — there's no way to scroll to them.
         <div className="flex-1 overflow-auto">
-          {/*
-            Rem-based responsive grid: column count is derived from how many
-            20rem-wide tracks fit in the viewport, not from fixed pixel
-            breakpoints. When the user zooms in, 20rem grows in pixel terms,
-            so fewer columns fit and cards become genuinely wider — not just
-            taller. With the old breakpoint grid (md:cols-2 xl:cols-3) the
-            column count was locked to viewport pixels, so zoom only changed
-            card height, never width.
-          */}
-          <div className="p-6 grid grid-cols-[repeat(auto-fit,minmax(20rem,1fr))] gap-5">
-            {worktrees.map((w) => (
-              // Vary the key on prunable so React unmounts the old card and
-              // mounts the orphaned variant when a worktree transitions
-              // (e.g. user `rm -rf`s the directory, refresh detects it).
-              // Otherwise the early-return inside WorktreeCard would change
-              // its hook count between renders and crash with a hooks-order
-              // violation.
-              <WorktreeCard
-                key={w.prunable ? `orphan:${w.path}` : w.path}
-                wt={w}
-                onRemove={handleRemove}
-                onPrune={handlePrune}
-                onPruneOrphan={handlePruneOrphan}
-              />
-            ))}
-          </div>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
+          >
+            <SortableContext items={sortableIds} strategy={rectSortingStrategy}>
+              <div className="p-6 grid grid-cols-[repeat(auto-fit,minmax(20rem,1fr))] gap-5">
+                {orderedWorktrees.map((w) => (
+                  <WorktreeCard
+                    key={w.prunable ? `orphan:${w.path}` : w.path}
+                    wt={w}
+                    onRemove={handleRemove}
+                    onPrune={handlePrune}
+                    onPruneOrphan={handlePruneOrphan}
+                    isDragging={activeId === w.path}
+                    isAnyDragging={activeId !== null}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+            <DragOverlay>
+              {activeWorktree && (
+                <WorktreeCard
+                  wt={activeWorktree}
+                  isOverlay
+                />
+              )}
+            </DragOverlay>
+          </DndContext>
         </div>
       )}
       {createOpen && repo && (

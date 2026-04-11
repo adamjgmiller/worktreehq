@@ -18,6 +18,8 @@ import {
   ArrowDownToLine,
   Loader2,
 } from 'lucide-react';
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { ClaudePresence, LastCommit, Worktree, InProgressOp } from '../../types';
 import { worktreeStatusClass } from '../../lib/colors';
 import { branchDisposition, type BranchDispositionAction } from '../../lib/branchDisposition';
@@ -42,11 +44,17 @@ export function WorktreeCard({
   onRemove,
   onPrune,
   onPruneOrphan,
+  isDragging,
+  isAnyDragging,
+  isOverlay,
 }: {
   wt: Worktree;
   onRemove?: (wt: Worktree) => void;
   onPrune?: () => void;
   onPruneOrphan?: () => void;
+  isDragging?: boolean;
+  isAnyDragging?: boolean;
+  isOverlay?: boolean;
 }) {
   // Orphaned branch: bookkeeping survives but the directory doesn't. Branch
   // out before reading any per-worktree store state — none of it would be
@@ -56,7 +64,7 @@ export function WorktreeCard({
   // OrphanedCard variant uses the same outer motion shape so the layout
   // animation between states is smooth when the user clicks Prune.
   if (wt.prunable) {
-    return <OrphanedCard wt={wt} onPruneOrphan={onPruneOrphan} onRemove={onRemove} />;
+    return <OrphanedCard wt={wt} onPruneOrphan={onPruneOrphan} onRemove={onRemove} isDragging={isDragging} isAnyDragging={isAnyDragging} isOverlay={isOverlay} />;
   }
   const presence = useRepoStore((s) => s.claudePresence.get(wt.path));
   // Join the worktree to its branch entry so we can render lifecycle state
@@ -137,18 +145,42 @@ export function WorktreeCard({
   };
   const statusIconEntry = statusIconMap[wt.status];
 
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition: sortableTransition,
+  } = useSortable({ id: wt.path, disabled: isOverlay });
+
+  const sortableStyle: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition: sortableTransition ?? undefined,
+  };
+
   return (
-    <motion.div
-      layout
-      animate={{ opacity: 1 }}
-      initial={{ opacity: 0, y: 4 }}
-      transition={{ duration: 0.2 }}
-      className={`rounded-xl border-2 p-5 min-w-[18.75rem] bg-wt-panel ${worktreeStatusClass(
-        wt.status,
-        branchInfo?.mergeStatus,
-        isOnDefaultBranch,
-      )}`}
+    <div
+      ref={setNodeRef}
+      style={sortableStyle}
+      {...attributes}
+      {...listeners}
+      data-dnd-card
+      role="group"
     >
+    <motion.div
+      layout={!isAnyDragging && !isOverlay}
+      animate={{ opacity: 1 }}
+      initial={isOverlay ? false : { opacity: 0, y: 4 }}
+      transition={{ duration: 0.15 }}
+      className={clsx(
+        'rounded-xl border-2 p-5 min-w-[18.75rem]',
+        isDragging
+          ? 'border-dashed border-wt-info/50 bg-wt-info/5'
+          : `bg-wt-panel ${worktreeStatusClass(wt.status, branchInfo?.mergeStatus, isOnDefaultBranch)}`,
+        isOverlay && 'shadow-2xl ring-2 ring-wt-info/40 bg-wt-panel',
+      )}
+    >
+      <div className={isDragging ? 'invisible' : undefined}>
       <div className="flex items-start gap-2 mb-3">
         <Tooltip label={statusIconEntry.label}>
           <div className="mt-0.5">{statusIconEntry.icon}</div>
@@ -318,7 +350,9 @@ export function WorktreeCard({
       {presence && presence.inactiveSessions.length > 0 && (
         <PastSessionsList worktreePath={wt.path} sessions={presence.inactiveSessions} />
       )}
+      </div>
     </motion.div>
+    </div>
   );
 }
 
@@ -332,19 +366,53 @@ function OrphanedCard({
   wt,
   onPruneOrphan,
   onRemove,
+  isDragging,
+  isAnyDragging,
+  isOverlay,
 }: {
   wt: Worktree;
   onPruneOrphan?: () => void;
   onRemove?: (wt: Worktree) => void;
+  isDragging?: boolean;
+  isAnyDragging?: boolean;
+  isOverlay?: boolean;
 }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition: sortableTransition,
+  } = useSortable({ id: wt.path, disabled: isOverlay });
+
+  const sortableStyle: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition: sortableTransition ?? undefined,
+  };
+
   return (
-    <motion.div
-      layout
-      animate={{ opacity: 1 }}
-      initial={{ opacity: 0, y: 4 }}
-      transition={{ duration: 0.2 }}
-      className="rounded-xl border-2 p-5 min-w-[18.75rem] bg-wt-panel border-wt-dirty/70 bg-wt-dirty/5"
+    <div
+      ref={setNodeRef}
+      style={sortableStyle}
+      {...attributes}
+      {...listeners}
+      data-dnd-card
+      role="group"
     >
+    <motion.div
+      layout={!isAnyDragging && !isOverlay}
+      animate={{ opacity: 1 }}
+      initial={isOverlay ? false : { opacity: 0, y: 4 }}
+      transition={{ duration: 0.15 }}
+      className={clsx(
+        'rounded-xl border-2 p-5 min-w-[18.75rem]',
+        isDragging
+          ? 'border-dashed border-wt-info/50 bg-wt-info/5'
+          : 'bg-wt-panel border-wt-dirty/70 bg-wt-dirty/5',
+        isOverlay && 'shadow-2xl ring-2 ring-wt-info/40 bg-wt-panel',
+      )}
+    >
+      <div className={isDragging ? 'invisible' : undefined}>
       <div className="flex items-start gap-2 mb-3">
         <Tooltip label="Orphaned — git's bookkeeping points at a directory that no longer exists">
           <div className="mt-0.5">
@@ -409,7 +477,9 @@ function OrphanedCard({
           Prune this orphan
         </button>
       )}
+      </div>
     </motion.div>
+    </div>
   );
 }
 

@@ -9,6 +9,7 @@ import { useRepoStore } from '../store/useRepoStore';
 import { invoke } from './tauriBridge';
 import { getDefaultBranch, getRemoteUrl } from './gitService';
 import { refreshOnce } from './refreshLoop';
+import { readWorktreeOrder } from './worktreeOrderService';
 
 interface RepoInfo {
   path: string;
@@ -71,6 +72,7 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     setSquashMappings,
     setClaudePresence,
     setDataRepoPath,
+    setWorktreeOrder,
   } = useRepoStore.getState();
   try {
     const info = await invoke<RepoInfo>('resolve_repo', { path: candidate });
@@ -101,6 +103,13 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
       name: remote.name,
     });
     setError(null);
+    // Hydrate persisted card order for the new repo.
+    try {
+      const order = await readWorktreeOrder(info.path);
+      setWorktreeOrder(order);
+    } catch {
+      setWorktreeOrder([]);
+    }
     // Update the in-memory MRU list immediately so the dropdown re-renders
     // before the config write resolves. The store is the source of truth
     // for the UI; the config write below mirrors it for persistence.
