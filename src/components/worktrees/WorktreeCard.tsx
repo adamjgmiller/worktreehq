@@ -44,12 +44,13 @@ const inProgressLabel: Record<InProgressOp, string> = {
   bisect: 'BISECT IN PROGRESS',
 };
 
-// The pathname row doubles as a click-to-copy target. The tooltip label flips
-// to "Copied!" for 1500ms after a successful write so the user gets feedback
-// without introducing a separate icon/button. Cursor switches from the default
-// `cursor-help` to `cursor-copy` because there's now a real action attached —
-// the `?` cursor would mislead ("hover for info") when click actually copies.
-function CopyablePath({ path }: { path: string }) {
+// The card title doubles as a click-to-copy target for the full worktree path.
+// Hover surfaces the path instantly via our Tooltip (which has no delay),
+// click copies it. The tooltip label flips to "Copied!" for 1500ms after a
+// successful write so the user gets feedback without a separate icon/button.
+// Cursor is `cursor-copy` because click is the primary action — `cursor-help`
+// would mislead ("hover for info") when click actually copies.
+function CopyableTitle({ path }: { path: string }) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<number | null>(null);
 
@@ -87,9 +88,9 @@ function CopyablePath({ path }: { path: string }) {
         type="button"
         onClick={handleCopy}
         aria-label="Copy worktree path"
-        className="block w-full text-left text-xs font-mono text-neutral-500 truncate cursor-copy hover:text-neutral-300 transition-colors"
+        className="block w-full text-left font-mono text-sm text-neutral-100 truncate cursor-copy hover:text-neutral-300 transition-colors"
       >
-        {path}
+        {basename(path)}
       </button>
     </Tooltip>
   );
@@ -256,7 +257,7 @@ export function WorktreeCard({
       )}
     >
       <div className={isDragging ? 'invisible' : undefined}>
-      <div className="flex items-start gap-2 mb-3">
+      <div className="flex items-start gap-2 mb-2">
         <Tooltip label={statusIconEntry.label}>
           <div className="mt-0.5">{statusIconEntry.icon}</div>
         </Tooltip>
@@ -267,15 +268,10 @@ export function WorktreeCard({
             identifier. The branch follows one step down in size and luminance
             so both stay legible at a glance but the visual hierarchy matches
             the mental model (worktree = "where I am", branch = "what I'm
-            working on"). Full path lives in the `title` attr for hover
-            discoverability and still renders in its own row below.
+            working on"). Hovering surfaces the full path (instant tooltip);
+            clicking copies it to the clipboard.
           */}
-          <div
-            className="font-mono text-sm text-neutral-100 truncate"
-            title={wt.path}
-          >
-            {basename(wt.path)}
-          </div>
+          <CopyableTitle path={wt.path} />
           <div
             className="font-mono text-xs text-neutral-300 mt-0.5 flex items-center gap-1 min-w-0"
             title={wt.branch}
@@ -296,54 +292,6 @@ export function WorktreeCard({
               <span className="text-neutral-600 italic">↳ (no upstream)</span>
             )}
           </div>
-          {disposition && (
-            // Lifecycle row: composite disposition pill + optional inline
-            // action + ahead-of-default + PR. Skips cleanly for detached
-            // HEADs (no disposition). The ahead-of-default and PR badges
-            // still require a branchInfo entry — the disposition can be
-            // present without one (default-branch worktree in a fresh repo).
-            <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-              <Tooltip label={disposition.tooltip}>
-                <span
-                  className={clsx(
-                    'px-1.5 py-0.5 text-[0.5625rem] font-mono border rounded uppercase tracking-wide cursor-help',
-                    disposition.className,
-                  )}
-                >
-                  {disposition.label}
-                </span>
-              </Tooltip>
-              {disposition.action && (
-                <DispositionActionButton
-                  action={disposition.action}
-                  worktreePath={wt.path}
-                  onError={setError}
-                />
-              )}
-              {branchInfo && (branchInfo.aheadOfMain > 0 || branchInfo.behindMain > 0) && (
-                <Tooltip
-                  label={`${branchInfo.aheadOfMain} ahead, ${branchInfo.behindMain} behind ${defaultBranch}`}
-                >
-                  <span className="font-mono text-[0.625rem] text-neutral-400 cursor-help">
-                    {aheadBehind(branchInfo.aheadOfMain, branchInfo.behindMain)} vs{' '}
-                    {defaultBranch}
-                  </span>
-                </Tooltip>
-              )}
-              {branchInfo?.pr && (
-                <a
-                  href={branchInfo.pr.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-0.5 text-[0.625rem] font-mono text-wt-info hover:underline"
-                  title={branchInfo.pr.title}
-                >
-                  #{branchInfo.pr.number}
-                  <ExternalLink className="w-2.5 h-2.5" />
-                </a>
-              )}
-            </div>
-          )}
         </div>
         {presence && (presence.status !== 'none' || presence.liveSessionCount > 0) && (
           <ClaudeBadge presence={presence} />
@@ -417,6 +365,60 @@ export function WorktreeCard({
         </div>
         )}
       </div>
+      {disposition && (
+        // Lifecycle row: composite disposition pill + optional inline action +
+        // ahead-of-default + PR. Lives as a sibling of the title row (not a
+        // child of the title block) so it can span the full card width — the
+        // title block is constrained on its right by the icon cluster, which
+        // would otherwise force this row to wrap prematurely. `ml-6` matches
+        // the title block's left edge (status-icon w-4 + flex gap-2 = 24px)
+        // so the pill visually aligns with the branch/upstream rows above.
+        // Skips cleanly for detached HEADs (no disposition). The ahead-of-
+        // default and PR badges still require a branchInfo entry — the
+        // disposition can be present without one (default-branch worktree in
+        // a fresh repo).
+        <div className="ml-6 mb-2 flex items-center gap-1.5 flex-wrap">
+          <Tooltip label={disposition.tooltip}>
+            <span
+              className={clsx(
+                'px-1.5 py-0.5 text-[0.5625rem] font-mono border rounded uppercase tracking-wide cursor-help',
+                disposition.className,
+              )}
+            >
+              {disposition.label}
+            </span>
+          </Tooltip>
+          {disposition.action && (
+            <DispositionActionButton
+              action={disposition.action}
+              worktreePath={wt.path}
+              onError={setError}
+            />
+          )}
+          {branchInfo && (branchInfo.aheadOfMain > 0 || branchInfo.behindMain > 0) && (
+            <Tooltip
+              label={`${branchInfo.aheadOfMain} ahead, ${branchInfo.behindMain} behind ${defaultBranch}`}
+            >
+              <span className="font-mono text-[0.625rem] text-neutral-400 cursor-help">
+                {aheadBehind(branchInfo.aheadOfMain, branchInfo.behindMain)} vs{' '}
+                {defaultBranch}
+              </span>
+            </Tooltip>
+          )}
+          {branchInfo?.pr && (
+            <a
+              href={branchInfo.pr.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-0.5 text-[0.625rem] font-mono text-wt-info hover:underline"
+              title={branchInfo.pr.title}
+            >
+              #{branchInfo.pr.number}
+              <ExternalLink className="w-2.5 h-2.5" />
+            </a>
+          )}
+        </div>
+      )}
       {wt.inProgress && (
         <Tooltip
           label={`A ${wt.inProgress} is partially completed in this worktree — finish or abort it before switching branches`}
@@ -427,16 +429,12 @@ export function WorktreeCard({
           </div>
         </Tooltip>
       )}
-      <div className="mb-4">
-        <CopyablePath path={wt.path} />
-      </div>
-      <div className="grid grid-cols-3 gap-2 text-xs mb-3">
-        <Stat label="untracked" value={wt.untrackedCount} />
-        <Stat label="modified" value={wt.modifiedCount} />
-        <Stat label="staged" value={wt.stagedCount} />
-        <Stat label="stashes" value={wt.stashCount} />
-        <Stat label="vs remote" value={aheadBehind(wt.ahead, wt.behind)} />
-        <Stat label="conflicts" value={wt.hasConflicts ? 'yes' : 'no'} />
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-wt-border py-2 mb-0 font-mono text-[0.75rem] text-neutral-100">
+        <StatInline label="untracked" value={wt.untrackedCount} />
+        <StatInline label="modified" value={wt.modifiedCount} />
+        <StatInline label="staged" value={wt.stagedCount} />
+        <StatInline label="stashes" value={wt.stashCount} />
+        <StatInline label="remote" value={aheadBehind(wt.ahead, wt.behind)} />
       </div>
       <LastCommitFooter lastCommit={wt.lastCommit} />
       <Notepad worktreePath={wt.path} />
@@ -517,12 +515,7 @@ function OrphanedCard({
               branch secondary. For an orphan this is even more load-bearing —
               the directory is gone, so the basename is the user's main cue
               for "which missing folder is this?". */}
-          <div
-            className="font-mono text-sm text-neutral-100 truncate"
-            title={wt.path}
-          >
-            {basename(wt.path)}
-          </div>
+          <CopyableTitle path={wt.path} />
           <div
             className="font-mono text-xs text-neutral-300 mt-0.5 flex items-center gap-1 min-w-0"
             title={wt.branch}
@@ -553,9 +546,6 @@ function OrphanedCard({
           <div className="text-wt-dirty/80 mt-0.5 break-words">{wt.prunable}</div>
         </div>
       </div>
-      <div className="mb-3">
-        <CopyablePath path={wt.path} />
-      </div>
       {onPruneOrphan && (
         <button
           onClick={onPruneOrphan}
@@ -572,12 +562,12 @@ function OrphanedCard({
   );
 }
 
-function Stat({ label, value }: { label: string; value: number | string }) {
+function StatInline({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="bg-wt-bg/60 border border-wt-border rounded px-2 py-1.5">
-      <div className="text-neutral-500 text-[0.625rem] uppercase tracking-wide">{label}</div>
-      <div className="font-mono text-neutral-100">{value}</div>
-    </div>
+    <span className="inline-flex items-baseline gap-1">
+      <span className="text-[0.625rem] tracking-tight text-neutral-500 font-sans">{label}</span>
+      {value}
+    </span>
   );
 }
 

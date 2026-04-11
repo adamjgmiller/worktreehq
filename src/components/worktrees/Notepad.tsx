@@ -162,7 +162,7 @@ export function Notepad({ worktreePath }: { worktreePath: string }) {
   }
 
   return (
-    <div className="mt-3 border-t border-wt-border pt-3">
+    <div className="mt-2 border-t border-wt-border pt-3">
       <div className="flex items-center justify-between mb-1">
         <span className="text-[0.625rem] uppercase tracking-wide text-neutral-500">notepad</span>
         <span
