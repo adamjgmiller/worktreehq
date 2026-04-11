@@ -1,10 +1,11 @@
 import { RefreshCw, Settings, Github, Download, AlertTriangle } from 'lucide-react';
 import { useRepoStore } from '../store/useRepoStore';
-
-const MOD_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+import { isMac } from '../lib/platform';
 import { runFetchOnce } from '../services/refreshLoop';
 import { relativeTime } from '../lib/format';
 import { RecentReposMenu } from './RecentReposMenu';
+
+const MOD_KEY = isMac ? '⌘' : 'Ctrl+';
 
 export function RepoBar({ onSettings }: { onSettings: () => void }) {
   const repo = useRepoStore((s) => s.repo);

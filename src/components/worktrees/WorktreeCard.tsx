@@ -310,6 +310,7 @@ export function WorktreeCard({
             </span>
           </Tooltip>
         )}
+        {!isOverlay && (
         <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((v) => !v)}
@@ -363,6 +364,7 @@ export function WorktreeCard({
             </div>
           )}
         </div>
+        )}
       </div>
       {wt.inProgress && (
         <Tooltip
