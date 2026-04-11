@@ -106,23 +106,27 @@ fn platform_open(path: &str, session_id: &str) -> AppResult<()> {
 #[cfg(target_os = "linux")]
 fn platform_open(path: &str, session_id: &str) -> AppResult<()> {
     // Each terminal emulator has its own flag for "start in this directory"
-    // and its own convention for "after these args, run this command". Most
-    // of the modern ones take `-- <argv>` after a working-directory flag;
-    // konsole uses `-e` instead. We `exec $SHELL` after the command so the
-    // terminal stays open if the user wants to read output — otherwise the
-    // window would close the instant `claude` exits.
+    // and its own convention for "after these args, run this command":
+    //   - gnome-terminal uses `-- <argv>` after `--working-directory`
+    //   - alacritty, konsole, xterm use `-e <program> <args...>`
+    //   - xfce4-terminal uses `-e <single-string>` (internally word-split)
+    //   - kitty takes `<program> <args...>` positionally
+    // We probe in that rough order; each block returns on success or falls
+    // through to the next on NotFound. We `exec $SHELL` after the claude
+    // command so the window stays open if the user wants to read output —
+    // otherwise it would close the instant `claude` exits.
     let shell_cmd = format!(
         "claude --resume {}; exec \"${{SHELL:-bash}}\"",
         session_id
     );
 
-    // gnome-terminal / x-terminal-emulator / xfce4 / alacritty all take
-    // `--working-directory <path> -- bash -c <cmd>`.
+    // gnome-terminal and x-terminal-emulator (when aliased to gnome-terminal)
+    // take `--working-directory <path> -- <argv...>`. The `--` separator is
+    // specific to gnome-terminal's command-parsing mode — other emulators
+    // either use `-e` (with one argv or one shell string) or their own flag.
     let dash_dash: &[(&str, &str)] = &[
         ("x-terminal-emulator", "--working-directory"),
         ("gnome-terminal", "--working-directory"),
-        ("xfce4-terminal", "--working-directory"),
-        ("alacritty", "--working-directory"),
     ];
     for (bin, flag) in dash_dash {
         match Command::new(bin)
@@ -136,6 +140,37 @@ fn platform_open(path: &str, session_id: &str) -> AppResult<()> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(AppError::Io(e)),
         }
+    }
+
+    // alacritty: `--working-directory <path> -e bash -c <cmd>`. Alacritty
+    // does NOT accept `--` as an argv separator — the docs are explicit
+    // that `-e/--command` takes the program followed by its args.
+    match Command::new("alacritty")
+        .args(["--working-directory", path, "-e", "bash", "-c", &shell_cmd])
+        .spawn()
+    {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(AppError::Io(e)),
+        Err(_) => {}
+    }
+
+    // xfce4-terminal: `--working-directory <path> -e <single-string>`.
+    // Its `-e/--command` flag takes exactly one argument that is then word-
+    // split by g_shell_parse_argv inside the terminal, so we wrap the shell
+    // command in `bash -c` and single-quote the inner command to survive
+    // that split untouched.
+    match Command::new("xfce4-terminal")
+        .args([
+            "--working-directory",
+            path,
+            "-e",
+            &format!("bash -c {}", shell_quote(&shell_cmd)),
+        ])
+        .spawn()
+    {
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(AppError::Io(e)),
+        Err(_) => {}
     }
 
     // konsole: `--workdir <path> -e bash -c <cmd>`
