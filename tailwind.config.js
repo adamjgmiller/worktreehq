@@ -42,6 +42,13 @@ export default {
           fg: 'rgb(var(--wt-fg) / <alpha-value>)',
           'fg-2': 'rgb(var(--wt-fg-2) / <alpha-value>)',
           muted: 'rgb(var(--wt-muted) / <alpha-value>)',
+          // Dimmer tier than `muted`. Dark mode goes darker (zinc-600, recedes
+          // harder against near-black), light mode goes lighter (stone-500,
+          // recedes harder against paper). Retargeted onto the specific call
+          // sites where the pre-theme code used neutral-600/neutral-700 to
+          // signal "even quieter than normal muted" — auxiliary Tabs,
+          // "no worktree" pill, and the loading ellipsis in PastSessionsList.
+          'muted-2': 'rgb(var(--wt-muted-2) / <alpha-value>)',
           // Status tokens. Dark mode uses the saturated Tailwind 500-level
           // shades (#10b981, #f59e0b, etc.); light mode darkens each one
           // ~1 shade so they clear WCAG AA on a white background. See

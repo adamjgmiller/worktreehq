@@ -868,7 +868,7 @@ function PastSessionsList({
                         ? prompt
                         : promptFetched
                           ? <span className="text-wt-muted italic">no prompt</span>
-                          : <span className="text-wt-muted">…</span>}
+                          : <span className="text-wt-muted-2">…</span>}
                     </span>
                   </Tooltip>
                   <span

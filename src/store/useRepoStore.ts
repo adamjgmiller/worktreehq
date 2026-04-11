@@ -69,8 +69,11 @@ interface StoreState {
   // User's theme choice. "system" follows the OS `prefers-color-scheme`
   // and is the first-run default — see useTheme.ts for the resolution
   // and DOM-application logic. Persisted to config.toml via
-  // persistThemePreference; the initial value is hydrated in the
-  // bootstrap hook before any UI mounts so there's no FOUC.
+  // persistThemePreference. FOUC is prevented by `bootstrapThemeSync()`
+  // in main.tsx, which applies the last-seen theme class from
+  // localStorage synchronously before React mounts; the bootstrap hook
+  // later reconciles this store field against the persisted
+  // config.toml value.
   themePreference: ThemePreference;
 
   setRepo: (r: RepoState) => void;

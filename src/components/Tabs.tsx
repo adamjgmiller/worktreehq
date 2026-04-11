@@ -48,10 +48,12 @@ export function Tabs({ value, onChange }: { value: TabKey; onChange: (v: TabKey)
           selected
             ? 'border-wt-info text-wt-fg'
             : auxiliary
-            ? // Auxiliary unselected: dimmer baseline so the eye lands on
-              // core tabs first. Hover restores them to a normal-secondary
-              // brightness so the affordance is still obvious.
-              'border-transparent text-wt-muted hover:text-wt-fg-2'
+            ? // Auxiliary unselected: dimmer baseline (`wt-muted-2`, one
+              // step quieter than core's `wt-muted`) so the eye lands on
+              // core tabs first. Hover lifts them to core's baseline —
+              // enough signal for the affordance without jumping past
+              // the active state.
+              'border-transparent text-wt-muted-2 hover:text-wt-muted'
             : 'border-transparent text-wt-muted hover:text-wt-fg-2',
         )}
       >

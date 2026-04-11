@@ -40,7 +40,7 @@ function PairRow({
           ? isConflict
             ? 'border-wt-conflict/60 bg-wt-conflict/[0.08]'
             : 'border-wt-dirty/60 bg-wt-dirty/[0.08]'
-          : 'border-wt-border hover:border-wt-border bg-wt-panel/60 hover:bg-wt-panel',
+          : 'border-wt-border hover:border-wt-muted bg-wt-panel/60 hover:bg-wt-panel',
       )}
     >
       {/* Severity accent — left edge stripe */}

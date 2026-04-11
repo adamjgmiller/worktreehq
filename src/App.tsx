@@ -208,7 +208,7 @@ export default function App() {
         className="fixed bottom-4 right-6 z-10 flex items-center gap-1.5 text-[11px] text-wt-muted hover:text-wt-fg-2 transition-colors"
         style={{ fontSize: '11px' }}
       >
-        <kbd className="px-1 py-0.5 rounded border border-wt-border/60 bg-wt-border/50 text-wt-muted font-mono text-[10px] leading-none">?</kbd>
+        <kbd className="px-1 py-0.5 rounded border border-wt-fg-2/20 bg-wt-fg-2/10 text-wt-muted font-mono text-[10px] leading-none">?</kbd>
         shortcuts
       </button>
       <ShortcutHelpOverlay open={helpOpen} onClose={() => setHelpOpen(false)} />
