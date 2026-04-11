@@ -442,7 +442,7 @@ export function WorktreesView() {
                     onPrune={handlePrune}
                     onPruneOrphan={handlePruneOrphan}
                     isDragging={activeId === w.path}
-                    animateLayout={animateLayout}
+                    animateLayout={animateLayout && activeId === null}
                   />
                 ))}
               </div>

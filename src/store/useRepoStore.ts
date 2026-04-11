@@ -120,7 +120,6 @@ interface StoreState {
   setWorktreeOrder: (order: string[]) => void;
   setWorktreeSortMode: (mode: WorktreeSortMode) => void;
   setThemePreference: (pref: ThemePreference) => void;
-  markRefreshed: () => void;
 }
 
 // Shape passed to commitRefreshResult. Mirrors the fields runRefreshOnce
@@ -221,5 +220,4 @@ export const useRepoStore = create<StoreState>((set) => ({
   setWorktreeOrder: (worktreeOrder) => set({ worktreeOrder }),
   setWorktreeSortMode: (worktreeSortMode) => set({ worktreeSortMode }),
   setThemePreference: (themePreference) => set({ themePreference }),
-  markRefreshed: () => set({ lastRefresh: Date.now() }),
 }));
