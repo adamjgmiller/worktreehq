@@ -8,7 +8,7 @@ const groups: ShortcutGroup[] = [
   {
     title: 'Navigation',
     items: [
-      { keys: '1 – 5', desc: 'Switch tabs (Worktrees, Branches, Squash, Graph, Archive)' },
+      { keys: '1 – 6', desc: 'Switch tabs (Worktrees, Conflicts, Branches, Squash, Graph, Archive)' },
       { keys: `Ctrl+Tab`, desc: 'Next recent repo' },
       { keys: `Ctrl+Shift+Tab`, desc: 'Previous recent repo' },
     ],

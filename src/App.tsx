@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Tabs, type TabKey } from './components/Tabs';
 import { RepoBar } from './components/RepoBar';
 import { WorktreesView } from './components/worktrees/WorktreesView';
+import { ConflictsView } from './components/conflicts/ConflictsView';
 import { BranchesView } from './components/branches/BranchesView';
 import { SquashView } from './components/squash/SquashView';
 import { GraphView } from './components/graph/GraphView';
@@ -188,6 +189,7 @@ export default function App() {
         {dataReady ? (
           <>
             {tab === 'worktrees' && <WorktreesView />}
+            {tab === 'conflicts' && <ConflictsView />}
             {tab === 'branches' && <BranchesView />}
             {tab === 'squash' && <SquashView />}
             {tab === 'graph' && <GraphView />}

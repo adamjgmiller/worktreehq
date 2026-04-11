@@ -21,6 +21,9 @@ vi.mock('./gitService', () => ({
   listTags: vi.fn(),
   fetchAllPrune: vi.fn(),
   snapshotRemoteRefs: vi.fn(),
+  getChangedFiles: vi.fn().mockResolvedValue([]),
+  getMergeBase: vi.fn().mockResolvedValue(''),
+  simulateMerge: vi.fn().mockResolvedValue({ hasConflicts: false, output: '' }),
 }));
 
 vi.mock('./squashDetector', () => ({
@@ -38,10 +41,15 @@ vi.mock('./claudeAwarenessService', () => ({
   fetchClaudePresence: vi.fn(),
 }));
 
+vi.mock('./conflictDetector', () => ({
+  detectCrossWorktreeConflicts: vi.fn(),
+}));
+
 import * as git from './gitService';
 import * as github from './githubService';
 import * as squash from './squashDetector';
 import * as claude from './claudeAwarenessService';
+import * as conflicts from './conflictDetector';
 
 const asMock = <T extends (...args: any[]) => any>(fn: T) => fn as unknown as Mock;
 
@@ -54,6 +62,8 @@ function resetStore() {
     mainCommitsTotal: 0,
     squashMappings: [],
     claudePresence: new Map(),
+    crossWorktreeConflicts: [],
+    conflictSummaryByPath: new Map(),
     loading: false,
     userRefreshing: false,
     fetching: false,
@@ -87,6 +97,10 @@ beforeEach(() => {
     mappings: [],
   });
   asMock(claude.fetchClaudePresence).mockResolvedValue(new Map());
+  asMock(conflicts.detectCrossWorktreeConflicts).mockResolvedValue({
+    pairs: [],
+    summaryByPath: new Map(),
+  });
 });
 
 afterEach(() => {

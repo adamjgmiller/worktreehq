@@ -4,13 +4,14 @@ import { runFetchOnce } from '../services/refreshLoop';
 import { loadRepoAtPath } from '../services/repoSelect';
 import { useRepoStore } from '../store/useRepoStore';
 
-// Ordered to match the visual tab layout: core (1-2), auxiliary (3-5).
+// Ordered to match the visual tab layout: core (1-3), auxiliary (4-6).
 const TAB_BY_NUMBER: Record<string, TabKey> = {
   '1': 'worktrees',
-  '2': 'branches',
-  '3': 'squash',
-  '4': 'graph',
-  '5': 'archive',
+  '2': 'conflicts',
+  '3': 'branches',
+  '4': 'squash',
+  '5': 'graph',
+  '6': 'archive',
 };
 
 interface Params {
@@ -108,7 +109,7 @@ export function useKeyboardShortcuts({
       // so stray keypresses don't switch tabs behind a dialog.
       if (settingsOpen || helpOpen) return;
 
-      // 1-5 — tab switching
+      // 1-6 — tab switching
       if (TAB_BY_NUMBER[e.key] && !mod && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         setTab(TAB_BY_NUMBER[e.key]);

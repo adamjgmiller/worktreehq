@@ -1,12 +1,12 @@
 import clsx from 'clsx';
-import { LayoutGrid, GitBranch, Archive, Network, FolderArchive } from 'lucide-react';
+import { LayoutGrid, GitBranch, GitCompareArrows, Archive, Network, FolderArchive } from 'lucide-react';
 
-export type TabKey = 'worktrees' | 'branches' | 'squash' | 'graph' | 'archive';
+export type TabKey = 'worktrees' | 'conflicts' | 'branches' | 'squash' | 'graph' | 'archive';
 
 type TabDef = { key: TabKey; label: string; icon: any; shortcut: string };
 
 // The two groups split by importance. "Core" tabs are the daily-driver
-// surfaces (worktrees + branches) and live on the left in their normal
+// surfaces (worktrees + conflicts + branches) and live on the left in their normal
 // styling. "Auxiliary" tabs are occasional / rescue tools (squash
 // archaeology, the graph view, the new archive) — they live on the right
 // and render in a dimmer color so the eye is drawn to the core tabs first.
@@ -16,13 +16,14 @@ type TabDef = { key: TabKey; label: string; icon: any; shortcut: string };
 // move it between these arrays.
 const coreTabs: TabDef[] = [
   { key: 'worktrees', label: 'Worktrees', icon: LayoutGrid, shortcut: '1' },
-  { key: 'branches', label: 'Branches', icon: GitBranch, shortcut: '2' },
+  { key: 'conflicts', label: 'Conflicts', icon: GitCompareArrows, shortcut: '2' },
+  { key: 'branches', label: 'Branches', icon: GitBranch, shortcut: '3' },
 ];
 
 const auxiliaryTabs: TabDef[] = [
-  { key: 'squash', label: 'Squash Archaeology', icon: Archive, shortcut: '3' },
-  { key: 'graph', label: 'Graph', icon: Network, shortcut: '4' },
-  { key: 'archive', label: 'Worktree Archive', icon: FolderArchive, shortcut: '5' },
+  { key: 'squash', label: 'Squash Archaeology', icon: Archive, shortcut: '4' },
+  { key: 'graph', label: 'Graph', icon: Network, shortcut: '5' },
+  { key: 'archive', label: 'Worktree Archive', icon: FolderArchive, shortcut: '6' },
 ];
 
 export function Tabs({ value, onChange }: { value: TabKey; onChange: (v: TabKey) => void }) {

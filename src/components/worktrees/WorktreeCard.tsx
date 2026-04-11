@@ -28,6 +28,7 @@ import { refreshOnce } from '../../services/refreshLoop';
 import { useRepoStore } from '../../store/useRepoStore';
 import { Tooltip } from '../common/Tooltip';
 import { Notepad } from './Notepad';
+import { ConflictBadge } from '../conflicts/ConflictBadge';
 
 const inProgressLabel: Record<InProgressOp, string> = {
   rebase: 'REBASE IN PROGRESS',
@@ -59,6 +60,7 @@ export function WorktreeCard({
     return <OrphanedCard wt={wt} onPruneOrphan={onPruneOrphan} onRemove={onRemove} />;
   }
   const presence = useRepoStore((s) => s.claudePresence.get(wt.path));
+  const conflictSummary = useRepoStore((s) => s.conflictSummaryByPath.get(wt.path));
   // Join the worktree to its branch entry so we can render lifecycle state
   // (merge status, ahead-of-main, PR) on the card. The data already exists
   // in the store; the type split between Worktree (filesystem) and Branch
@@ -240,6 +242,12 @@ export function WorktreeCard({
         </div>
         {presence && (presence.status !== 'none' || presence.liveSessionCount > 0) && (
           <ClaudeBadge presence={presence} />
+        )}
+        {conflictSummary && (
+          <ConflictBadge
+            conflictCount={conflictSummary.conflictCount}
+            cleanOverlapCount={conflictSummary.cleanOverlapCount}
+          />
         )}
         {wt.isPrimary && (
           <Tooltip label="Primary worktree — the original repo checkout, cannot be removed">

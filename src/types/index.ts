@@ -148,6 +148,29 @@ export interface ClaudeStateRaw {
   unchanged?: boolean;
 }
 
+// ─── Cross-worktree conflict detection ─────────────────────────────────
+
+export type OverlapSeverity = 'none' | 'clean' | 'conflict';
+export type FileSeverity = 'clean' | 'conflict';
+
+export interface ConflictFile {
+  path: string;
+  severity: FileSeverity;
+  conflictMarkers?: string; // raw merge-tree output, only when severity === 'conflict'
+}
+
+export interface WorktreePairOverlap {
+  branchA: string;
+  branchB: string;
+  severity: OverlapSeverity; // worst-case across all files
+  files: ConflictFile[]; // only populated when severity !== 'none'
+}
+
+export interface WorktreeConflictSummary {
+  conflictCount: number; // other worktrees with severity === 'conflict'
+  cleanOverlapCount: number; // other worktrees with severity === 'clean' only
+}
+
 // Joined per-worktree view used by the UI.
 export type ClaudePresenceStatus =
   | 'live-ide' // IDE lockfile currently references this worktree

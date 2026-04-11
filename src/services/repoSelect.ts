@@ -70,6 +70,7 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     setMainCommits,
     setSquashMappings,
     setClaudePresence,
+    setCrossWorktreeConflicts,
     setDataRepoPath,
   } = useRepoStore.getState();
   try {
@@ -92,6 +93,7 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     setMainCommits([]);
     setSquashMappings([]);
     setClaudePresence(new Map());
+    setCrossWorktreeConflicts([], new Map());
     setDataRepoPath(null);
     setLastFetchError(null);
     setRepo({

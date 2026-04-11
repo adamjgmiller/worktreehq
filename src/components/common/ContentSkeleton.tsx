@@ -17,6 +17,8 @@ export function ContentSkeleton({ tab }: { tab: TabKey }) {
       return <BranchesSkeleton />;
     case 'squash':
       return <SquashSkeleton />;
+    case 'conflicts':
+      return <ConflictsSkeleton />;
     case 'graph':
       return <GraphSkeleton />;
     default:
@@ -149,6 +151,28 @@ function SquashSkeleton() {
         ))}
       </div>
       <div className="flex-1" />
+    </div>
+  );
+}
+
+// Mirrors ConflictsView's split pane: left matrix, right detail.
+function ConflictsSkeleton() {
+  return (
+    <div className="flex h-full">
+      <div className="w-1/2 overflow-hidden border-r border-wt-border p-4">
+        <Skel className="h-4 w-48 mb-4" />
+        <div className="grid grid-cols-4 gap-2">
+          {Array.from({ length: 16 }).map((_, i) => (
+            <Skel key={i} className="h-12 w-full" />
+          ))}
+        </div>
+      </div>
+      <div className="flex-1 p-4">
+        <Skel className="h-4 w-32 mb-3" />
+        <Skel className="h-3 w-full mb-2" />
+        <Skel className="h-3 w-5/6 mb-2" />
+        <Skel className="h-3 w-2/3" />
+      </div>
     </div>
   );
 }
