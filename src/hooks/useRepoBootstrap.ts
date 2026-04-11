@@ -159,22 +159,30 @@ export function useRepoBootstrap() {
         // Respect `fetchIntervalMs === 0` so users who explicitly
         // disabled auto-fetch don't get a surprise startup network call.
         const { fetchIntervalMs } = useRepoStore.getState();
-        const ranInitialFetch = fetchIntervalMs > 0;
-        if (ranInitialFetch) {
-          try {
-            await runFetchOnce();
-          } catch {
-            /* best-effort; runFetchOnce handles its own errors internally */
-          }
+        let initialFetchSucceeded = false;
+        if (fetchIntervalMs > 0) {
+          await runFetchOnce();
           if (cancelled) return;
+          // `runFetchOnce` swallows all errors internally (see
+          // refreshLoop.ts:313-397), so a try/catch here would never fire.
+          // The reliable signal is `lastFetchError`: on background fetch
+          // success it's cleared to null, on background fetch failure it's
+          // set to the error message. This is the same signal the RepoBar
+          // indicator reads and is covered by the `sets lastFetchError on
+          // background fetch failure` test in refreshLoop.test.ts.
+          initialFetchSucceeded = useRepoStore.getState().lastFetchError === null;
         }
         startRefreshLoop();
-        // When we already ran an initial fetch above, suppress startFetchLoop's
+        // When the initial fetch actually succeeded, suppress startFetchLoop's
         // immediate first tick — otherwise it would fire a second back-to-back
         // `fetchAllPrune` subprocess against refs that were JUST fetched (the
         // `fetchInFlight` guard can't dedupe it because the awaited fetch
-        // already cleared the flag). Waste is minor per launch but real.
-        startFetchLoop({ skipFirstTick: ranInitialFetch });
+        // already cleared the flag). When the initial fetch *failed* (transient
+        // network blip, SSH agent not yet unlocked at login, etc.), we do NOT
+        // skip — we want the fetch loop's immediate tick to retry right away
+        // instead of making the user wait a full `fetchIntervalMs` for fresh
+        // data.
+        startFetchLoop({ skipFirstTick: initialFetchSucceeded });
 
         // Wire the filesystem watcher events to a debounced refresh tick.
         try {
