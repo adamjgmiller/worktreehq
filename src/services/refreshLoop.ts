@@ -44,6 +44,13 @@ let refreshInFlight: Promise<void> | null = null;
 // existing in-flight, drained at the end of runRefreshOnce by re-entering
 // runRefreshOnce so the user sees fresh data on the same click.
 let pendingUserRefresh = false;
+// Same as pendingUserRefresh but for background callers (e.g. the fetch
+// loop's chained refresh). At startup, fetchAllPrune often completes while
+// the first refreshOnce is still in flight — the chained refreshOnce was
+// silently deduped into the stale first run, so squash-merged branches
+// showed as "unmerged" until the next 15s poll tick. This flag ensures a
+// follow-up run so the fresh remote refs are actually picked up.
+let pendingBackgroundRefresh = false;
 
 export interface RefreshOptions {
   // When true, flips the store `userRefreshing` flag so the RepoBar spinner
@@ -218,6 +225,11 @@ export function refreshOnce(opts?: RefreshOptions): Promise<void> {
       });
       return wait;
     }
+    // Background callers (e.g. fetch loop's chained refresh) also need a
+    // follow-up — the in-flight run may be operating on stale pre-fetch
+    // state. Without this, the chained refresh after fetchAllPrune was
+    // silently merged into the stale first run at startup.
+    pendingBackgroundRefresh = true;
     return existing;
   }
   const launch = (): Promise<void> => {
@@ -226,9 +238,14 @@ export function refreshOnce(opts?: RefreshOptions): Promise<void> {
       // If a user-initiated refresh joined while we were running, drain
       // the queue with a single follow-up run. We clear the flag BEFORE
       // launching so a second user click during the follow-up gets its
-      // own queue slot.
+      // own queue slot. pendingUserRefresh takes priority (it carries the
+      // spinner lifecycle); a background pending is cheaper — just re-run.
       if (pendingUserRefresh) {
         pendingUserRefresh = false;
+        pendingBackgroundRefresh = false;
+        launch();
+      } else if (pendingBackgroundRefresh) {
+        pendingBackgroundRefresh = false;
         launch();
       } else if (userInitiated) {
         useRepoStore.getState().setUserRefreshing(false);
@@ -413,6 +430,7 @@ export function stopFetchLoop(): void {
 export function _resetRefreshLoopForTests(): void {
   refreshInFlight = null;
   pendingUserRefresh = false;
+  pendingBackgroundRefresh = false;
   fetchInFlight = false;
   running = false;
   if (timer) clearTimeout(timer);
