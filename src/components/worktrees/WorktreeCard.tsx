@@ -29,7 +29,7 @@ import { relativeTime, shortSha, aheadBehind, basename } from '../../lib/format'
 import { resumeCommand } from '../../services/claudeAwarenessService';
 import { pullFastForward } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
-import { shellOpen } from '../../services/tauriBridge';
+import { readClaudeSessionFirstPrompt, shellOpen } from '../../services/tauriBridge';
 import { fileManagerLabel } from '../../lib/platform';
 import { useRepoStore } from '../../store/useRepoStore';
 import { Tooltip } from '../common/Tooltip';
@@ -754,15 +754,29 @@ function LastCommitFooter({ lastCommit }: { lastCommit: LastCommit }) {
   );
 }
 
-// Default-collapsed expandable list of past Claude sessions for this
-// worktree. Each row shows the session id (short) + relative time and a
-// button that copies a `claude --resume <id>` command to the clipboard.
+// Default-collapsed expandable list of Claude sessions previously opened in
+// this worktree. Each row shows the first user prompt (truncated visually
+// to fit, with the full ~200-char version on hover), the relative time, and
+// a button that copies a `claude --resume <id>` command to the clipboard.
 //
-// Labeled "past" rather than "closed" because we can't *definitively* prove
+// First prompts are loaded lazily on expand and cached in component state:
+// they're immutable per session id, so re-fetching on every collapse/expand
+// would be wasted work. The undefined/null distinction in the cache map
+// separates "not fetched yet" from "fetched, no qualifying prompt found",
+// so a session that genuinely has no prompt doesn't keep retrying.
+//
+// We don't label this list "closed" because we can't *definitively* prove
 // any individual session is closed — the running-process detection only
 // tells us whether ANY claude is running in the worktree, and we attribute
 // it to the most-recent JSONL. Sessions that fall into this list MAY have
 // a long-idle process attached that we can't disambiguate.
+//
+// PROMPT_PREVIEW_MAX_CHARS matches notepadService's AUTOFILL_MAX_CHARS so
+// the same first-prompt string powers both surfaces — the inline row uses
+// CSS truncation for visual fit, the title attribute carries the full
+// fetched value for the hover tooltip.
+const PROMPT_PREVIEW_MAX_CHARS = 200;
+
 function PastSessionsList({
   worktreePath,
   sessions,
@@ -772,6 +786,43 @@ function PastSessionsList({
 }) {
   const [open, setOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // undefined = not yet fetched, null = fetched but no qualifying prompt,
+  // string = the fetched prompt. Keeping all three states in one map lets
+  // the render decide whether to show a skeleton, a fallback, or the text
+  // without firing duplicate IPCs.
+  const [prompts, setPrompts] = useState<Map<string, string | null>>(new Map());
+
+  useEffect(() => {
+    if (!open) return;
+    const missing = sessions.filter((s) => !prompts.has(s.sessionId));
+    if (missing.length === 0) return;
+    let cancelled = false;
+    // Fire all fetches in parallel — bounded by the small number of past
+    // sessions per worktree in practice, and the Rust side reads at most
+    // 200 lines per JSONL so each call returns near-instantly.
+    void Promise.all(
+      missing.map(async (s) => {
+        const value = await readClaudeSessionFirstPrompt(
+          worktreePath,
+          s.sessionId,
+          PROMPT_PREVIEW_MAX_CHARS,
+        );
+        return [s.sessionId, value] as const;
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      setPrompts((prev) => {
+        const next = new Map(prev);
+        for (const [id, value] of entries) {
+          next.set(id, value);
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, sessions, worktreePath, prompts]);
 
   const handleCopy = async (sessionId: string) => {
     const cmd = resumeCommand(worktreePath, sessionId);
@@ -797,7 +848,7 @@ function PastSessionsList({
         />
         <Sparkles className="w-3 h-3" />
         <span className="uppercase tracking-wide">
-          {sessions.length} past Claude {sessions.length === 1 ? 'session' : 'sessions'}
+          {sessions.length} Claude {sessions.length === 1 ? 'session' : 'sessions'}
         </span>
       </button>
       <AnimatePresence initial={false}>
@@ -810,31 +861,47 @@ function PastSessionsList({
             transition={{ duration: 0.15 }}
             className="overflow-hidden mt-1 space-y-1"
           >
-            {sessions.map((s) => (
-              <li
-                key={s.sessionId}
-                className="flex items-center gap-2 text-[0.6875rem] text-neutral-400"
-              >
-                <span className="font-mono text-neutral-500" title={s.sessionId}>
-                  {s.sessionId.slice(0, 8)}
-                </span>
-                <span className="flex-1 truncate text-neutral-600">
-                  {relativeTime(s.lastActivity)}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(s.sessionId)}
-                  title="Copy `claude --resume` command"
-                  className="text-neutral-500 hover:text-wt-claude-ide transition-colors"
+            {sessions.map((s) => {
+              const prompt = prompts.get(s.sessionId);
+              const promptFetched = prompts.has(s.sessionId);
+              // Tooltip label: full prompt if we have one, else fall back
+              // to the session id so the hover tooltip is never empty.
+              const tooltipLabel = prompt ?? s.sessionId;
+              return (
+                <li
+                  key={s.sessionId}
+                  className="flex items-center gap-2 text-[0.6875rem] text-neutral-400"
                 >
-                  {copiedId === s.sessionId ? (
-                    <Check className="w-3 h-3" />
-                  ) : (
-                    <Copy className="w-3 h-3" />
-                  )}
-                </button>
-              </li>
-            ))}
+                  <Tooltip label={tooltipLabel} block className="flex-1">
+                    <span className="block truncate text-neutral-300">
+                      {prompt
+                        ? prompt
+                        : promptFetched
+                          ? <span className="text-neutral-600 italic">no prompt</span>
+                          : <span className="text-neutral-700">…</span>}
+                    </span>
+                  </Tooltip>
+                  <span
+                    className="flex-none text-neutral-600 tabular-nums"
+                    title={s.sessionId}
+                  >
+                    {relativeTime(s.lastActivity)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(s.sessionId)}
+                    title="Copy `claude --resume` command"
+                    className="flex-none text-neutral-500 hover:text-wt-claude-ide transition-colors"
+                  >
+                    {copiedId === s.sessionId ? (
+                      <Check className="w-3 h-3" />
+                    ) : (
+                      <Copy className="w-3 h-3" />
+                    )}
+                  </button>
+                </li>
+              );
+            })}
           </motion.ul>
         )}
       </AnimatePresence>
