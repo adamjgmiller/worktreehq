@@ -91,7 +91,14 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       // show a misleading "MERGED (SQUASH)" pill while the user is still
       // actively working through the PR.
       const hasOpenPR = match?.pr?.state === 'open';
-      if (match && (match.mergeStatus === 'unmerged' || match.mergeStatus === 'empty') && isLikelySquash && !hasOpenPR) {
+      // Guard: don't tag an `empty` branch (aheadOfMain === 0) as squash-merged
+      // based solely on a branch-name match against a historical PR. A branch
+      // with zero commits of its own cannot currently contain whatever was
+      // merged — any match is a name collision with a previously merged-and-
+      // deleted branch that the user has since recreated for unrelated work.
+      // `empty` branches still appear in the "safe to delete" filter via the
+      // no-worktree + >1 day rule, so bulk cleanup is unaffected.
+      if (match && match.mergeStatus === 'unmerged' && isLikelySquash && !hasOpenPR) {
         match.mergeStatus = 'squash-merged';
         // Only attach the historical merged PR when the branch doesn't
         // already carry an open PR from refreshLoop's listOpenPRsForBranches
@@ -100,7 +107,7 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
         if (!match.pr || match.pr.state !== 'open') {
           match.pr = pr;
         }
-      } else if (match) {
+      } else if (match && match.mergeStatus !== 'empty') {
         if (!match.pr || match.pr.state !== 'open') {
           match.pr = pr;
         }

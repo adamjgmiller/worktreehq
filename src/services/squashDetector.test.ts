@@ -279,18 +279,21 @@ describe('detectSquashMerges: PR-tag pass respects open PRs', () => {
   });
 });
 
-describe('detectSquashMerges: PR-tag pass reclassifies empty branches', () => {
+describe('detectSquashMerges: PR-tag pass does not ghost-tag empty branches', () => {
   beforeEach(() => {
     _clearCherryCacheForTests();
     cherryCheckMock.mockReset();
     batchFetchPRsMock.mockReset();
   });
 
-  // Regression: a branch tagged `empty` by listBranches (aheadOfMain === 0)
-  // could still match a squash-merged PR — e.g. the branch was squash-merged
-  // and then its ref was moved to point at main. The PR-tag pass used to
-  // skip these because it only checked `mergeStatus === 'unmerged'`.
-  it('reclassifies an empty branch as squash-merged when it matches a merged PR', async () => {
+  // Regression: a brand-new branch that happens to share its name with a
+  // previously-merged-and-deleted branch was being tagged `squash-merged`
+  // by the PR-tag pass, because the pass matched on branch name alone
+  // (`pr.headRef === sourceBranch`). An `empty` branch has zero commits of
+  // its own and therefore cannot currently contain whatever was merged —
+  // any match is a name collision, not a legitimate squash. The branch
+  // should stay `empty` and no historical PR metadata should be attached.
+  it('does not tag an empty branch as squash-merged on a historical name collision', async () => {
     const mergedPR = {
       number: 15,
       title: 'Ship feature Y',
@@ -318,6 +321,7 @@ describe('detectSquashMerges: PR-tag pass reclassifies empty branches', () => {
           aheadOfMain: 0,
           behindMain: 0,
           // listBranches tagged this as `empty` because aheadOfMain === 0.
+          // This is a freshly-created branch that reused the old name.
           mergeStatus: 'empty',
         } as Branch,
       ],
@@ -327,7 +331,14 @@ describe('detectSquashMerges: PR-tag pass reclassifies empty branches', () => {
     });
 
     const branch = result.updatedBranches.find((b) => b.name === 'feat/y')!;
-    expect(branch.mergeStatus).toBe('squash-merged');
-    expect(branch.pr!.number).toBe(15);
+    // Should stay `empty` — the matching PR is a ghost from a prior branch
+    // with the same name, not the current branch's merge state.
+    expect(branch.mergeStatus).toBe('empty');
+    // And no stale PR metadata should be attached, or the UI would render
+    // a misleading "merged PR #15" badge next to a brand-new branch.
+    expect(branch.pr).toBeUndefined();
+    // The archaeology mapping still exists — that info is historically
+    // correct regardless of whether the current branch is the same one.
+    expect(result.mappings.find((m) => m.prNumber === 15)).toBeDefined();
   });
 });
