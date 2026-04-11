@@ -59,6 +59,16 @@ export default function App() {
   const [zoomTick, setZoomTick] = useState(0);
   useRepoBootstrap();
   useTheme();
+
+  // Global "open settings" event. Dispatched from the Create Worktree
+  // dialog's "Edit default in Settings" link so it doesn't need to prop-
+  // drill setSettingsOpen through WorktreesView. Matches the existing
+  // wthq:create-worktree pattern.
+  useEffect(() => {
+    const handler = () => setSettingsOpen(true);
+    window.addEventListener('wthq:open-settings', handler);
+    return () => window.removeEventListener('wthq:open-settings', handler);
+  }, []);
   useKeyboardShortcuts({
     tab,
     setTab,

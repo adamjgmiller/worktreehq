@@ -40,6 +40,13 @@ pub struct AppConfig {
     // coerced back to "dark" on read.
     #[serde(default = "default_theme")]
     pub theme: String,
+    // Shell script run in each newly-created worktree's directory right after
+    // `git worktree add` succeeds. Multi-line, fed verbatim to `sh -c` so
+    // `&&`, env-var expansion, and `cd` all work. Empty string means "no
+    // post-create step" and is the default. Editable per-invocation in the
+    // Create Worktree dialog; this field is the saved default.
+    #[serde(default)]
+    pub post_create_commands: String,
 }
 
 // 15s default. The filesystem watcher (scoped to .git/) covers the immediacy
@@ -92,6 +99,7 @@ pub fn read_config() -> AppResult<AppConfig> {
             recent_repo_paths: Vec::new(),
             zoom_level: default_zoom_level(),
             theme: default_theme(),
+            post_create_commands: String::new(),
         });
     }
     let text = std::fs::read_to_string(&p).map_err(AppError::Io)?;

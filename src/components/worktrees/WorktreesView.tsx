@@ -25,6 +25,8 @@ import {
 } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
 import { pickDirectory } from '../../services/repoSelect';
+import { runShellCommands } from '../../services/shellService';
+import { invoke } from '../../services/tauriBridge';
 import {
   writeWorktreeOrder,
   writeWorktreeSortMode,
@@ -75,6 +77,10 @@ export function WorktreesView() {
   const [createOpen, setCreateOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Worktree | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Saved default for post-create commands. Re-read from config each time
+  // the Create dialog opens so edits made in Settings between creations
+  // are reflected. The dialog seeds its own editable state from this.
+  const [defaultPostCreate, setDefaultPostCreate] = useState('');
 
   const sensors = useSensors(
     useSensor(CardPointerSensor, { activationConstraint: { distance: 8 } }),
@@ -142,12 +148,49 @@ export function WorktreesView() {
     return () => window.removeEventListener('wthq:create-worktree', handler);
   }, []);
 
+  // Re-read the saved default whenever the Create dialog opens so a change
+  // made in Settings between creations shows up immediately. Best-effort:
+  // on failure we just fall back to whatever was last loaded (or empty).
+  useEffect(() => {
+    if (!createOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await invoke<{ post_create_commands?: string }>('read_config');
+        if (!cancelled) setDefaultPostCreate(cfg.post_create_commands ?? '');
+      } catch {
+        /* leave previous value in place */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [createOpen]);
+
   async function handleCreate(v: CreateWorktreeValue) {
     if (!repo) return;
     try {
       await createWorktree(repo.path, v.path, v.branch, v.newBranch);
+      // Close the dialog as soon as the worktree exists — the refresh and
+      // post-create script both run after. Keeping it open through a long
+      // `npm install` would be confusing UX.
       setCreateOpen(false);
       await refreshOnce({ userInitiated: true });
+      // Post-create script runs AFTER git succeeds. If it fails we surface
+      // the output via the error banner but deliberately do NOT roll back
+      // the worktree — the directory is real and might contain files the
+      // user wants to inspect. Empty scripts short-circuit in the Rust
+      // command so the common case has no overhead.
+      if (v.postCreateCommands.trim()) {
+        const result = await runShellCommands(v.path, v.postCreateCommands);
+        if (result.code !== 0) {
+          const body = (result.stderr || result.stdout || '').trim();
+          setError(
+            `Worktree created, but post-create commands failed (exit ${result.code})` +
+              (body ? `:\n${body}` : '.'),
+          );
+        }
+      }
     } catch (e: any) {
       setError(e?.message ?? String(e));
     }
@@ -308,6 +351,7 @@ export function WorktreesView() {
         <CreateWorktreeDialog
           branches={branches}
           defaultBranch={repo.defaultBranch}
+          defaultPostCreateCommands={defaultPostCreate}
           onCancel={() => setCreateOpen(false)}
           onConfirm={handleCreate}
           onPickDirectory={pickDirectory}

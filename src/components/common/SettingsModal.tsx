@@ -10,11 +10,13 @@ import { X } from 'lucide-react';
 // set of fields and silently dropped recent_repo_paths on every save.
 type AppConfigShape = Record<string, unknown> & {
   github_token?: string;
+  post_create_commands?: string;
 };
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const setGithubAuthStatus = useRepoStore((s) => s.setGithubAuthStatus);
   const [token, setToken] = useState('');
+  const [postCreateCommands, setPostCreateCommands] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +47,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         if (cancelled) return;
         baseCfgRef.current = cfg;
         setToken((cfg.github_token as string | undefined) ?? '');
+        setPostCreateCommands((cfg.post_create_commands as string | undefined) ?? '');
         setLoaded(true);
       } catch (e: any) {
         if (cancelled) return;
@@ -100,6 +103,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           ...base,
           github_token: token,
           github_token_explicitly_set: true,
+          post_create_commands: postCreateCommands,
         },
       });
       initGithub(token);
@@ -133,14 +137,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-wt-panel border border-wt-border rounded-xl p-6 w-[480px]">
+      <div className="bg-wt-panel border border-wt-border rounded-xl p-6 w-[560px]">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">GitHub Token</h2>
+          <h2 className="text-lg font-semibold">Settings</h2>
           <button onClick={onClose} aria-label="close">
             <X className="w-4 h-4" />
           </button>
         </div>
-        <p className="text-sm text-wt-fg-2 mb-3">
+        <h3 className="text-sm font-semibold mb-1">GitHub Token</h3>
+        <p className="text-xs text-wt-fg-2 mb-3">
           Needed to look up PRs for squash-merge detection. Stored in{' '}
           <code className="font-mono">~/.config/worktreehq/config.toml</code>.
         </p>
@@ -163,6 +168,26 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               clear
             </button>
           )}
+        </div>
+        <div className="mt-5 pt-5 border-t border-wt-border">
+          <h3 className="text-sm font-semibold mb-1">Post-create commands</h3>
+          <p className="text-xs text-wt-fg-2 mb-2">
+            Runs in each new worktree's directory after{' '}
+            <code className="font-mono">git worktree add</code> succeeds.
+            Piped to <code className="font-mono">/bin/sh</code>, so{' '}
+            <code className="font-mono">&amp;&amp;</code>, env vars, and{' '}
+            <code className="font-mono">cd</code> all work. Failures surface
+            as an error but do not undo the worktree.
+          </p>
+          <textarea
+            value={postCreateCommands}
+            onChange={(e) => setPostCreateCommands(e.target.value)}
+            placeholder={'cp ../main/.env .env\nnpm install'}
+            disabled={loading || saving}
+            rows={5}
+            spellCheck={false}
+            className="w-full bg-wt-bg border border-wt-border rounded px-3 py-2 font-mono text-xs resize-y disabled:opacity-50"
+          />
         </div>
         {error && (
           <div className="mt-3 text-xs text-wt-conflict bg-wt-conflict/10 border border-wt-conflict/40 rounded px-2 py-1.5 font-mono">
