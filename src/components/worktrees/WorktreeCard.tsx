@@ -44,6 +44,57 @@ const inProgressLabel: Record<InProgressOp, string> = {
   bisect: 'BISECT IN PROGRESS',
 };
 
+// The pathname row doubles as a click-to-copy target. The tooltip label flips
+// to "Copied!" for 1500ms after a successful write so the user gets feedback
+// without introducing a separate icon/button. Cursor switches from the default
+// `cursor-help` to `cursor-copy` because there's now a real action attached —
+// the `?` cursor would mislead ("hover for info") when click actually copies.
+function CopyablePath({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(path);
+    } catch {
+      window.prompt('Copy this path:', path);
+      return;
+    }
+    setCopied(true);
+    if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <Tooltip
+      block
+      label={
+        copied ? (
+          <span>Copied!</span>
+        ) : (
+          <span className="font-mono break-all">{path}</span>
+        )
+      }
+    >
+      <button
+        type="button"
+        onClick={handleCopy}
+        aria-label="Copy worktree path"
+        className="block w-full text-left text-xs font-mono text-neutral-500 truncate cursor-copy hover:text-neutral-300 transition-colors"
+      >
+        {path}
+      </button>
+    </Tooltip>
+  );
+}
+
 export function WorktreeCard({
   wt,
   onRemove,
@@ -377,11 +428,7 @@ export function WorktreeCard({
         </Tooltip>
       )}
       <div className="mb-4">
-        <Tooltip block label={<span className="font-mono break-all">{wt.path}</span>}>
-          <div className="text-xs font-mono text-neutral-500 truncate cursor-help">
-            {wt.path}
-          </div>
-        </Tooltip>
+        <CopyablePath path={wt.path} />
       </div>
       <div className="grid grid-cols-3 gap-2 text-xs mb-3">
         <Stat label="untracked" value={wt.untrackedCount} />
@@ -507,11 +554,7 @@ function OrphanedCard({
         </div>
       </div>
       <div className="mb-3">
-        <Tooltip block label={<span className="font-mono break-all">{wt.path}</span>}>
-          <div className="text-xs font-mono text-neutral-500 truncate cursor-help">
-            {wt.path}
-          </div>
-        </Tooltip>
+        <CopyablePath path={wt.path} />
       </div>
       {onPruneOrphan && (
         <button
