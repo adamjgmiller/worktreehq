@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Plus } from 'lucide-react';
 import {
@@ -91,7 +91,26 @@ export function WorktreesView() {
   // handleSortModeChange below for the why.
   const [animateLayout, setAnimateLayout] = useState(false);
   const animateTimerRef = useRef<number | null>(null);
-  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  // Callback ref for the scroll container. Tracks scroll/pointer activity
+  // on the grid so the refresh commit can defer itself until the user is
+  // idle. See services/interactionBusy.ts — listeners are passive so they
+  // never block scroll themselves; they just poke a module-level busy-until
+  // timestamp that waitForInteractionIdle polls.
+  //
+  // Using a callback ref (rather than useRef + useEffect) ties listener
+  // lifetime to the actual DOM node's mount/unmount, so any remount of the
+  // container cleanly detaches from the old node and re-attaches to the new.
+  // The inner ref holds the detach fn from the previously-attached node.
+  const scrollListenerCleanupRef = useRef<(() => void) | null>(null);
+  const scrollContainerRef = useCallback((el: HTMLDivElement | null) => {
+    if (scrollListenerCleanupRef.current) {
+      scrollListenerCleanupRef.current();
+      scrollListenerCleanupRef.current = null;
+    }
+    if (el) {
+      scrollListenerCleanupRef.current = attachInteractionListeners(el);
+    }
+  }, []);
   useEffect(() => {
     return () => {
       if (animateTimerRef.current != null) {
@@ -99,17 +118,6 @@ export function WorktreesView() {
       }
     };
   }, []);
-
-  // Track scroll/pointer activity on the grid container so the refresh
-  // commit can defer itself until the user is idle. See
-  // services/interactionBusy.ts — listeners are passive so they never block
-  // scroll themselves; they just poke a module-level busy-until timestamp
-  // that waitForInteractionIdle polls.
-  useEffect(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    return attachInteractionListeners(el);
-  }, [worktrees.length === 0]);
 
   const sensors = useSensors(
     useSensor(CardPointerSensor, { activationConstraint: { distance: 8 } }),

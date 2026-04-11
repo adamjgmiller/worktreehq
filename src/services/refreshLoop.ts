@@ -203,6 +203,16 @@ async function runRefreshOnce(opts?: { userInitiated?: boolean }): Promise<void>
       await waitForInteractionIdle();
     }
 
+    // The pipeline started against `repo` captured at the top of this run,
+    // and `waitForInteractionIdle` above may have delayed us by up to 1.5s.
+    // If the user switched repos during that wait, committing now would
+    // clobber the NEW repo's data with this OLD repo's pipeline results and
+    // set `dataRepoPath` to the old path — re-opening the exact stale-flash
+    // window that PR #22 closed (1-5s of previous repo's data after a
+    // switch). Bail silently instead; the new repo's own refresh is already
+    // managing its loading state, so don't touch `loading` here.
+    if (useRepoStore.getState().repo?.path !== repo.path) return;
+
     // Atomic commit — a single setState triggers exactly one render pass.
     // dataRepoPath is set ONLY on success (never in a finally) so a failed
     // first refresh leaves the gate closed and we keep showing the shimmer

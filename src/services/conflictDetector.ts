@@ -5,7 +5,7 @@ import type {
   OverlapSeverity,
   WorktreeConflictSummary,
 } from '../types';
-import { getChangedFiles, getMergeBase, simulateMerge } from './gitService';
+import { getChangedFiles, getMergeBase, resolveRef, simulateMerge } from './gitService';
 
 // ─── Caches ────────────────────────────────────────────────────────────
 // Content-addressed by branch + head SHA so entries auto-invalidate when
@@ -154,6 +154,16 @@ export async function detectCrossWorktreeConflicts(
     (w) => !w.isPrimary && !w.prunable && w.branch && w.branch !== 'HEAD',
   );
 
+  // Resolve the baseline `origin/<defaultBranch>` SHA up front. This is part
+  // of BOTH the top-level signature and the inner changedFilesCache key
+  // because `getChangedFiles` diffs against `origin/${defaultBranch}` — if a
+  // fetch advances the remote baseline without any feature branch HEAD
+  // moving, the candidate signatures alone wouldn't change and both caches
+  // would serve stale results. Do NOT "simplify" this out of either key.
+  // Empty string is fine (missing remote ref) — it still flips when the ref
+  // appears later, which invalidates the cache correctly.
+  const baselineSha = await resolveRef(repoPath, `origin/${defaultBranch}`);
+
   // Top-level cache check. Signature captures every input that could move
   // the result; on a quiet tick (no commits anywhere) this returns the
   // previous result by reference, which structural sharing upstream relies
@@ -162,6 +172,8 @@ export async function detectCrossWorktreeConflicts(
     repoPath +
     '\0' +
     defaultBranch +
+    '\0' +
+    baselineSha +
     '\0' +
     candidates
       .map((w) => `${w.path}\t${w.branch}\t${w.head}`)
@@ -188,7 +200,11 @@ export async function detectCrossWorktreeConflicts(
   const filesByBranch = new Map<string, Set<string>>();
   await Promise.all(
     candidates.map(async (wt) => {
-      const cacheKey = `${wt.branch}:${wt.head}`;
+      // baselineSha is part of the key because getChangedFiles diffs against
+      // `origin/${defaultBranch}` — a fetch that advances the remote without
+      // moving wt.head must still invalidate this entry. See the comment
+      // above where baselineSha is resolved.
+      const cacheKey = `${baselineSha}:${wt.branch}:${wt.head}`;
       let files = changedFilesCache.get(cacheKey);
       if (!files) {
         files = await getChangedFiles(repoPath, defaultBranch, wt.branch);
