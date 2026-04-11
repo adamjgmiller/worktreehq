@@ -203,7 +203,7 @@ export default function App() {
       <ZoomIndicator zoomLevel={zoomLevel} pulseKey={zoomTick} />
       <button
         onClick={() => setHelpOpen(true)}
-        className="fixed bottom-4 right-6 z-40 flex items-center gap-1.5 text-[11px] text-neutral-600 hover:text-neutral-400 transition-colors"
+        className="fixed bottom-4 right-6 z-10 flex items-center gap-1.5 text-[11px] text-neutral-600 hover:text-neutral-400 transition-colors"
         style={{ fontSize: '11px' }}
       >
         <kbd className="px-1 py-0.5 rounded border border-neutral-700/60 bg-neutral-800/50 text-neutral-500 font-mono text-[10px] leading-none">?</kbd>
