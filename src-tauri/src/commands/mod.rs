@@ -7,3 +7,4 @@ pub mod notepads;
 pub mod pr_cache;
 pub mod repo;
 pub mod watcher;
+pub mod worktree_order;

@@ -26,6 +26,8 @@ pub fn run() {
             commands::fs_probe::path_exists,
             commands::pr_cache::read_pr_cache,
             commands::pr_cache::write_pr_cache,
+            commands::worktree_order::read_worktree_order,
+            commands::worktree_order::write_worktree_order,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

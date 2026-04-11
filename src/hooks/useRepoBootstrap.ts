@@ -10,6 +10,7 @@ import {
   stopFetchLoop,
   stopRefreshLoop,
 } from '../services/refreshLoop';
+import { readWorktreeOrder } from '../services/worktreeOrderService';
 
 // Minimum gap between watcher-driven refreshes. The 250ms debounce below
 // coalesces a burst of events, but on its own doesn't cap throughput — a
@@ -43,6 +44,7 @@ export function useRepoBootstrap() {
   const setFetchInterval = useRepoStore((s) => s.setFetchInterval);
   const setZoomLevel = useRepoStore((s) => s.setZoomLevel);
   const setRecentRepoPaths = useRepoStore((s) => s.setRecentRepoPaths);
+  const setWorktreeOrder = useRepoStore((s) => s.setWorktreeOrder);
   // Derive just the sorted-paths key so the watcher effect only re-runs when the
   // actual path SET changes — not on every refresh tick when other worktree
   // fields (branch name, commit count, etc.) churn.
@@ -132,6 +134,14 @@ export function useRepoBootstrap() {
           owner: remote.owner,
           name: remote.name,
         });
+        // Hydrate persisted card order for this repo before the first
+        // refresh lands, so cards appear in the user's saved arrangement.
+        try {
+          const order = await readWorktreeOrder(info.path);
+          setWorktreeOrder(order);
+        } catch {
+          /* best-effort; empty order preserves git's natural ordering */
+        }
         startRefreshLoop();
         startFetchLoop();
 
@@ -171,6 +181,7 @@ export function useRepoBootstrap() {
     setFetchInterval,
     setZoomLevel,
     setRecentRepoPaths,
+    setWorktreeOrder,
   ]);
 
   // Re-register the watcher on the Rust side whenever the set of worktree paths changes.
