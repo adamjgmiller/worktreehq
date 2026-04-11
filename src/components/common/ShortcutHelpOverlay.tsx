@@ -1,5 +1,5 @@
-const isMac =
-  typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+import { isMac } from '../../lib/platform';
+
 const MOD = isMac ? '⌘' : 'Ctrl';
 
 type ShortcutGroup = { title: string; items: { keys: string; desc: string }[] };

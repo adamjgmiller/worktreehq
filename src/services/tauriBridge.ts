@@ -68,6 +68,16 @@ export async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+export type ShellOpenAction = 'file_manager' | 'terminal';
+
+// Launch an OS-native app to open the given directory. Fire-and-forget:
+// resolves as soon as the subprocess is spawned, not when the target app
+// finishes loading. Errors surface only for useful failure modes (path
+// gone, no terminal emulator found on Linux) — not for post-launch events.
+export async function shellOpen(path: string, action: ShellOpenAction): Promise<void> {
+  await invoke<void>('shell_open', { path, action });
+}
+
 export async function readPrCacheFile(): Promise<string> {
   try {
     return await invoke<string>('read_pr_cache');

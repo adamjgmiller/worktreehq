@@ -6,5 +6,6 @@ pub mod git_exec;
 pub mod notepads;
 pub mod pr_cache;
 pub mod repo;
+pub mod shell_open;
 pub mod watcher;
 pub mod worktree_order;
