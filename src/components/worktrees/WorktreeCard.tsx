@@ -17,6 +17,8 @@ import {
   Trash2,
   ArrowDownToLine,
   Loader2,
+  FolderOpen,
+  SquareTerminal,
 } from 'lucide-react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -27,6 +29,8 @@ import { relativeTime, shortSha, aheadBehind, basename } from '../../lib/format'
 import { resumeCommand } from '../../services/claudeAwarenessService';
 import { pullFastForward } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
+import { shellOpen } from '../../services/tauriBridge';
+import { fileManagerLabel } from '../../lib/platform';
 import { useRepoStore } from '../../store/useRepoStore';
 import { Tooltip } from '../common/Tooltip';
 import { Notepad } from './Notepad';
@@ -116,6 +120,24 @@ export function WorktreeCard({
       document.removeEventListener('keydown', onKey);
     };
   }, [menuOpen]);
+  const handleOpenInFileManager = async () => {
+    setMenuOpen(false);
+    setError(null);
+    try {
+      await shellOpen(wt.path, 'file_manager');
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    }
+  };
+  const handleOpenInTerminal = async () => {
+    setMenuOpen(false);
+    setError(null);
+    try {
+      await shellOpen(wt.path, 'terminal');
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    }
+  };
   // Solid-dot vs ring is the visual analogue of the new green semantic:
   // a solid green dot means "clean AND merged into main", a slate ring
   // means "clean but the work hasn't landed yet". The other three states
@@ -288,45 +310,59 @@ export function WorktreeCard({
             </span>
           </Tooltip>
         )}
-        {(onRemove || onPrune) && (
-          <div className="relative" ref={menuRef}>
-            <button
-              onClick={() => setMenuOpen((v) => !v)}
-              className="p-1 -mt-0.5 rounded hover:bg-wt-border"
-              aria-label="worktree actions"
-            >
-              <MoreVertical className="w-4 h-4 text-neutral-400" />
-            </button>
-            {menuOpen && (
-              <div className="absolute right-0 top-full mt-1 z-20 w-40 bg-wt-panel border border-wt-border rounded shadow-lg text-xs">
-                {onRemove && (
-                  <button
-                    disabled={wt.isPrimary}
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onRemove(wt);
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-wt-border disabled:opacity-40"
-                    title={wt.isPrimary ? 'Cannot remove primary worktree' : ''}
-                  >
-                    Remove worktree
-                  </button>
-                )}
-                {onPrune && (
-                  <button
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onPrune();
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-wt-border border-t border-wt-border"
-                  >
-                    Prune worktrees
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
+        <div className="relative" ref={menuRef}>
+          <button
+            onClick={() => setMenuOpen((v) => !v)}
+            className="p-1 -mt-0.5 rounded hover:bg-wt-border"
+            aria-label="worktree actions"
+          >
+            <MoreVertical className="w-4 h-4 text-neutral-400" />
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 top-full mt-1 z-20 w-48 bg-wt-panel border border-wt-border rounded shadow-lg text-xs">
+              <button
+                type="button"
+                onClick={handleOpenInFileManager}
+                className="w-full text-left px-3 py-2 hover:bg-wt-border flex items-center gap-2"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-neutral-400" />
+                {fileManagerLabel()}
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenInTerminal}
+                className="w-full text-left px-3 py-2 hover:bg-wt-border flex items-center gap-2 border-b border-wt-border"
+              >
+                <SquareTerminal className="w-3.5 h-3.5 text-neutral-400" />
+                Open in Terminal
+              </button>
+              {onRemove && (
+                <button
+                  disabled={wt.isPrimary}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onRemove(wt);
+                  }}
+                  className="w-full text-left px-3 py-2 hover:bg-wt-border disabled:opacity-40"
+                  title={wt.isPrimary ? 'Cannot remove primary worktree' : ''}
+                >
+                  Remove worktree
+                </button>
+              )}
+              {onPrune && (
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onPrune();
+                  }}
+                  className="w-full text-left px-3 py-2 hover:bg-wt-border border-t border-wt-border"
+                >
+                  Prune worktrees
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       {wt.inProgress && (
         <Tooltip
