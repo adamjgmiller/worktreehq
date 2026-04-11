@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import type { Branch, ChecksStatus, ReviewDecision } from '../../types';
-import { mergeStatusClass, mergeStatusLabel } from '../../lib/colors';
+import { mergeStatusClass, mergeStatusLabel, mergeStatusTooltip } from '../../lib/colors';
 import { relativeTime, aheadBehind, shortSha } from '../../lib/format';
 import {
   HardDrive,
@@ -96,6 +96,11 @@ export function BranchRow({
               </span>
             </Tooltip>
           )}
+          {branch.mergeStatus === 'empty' && (
+            <Tooltip label="Not checked out in any worktree — probably abandoned">
+              <span className="text-neutral-600 text-[0.5625rem] font-mono">no worktree</span>
+            </Tooltip>
+          )}
         </div>
         <div className="text-[0.625rem] text-neutral-600 font-mono">{shortSha(branch.lastCommitSha)}</div>
       </td>
@@ -125,14 +130,20 @@ export function BranchRow({
         </div>
       </td>
       <td className="px-3 py-3">
-        <span
-          className={clsx(
-            'px-2 py-0.5 text-[0.625rem] font-mono border rounded',
-            mergeStatusClass(branch.mergeStatus),
-          )}
-        >
-          {mergeStatusLabel(branch.mergeStatus)}
-        </span>
+        {(() => {
+          const tooltip = mergeStatusTooltip(branch.mergeStatus);
+          const pill = (
+            <span
+              className={clsx(
+                'px-2 py-0.5 text-[0.625rem] font-mono border rounded',
+                mergeStatusClass(branch.mergeStatus),
+              )}
+            >
+              {mergeStatusLabel(branch.mergeStatus)}
+            </span>
+          );
+          return tooltip ? <Tooltip label={tooltip}>{pill}</Tooltip> : pill;
+        })()}
       </td>
       <td className="px-3 py-3 font-mono text-xs text-neutral-400">
         {aheadBehind(branch.aheadOfMain, branch.behindMain)}

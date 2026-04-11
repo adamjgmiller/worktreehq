@@ -226,6 +226,55 @@ describe('refreshOnce userInitiated flag', () => {
   });
 });
 
+describe('refreshOnce worktree-attached empty branch demotion', () => {
+  it('demotes empty branches to unmerged when they have a worktree', async () => {
+    asMock(git.listWorktrees).mockResolvedValueOnce([
+      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'clean', isBare: false },
+    ]);
+    asMock(git.listBranches).mockResolvedValueOnce([
+      {
+        name: 'feat',
+        hasLocal: true,
+        hasRemote: true,
+        lastCommitDate: new Date().toISOString(),
+        lastCommitSha: 'aaa',
+        aheadOfMain: 0,
+        behindMain: 0,
+        mergeStatus: 'empty',
+      },
+      {
+        name: 'orphan',
+        hasLocal: true,
+        hasRemote: false,
+        lastCommitDate: new Date().toISOString(),
+        lastCommitSha: 'bbb',
+        aheadOfMain: 0,
+        behindMain: 0,
+        mergeStatus: 'empty',
+      },
+    ]);
+    // detectSquashMerges passes branches through unchanged by default —
+    // mirror that so the enrichment-stage demotion is visible in the store.
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }) => ({
+      updatedBranches: bs,
+      mappings: [],
+    }));
+
+    await refreshOnce();
+
+    const branches = useRepoStore.getState().branches;
+    const feat = branches.find((b) => b.name === 'feat')!;
+    const orphan = branches.find((b) => b.name === 'orphan')!;
+
+    // feat has a worktree → demoted to unmerged
+    expect(feat.mergeStatus).toBe('unmerged');
+    expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
+    // orphan has no worktree → stays empty
+    expect(orphan.mergeStatus).toBe('empty');
+    expect(orphan.worktreePath).toBeUndefined();
+  });
+});
+
 describe('runFetchOnce', () => {
   it('runs fetchAllPrune and then triggers a downstream refresh', async () => {
     await runFetchOnce();

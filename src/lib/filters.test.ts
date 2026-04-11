@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyPreset, searchBranches } from './filters';
+import { applyPreset, filterMine, searchBranches } from './filters';
 import type { Branch } from '../types';
 
 function b(over: Partial<Branch>): Branch {
@@ -32,16 +32,35 @@ describe('applyPreset', () => {
     expect(out).toContain('merged-squash');
     expect(out).not.toContain('has-wt');
   });
-  // Empty branches are NOT in safe-to-delete by default. They have no work,
-  // so deletion is technically safe — but the preset is conservative because
-  // a user often creates an empty branch precisely to start working in. If
-  // we ever want bulk-delete of empty branches, do it as a separate preset.
-  it('safe-to-delete excludes empty branches', () => {
+  it('safe-to-delete includes empty branches older than 1 day', () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
     const out = applyPreset(
-      [...branches, b({ name: 'fresh', mergeStatus: 'empty' })],
+      [...branches, b({ name: 'old-empty', mergeStatus: 'empty', lastCommitDate: twoDaysAgo })],
+      'safe-to-delete',
+    ).map((x) => x.name);
+    expect(out).toContain('old-empty');
+  });
+  it('safe-to-delete excludes empty branches created today', () => {
+    const out = applyPreset(
+      [...branches, b({ name: 'fresh', mergeStatus: 'empty', lastCommitDate: new Date().toISOString() })],
       'safe-to-delete',
     ).map((x) => x.name);
     expect(out).not.toContain('fresh');
+  });
+  it('empty preset returns only empty branches', () => {
+    const out = applyPreset(
+      [...branches, b({ name: 'fresh', mergeStatus: 'empty' })],
+      'empty',
+    ).map((x) => x.name);
+    expect(out).toEqual(['fresh']);
+  });
+  it('empty preset excludes the repo default branch', () => {
+    const out = applyPreset(
+      [b({ name: 'main', mergeStatus: 'empty' }), b({ name: 'scratch', mergeStatus: 'empty' })],
+      'empty',
+      { defaultBranch: 'main' },
+    ).map((x) => x.name);
+    expect(out).toEqual(['scratch']);
   });
   it('stale only stale', () => {
     expect(applyPreset(branches, 'stale').map((x) => x.name)).toEqual(['stale']);
@@ -91,7 +110,7 @@ describe('applyPreset: default-branch guard', () => {
   });
 });
 
-describe('applyPreset: mine', () => {
+describe('filterMine', () => {
   const branches: Branch[] = [
     b({ name: 'ada-branch', authorEmail: 'ada@example.com' }),
     b({ name: 'grace-branch', authorEmail: 'grace@example.com' }),
@@ -100,16 +119,40 @@ describe('applyPreset: mine', () => {
   ];
 
   it('matches the current user email case-insensitively', () => {
-    const out = applyPreset(branches, 'mine', { userEmail: 'ada@example.com' }).map((x) => x.name);
+    const out = filterMine(branches, 'ada@example.com').map((x) => x.name);
     expect(out).toEqual(['ada-branch', 'ada-upper']);
   });
+  it('includes local empty branches regardless of author', () => {
+    const withEmpty = [...branches, b({ name: 'empty-local', mergeStatus: 'empty', hasLocal: true, authorEmail: 'other@example.com' })];
+    const out = filterMine(withEmpty, 'ada@example.com').map((x) => x.name);
+    expect(out).toContain('empty-local');
+  });
+  it('excludes remote-only empty branches', () => {
+    const withRemoteEmpty = [...branches, b({ name: 'empty-remote', mergeStatus: 'empty', hasLocal: false, hasRemote: true, authorEmail: 'other@example.com' })];
+    const out = filterMine(withRemoteEmpty, 'ada@example.com').map((x) => x.name);
+    expect(out).not.toContain('empty-remote');
+  });
   it('returns empty when no user email is supplied', () => {
-    expect(applyPreset(branches, 'mine').length).toBe(0);
-    expect(applyPreset(branches, 'mine', { userEmail: '' }).length).toBe(0);
+    expect(filterMine(branches, undefined).length).toBe(0);
+    expect(filterMine(branches, '').length).toBe(0);
   });
   it('ignores branches with no recorded authorEmail', () => {
-    const out = applyPreset(branches, 'mine', { userEmail: 'someone-else@example.com' });
+    const out = filterMine(branches, 'someone-else@example.com');
     expect(out.map((x) => x.name)).toEqual([]);
+  });
+  it('layers on top of a preset', () => {
+    const all = [
+      b({ name: 'my-merged', mergeStatus: 'merged-normally', authorEmail: 'me@x.com' }),
+      b({ name: 'other-merged', mergeStatus: 'merged-normally', authorEmail: 'other@x.com' }),
+      b({ name: 'my-empty', mergeStatus: 'empty', authorEmail: 'other@x.com',
+        lastCommitDate: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString() }),
+    ];
+    const safeToDelete = applyPreset(all, 'safe-to-delete');
+    const mineOnly = filterMine(safeToDelete, 'me@x.com').map((x) => x.name);
+    expect(mineOnly).toContain('my-merged');
+    expect(mineOnly).not.toContain('other-merged');
+    // local empty branches pass through mine regardless of author
+    expect(mineOnly).toContain('my-empty');
   });
 });
 
