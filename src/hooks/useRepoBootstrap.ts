@@ -5,6 +5,7 @@ import { hydratePrCache, initGithub } from '../services/githubService';
 import { getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
 import {
   refreshOnce,
+  runFetchOnce,
   startFetchLoop,
   startRefreshLoop,
   stopFetchLoop,
@@ -141,6 +142,30 @@ export function useRepoBootstrap() {
           setWorktreeOrder(order);
         } catch {
           /* best-effort; empty order preserves git's natural ordering */
+        }
+        // Run the initial fetch BEFORE starting the refresh loop. Without
+        // this, `startRefreshLoop()` synchronously begins its first tick
+        // (and thus `runRefreshOnce`) BEFORE `startFetchLoop()` has even
+        // been called — so runRefreshOnce reads a stale
+        // `origin/<defaultBranch>` and squash-merged branches that landed
+        // while the app was closed briefly render as "unmerged" until the
+        // fetch-chained follow-up refresh corrects them. The recent
+        // `pendingBackgroundRefresh` fix only rescues the race where the
+        // fetch wins; when the first refresh wins, stale data gets
+        // committed to the store and the shimmer lifts on it. Awaiting
+        // runFetchOnce here guarantees the first data the user sees is
+        // post-fetch — its internal chained refreshOnce populates the
+        // store with up-to-date refs before the shimmer is lifted.
+        // Respect `fetchIntervalMs === 0` so users who explicitly
+        // disabled auto-fetch don't get a surprise startup network call.
+        const { fetchIntervalMs } = useRepoStore.getState();
+        if (fetchIntervalMs > 0) {
+          try {
+            await runFetchOnce();
+          } catch {
+            /* best-effort; runFetchOnce handles its own errors internally */
+          }
+          if (cancelled) return;
         }
         startRefreshLoop();
         startFetchLoop();
