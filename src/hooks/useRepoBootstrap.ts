@@ -159,22 +159,28 @@ export function useRepoBootstrap() {
         // Respect `fetchIntervalMs === 0` so users who explicitly
         // disabled auto-fetch don't get a surprise startup network call.
         const { fetchIntervalMs } = useRepoStore.getState();
-        const ranInitialFetch = fetchIntervalMs > 0;
-        if (ranInitialFetch) {
+        let initialFetchSucceeded = false;
+        if (fetchIntervalMs > 0) {
           try {
             await runFetchOnce();
+            initialFetchSucceeded = true;
           } catch {
             /* best-effort; runFetchOnce handles its own errors internally */
           }
           if (cancelled) return;
         }
         startRefreshLoop();
-        // When we already ran an initial fetch above, suppress startFetchLoop's
+        // When the initial fetch actually succeeded, suppress startFetchLoop's
         // immediate first tick — otherwise it would fire a second back-to-back
         // `fetchAllPrune` subprocess against refs that were JUST fetched (the
         // `fetchInFlight` guard can't dedupe it because the awaited fetch
-        // already cleared the flag). Waste is minor per launch but real.
-        startFetchLoop({ skipFirstTick: ranInitialFetch });
+        // already cleared the flag). When the initial fetch *failed* (transient
+        // network blip, SSH agent not yet unlocked at login, etc.), we do NOT
+        // skip — we want the fetch loop's immediate tick to retry right away
+        // instead of making the user wait a full `fetchIntervalMs` for fresh
+        // data. `runFetchOnce` swallows its own errors, so the retry can't
+        // break the loop.
+        startFetchLoop({ skipFirstTick: initialFetchSucceeded });
 
         // Wire the filesystem watcher events to a debounced refresh tick.
         try {
