@@ -348,6 +348,13 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     // user's click produces the feedback (and post-fetch refresh) they
     // expect. Background calls during an in-flight fetch remain dropped.
     if (userInitiated && fetchInFlightPromise) {
+      // Fire an optimistic local re-derive immediately so the UI responds
+      // within one frame even though the fetch we're joining may still be
+      // seconds away from completing. Fire-and-forget: the post-fetch
+      // refreshOnce() below will re-derive a second time against the
+      // freshly-fetched refs, sequenced behind this one via refreshOnce's
+      // pendingUserRefresh dedupe.
+      void refreshOnce({ userInitiated: true });
       await fetchInFlightPromise.catch(() => {});
       await refreshOnce(opts);
     }
@@ -357,6 +364,26 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   if (!repo) return;
   fetchInFlight = true;
   setFetching(true);
+  // Optimistic refresh. User-initiated clicks fire an immediate refreshOnce
+  // against LOCAL state (no waiting for the network fetch) so cards update
+  // within ~half a second instead of after the 1-2 seconds the remote takes
+  // to respond. The real fetch runs in parallel below; once it completes,
+  // `await refreshOnce(opts)` re-derives a second time with the fresh remote
+  // refs. Dedupe semantics in refreshOnce handle the sequencing: if the
+  // optimistic is still in flight when the post-fetch call fires, the
+  // post-fetch call queues as pendingUserRefresh and runs automatically
+  // after the optimistic completes. If the optimistic has already finished,
+  // the post-fetch call starts a fresh pipeline.
+  //
+  // Fire-and-forget (`void`) because the spinner lifecycle is owned by the
+  // `fetching` flag (set here) combined with `userRefreshing` (set inside
+  // refreshOnce), and either alone is sufficient to keep the RepoBar
+  // indicator spinning through both phases. We intentionally do NOT await
+  // the optimistic refresh — awaiting it would serialize it with the fetch
+  // and cost us the parallelism that makes this feel instant.
+  if (userInitiated) {
+    void refreshOnce({ userInitiated: true });
+  }
   let fetchFailed = false;
   const body = (async () => {
   try {
