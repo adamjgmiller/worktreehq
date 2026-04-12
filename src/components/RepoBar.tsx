@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, Settings, Github, Download, AlertTriangle, Sun, Moon } from 'lucide-react';
+import { RefreshCw, Settings, Github, Download, AlertTriangle, Sun, Moon, Terminal, Key } from 'lucide-react';
 import { useRepoStore } from '../store/useRepoStore';
 import { isMac } from '../lib/platform';
 import { runFetchOnce } from '../services/refreshLoop';
@@ -33,6 +33,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
   }, []);
   const lastFetchError = useRepoStore((s) => s.lastFetchError);
   const authStatus = useRepoStore((s) => s.githubAuthStatus);
+  const authMethod = useRepoStore((s) => s.authMethod);
   const themePreference = useRepoStore((s) => s.themePreference);
   const setThemePreference = useRepoStore((s) => s.setThemePreference);
   // What the user sees RIGHT NOW. When the preference is "system" this
@@ -95,10 +96,9 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
         <RefreshCw className={`w-4 h-4 ${busy ? 'animate-spin' : ''}`} />
       </button>
       {/*
-        Tri-state auth pill. 'checking' renders with the 'missing' yellow so
-        the brief bootstrap transition doesn't flash a fourth color — the
-        user either sees yellow hold steady then go green, or yellow hold
-        steady then go red, both of which read as a settled state.
+        Auth pill: shows auth method icon + status. 'checking' renders with
+        the 'missing' yellow so the brief bootstrap transition doesn't flash
+        a fourth color.
       */}
       <div
         className={`flex items-center gap-1 text-xs ${
@@ -110,22 +110,36 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
         }`}
         title={
           authStatus === 'valid'
-            ? 'GitHub token valid'
+            ? authMethod === 'gh-cli'
+              ? 'Using GitHub CLI authentication'
+              : 'GitHub token valid (stored in OS keychain)'
             : authStatus === 'invalid'
-              ? 'GitHub token invalid or expired — open Settings to update it'
+              ? authMethod === 'gh-cli'
+                ? 'GitHub CLI auth expired — run `gh auth login` to fix'
+                : 'Token expired or revoked — open Settings to update'
               : authStatus === 'checking'
-                ? 'Checking GitHub token…'
-                : 'No GitHub token configured'
+                ? 'Checking GitHub authentication...'
+                : 'No GitHub auth — PR features unavailable'
         }
       >
-        <Github className="w-4 h-4" />
+        {authMethod === 'gh-cli' ? (
+          <Terminal className="w-4 h-4" />
+        ) : authMethod === 'pat' ? (
+          <Key className="w-4 h-4" />
+        ) : (
+          <Github className="w-4 h-4" />
+        )}
         {authStatus === 'valid'
-          ? 'auth'
+          ? authMethod === 'gh-cli'
+            ? 'gh cli'
+            : 'auth'
           : authStatus === 'invalid'
-            ? 'token invalid'
+            ? authMethod === 'gh-cli'
+              ? 'gh expired'
+              : 'token invalid'
             : authStatus === 'checking'
-              ? 'checking…'
-              : 'no token'}
+              ? 'checking...'
+              : 'no auth'}
       </div>
       {/*
         Theme toggle. The icon shows the DESTINATION (Sun when dark, Moon

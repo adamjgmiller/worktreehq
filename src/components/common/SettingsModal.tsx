@@ -1,57 +1,79 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '../../services/tauriBridge';
-import { initGithub, validateToken } from '../../services/githubService';
+import { invoke, keychainStore, keychainRead, keychainDelete } from '../../services/tauriBridge';
+import {
+  initGithub,
+  validateToken,
+  detectGhCli,
+  type AuthMethod,
+} from '../../services/githubService';
 import { useRepoStore } from '../../store/useRepoStore';
-import { X } from 'lucide-react';
+import { X, Terminal, Key, ShieldOff } from 'lucide-react';
 
 // Loose shape — we read the full config object, spread it on save, and only
 // override the fields this modal owns. The rest (recent_repo_paths, zoom_level,
-// any future field) round-trips untouched. Previously this redeclared a narrow
-// set of fields and silently dropped recent_repo_paths on every save.
+// any future field) round-trips untouched.
 type AppConfigShape = Record<string, unknown> & {
   github_token?: string;
+  auth_method?: AuthMethod;
   post_create_commands?: string;
 };
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const setGithubAuthStatus = useRepoStore((s) => s.setGithubAuthStatus);
+  const setAuthMethod = useRepoStore((s) => s.setAuthMethod);
+  const currentAuthMethod = useRepoStore((s) => s.authMethod);
+
+  const [selectedMethod, setSelectedMethod] = useState<AuthMethod>('none');
   const [token, setToken] = useState('');
   const [postCreateCommands, setPostCreateCommands] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Track whether the modal has loaded the existing token. Until then we
-  // don't allow Save — otherwise a fast user could submit the empty
-  // initial state and inadvertently wipe their working token.
   const [loaded, setLoaded] = useState(false);
+  const [ghDetected, setGhDetected] = useState<boolean | null>(null);
+  const [ghChecking, setGhChecking] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
-
-  // Snapshot the full config when the modal opens. We keep it around so the
-  // save handler can spread untouched fields back into write_config —
-  // otherwise newly-added Rust config fields silently default to their
-  // serde defaults on every save (this was how recent_repo_paths got wiped).
   const baseCfgRef = useRef<AppConfigShape | null>(null);
 
-  // Re-fetch the current config every time the modal opens. The previous
-  // version started with an empty string and silently overwrote the saved
-  // token if the user clicked Save without re-typing.
+  // Re-fetch config + detect gh CLI every time the modal opens.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
     setLoaded(false);
+    setGhChecking(true);
+
     (async () => {
       try {
-        const cfg = await invoke<AppConfigShape>('read_config');
+        const [cfg, gh] = await Promise.all([
+          invoke<AppConfigShape>('read_config'),
+          detectGhCli(),
+        ]);
         if (cancelled) return;
         baseCfgRef.current = cfg;
-        setToken((cfg.github_token as string | undefined) ?? '');
+
+        setGhDetected(gh);
+        setGhChecking(false);
         setPostCreateCommands((cfg.post_create_commands as string | undefined) ?? '');
+
+        // Initialize the radio selection from the current method
+        setSelectedMethod(currentAuthMethod);
+
+        // Load the PAT from keychain (preferred) or config (legacy)
+        let keychainToken: string | null = null;
+        try {
+          keychainToken = await keychainRead('github_token');
+        } catch {
+          /* keychain may not be available */
+        }
+        if (cancelled) return;
+        setToken(keychainToken || (cfg.github_token as string | undefined) || '');
         setLoaded(true);
       } catch (e: any) {
         if (cancelled) return;
         setError(`Could not read config: ${e?.message ?? e}`);
+        setGhChecking(false);
         setLoaded(true);
       } finally {
         if (!cancelled) setLoading(false);
@@ -60,7 +82,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, currentAuthMethod]);
 
   // Escape closes; focus the input on open.
   useEffect(() => {
@@ -73,10 +95,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   }, [open, onClose]);
 
   useEffect(() => {
-    if (open && loaded && inputRef.current) {
+    if (open && loaded && selectedMethod === 'pat' && inputRef.current) {
       inputRef.current.focus();
     }
-  }, [open, loaded]);
+  }, [open, loaded, selectedMethod]);
 
   if (!open) return null;
 
@@ -84,34 +106,52 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     setSaving(true);
     setError(null);
     try {
-      // Re-read the config right before the write so we pick up any changes
-      // (e.g. recent_repo_paths bumped by loadRepoAtPath while the modal was
-      // open). The cached snapshot in baseCfgRef is the fallback when the
-      // re-read fails.
       let base: AppConfigShape;
       try {
         base = await invoke<AppConfigShape>('read_config');
       } catch {
         base = baseCfgRef.current ?? {};
       }
-      // Spread the existing config and override only the fields this modal
-      // owns. Always set github_token_explicitly_set: true on save so an
-      // explicit clear sticks even when GITHUB_TOKEN is exported in the
-      // user's shell.
+
+      // Persist auth method preference and clear the plaintext token from config
       await invoke('write_config', {
         cfg: {
           ...base,
-          github_token: token,
+          github_token: '',
           github_token_explicitly_set: true,
+          auth_method: selectedMethod,
           post_create_commands: postCreateCommands,
         },
       });
-      initGithub(token);
-      // Re-validate against GitHub so an expired/revoked token that the user
-      // just re-entered doesn't sit as green "auth" until the next app
-      // restart. Fired without awaiting so the modal closes immediately;
-      // the pill updates when the ~200ms validation resolves.
-      if (token) {
+
+      // Handle PAT storage in keychain
+      if (selectedMethod === 'pat' && token) {
+        await keychainStore('github_token', token);
+      } else if (selectedMethod !== 'pat') {
+        // Switching away from PAT — clean up keychain entry
+        try {
+          await keychainDelete('github_token');
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+
+      // Initialize the transport with the new method
+      switch (selectedMethod) {
+        case 'gh-cli':
+          initGithub('gh-cli');
+          break;
+        case 'pat':
+          initGithub('pat', token);
+          break;
+        case 'none':
+          initGithub('none');
+          break;
+      }
+      setAuthMethod(selectedMethod);
+
+      // Re-validate against GitHub
+      if (selectedMethod !== 'none') {
         setGithubAuthStatus('checking');
         void validateToken().then(setGithubAuthStatus);
       } else {
@@ -130,6 +170,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     inputRef.current?.focus();
   };
 
+  const radioClass = (method: AuthMethod) =>
+    `flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+      selectedMethod === method
+        ? 'border-wt-info/50 bg-wt-info/5'
+        : 'border-wt-border hover:border-wt-border/80 hover:bg-wt-bg/50'
+    }`;
+
   return (
     <div
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
@@ -137,39 +184,114 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-wt-panel border border-wt-border rounded-xl p-6 w-[560px]">
+      <div className="bg-wt-panel border border-wt-border rounded-xl p-6 w-[560px] max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Settings</h2>
           <button onClick={onClose} aria-label="close">
             <X className="w-4 h-4" />
           </button>
         </div>
-        <h3 className="text-sm font-semibold mb-1">GitHub Token</h3>
+
+        {/* ── Auth method selector ── */}
+        <h3 className="text-sm font-semibold mb-2">GitHub Authentication</h3>
         <p className="text-xs text-wt-fg-2 mb-3">
-          Needed to look up PRs for squash-merge detection. Stored in{' '}
-          <code className="font-mono">~/.config/worktreehq/config.toml</code>.
+          Required for PR status and squash-merge detection. Core worktree features work without auth.
         </p>
-        <div className="relative">
-          <input
-            ref={inputRef}
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder={loading ? 'loading…' : 'ghp_…'}
-            disabled={loading || saving}
-            className="w-full bg-wt-bg border border-wt-border rounded px-3 py-2 font-mono text-sm pr-16 disabled:opacity-50"
-          />
-          {token && !loading && !saving && (
-            <button
-              type="button"
-              onClick={clearToken}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-[0.6875rem] uppercase tracking-wide text-wt-muted hover:text-wt-conflict"
-            >
-              clear
-            </button>
-          )}
+
+        <div className="flex flex-col gap-2 mb-4">
+          {/* Option 1: gh CLI */}
+          <label className={radioClass('gh-cli')}>
+            <input
+              type="radio"
+              name="auth-method"
+              checked={selectedMethod === 'gh-cli'}
+              onChange={() => setSelectedMethod('gh-cli')}
+              disabled={loading || saving}
+              className="mt-0.5 accent-wt-info"
+            />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-wt-fg-2 shrink-0" />
+                <span className="text-sm font-medium">GitHub CLI</span>
+                <span className="text-[0.6875rem] text-wt-clean font-medium">recommended</span>
+              </div>
+              <p className="text-xs text-wt-fg-2 mt-1">
+                {ghChecking
+                  ? 'Checking for gh CLI...'
+                  : ghDetected
+                    ? 'Detected and authenticated. No token stored by this app.'
+                    : 'Not detected. Install from cli.github.com, then run gh auth login.'}
+              </p>
+            </div>
+          </label>
+
+          {/* Option 2: PAT */}
+          <label className={radioClass('pat')}>
+            <input
+              type="radio"
+              name="auth-method"
+              checked={selectedMethod === 'pat'}
+              onChange={() => setSelectedMethod('pat')}
+              disabled={loading || saving}
+              className="mt-0.5 accent-wt-info"
+            />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <Key className="w-4 h-4 text-wt-fg-2 shrink-0" />
+                <span className="text-sm font-medium">Personal access token</span>
+              </div>
+              <p className="text-xs text-wt-fg-2 mt-1">
+                Stored in your OS keychain, not on disk. Fine-grained PAT recommended: Pull&nbsp;requests&nbsp;(read) scope.
+              </p>
+              {selectedMethod === 'pat' && (
+                <div className="mt-2 relative">
+                  <input
+                    ref={inputRef}
+                    type="password"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    placeholder={loading ? 'loading...' : 'ghp_... or github_pat_...'}
+                    disabled={loading || saving}
+                    className="w-full bg-wt-bg border border-wt-border rounded px-3 py-2 font-mono text-sm pr-16 disabled:opacity-50"
+                  />
+                  {token && !loading && !saving && (
+                    <button
+                      type="button"
+                      onClick={clearToken}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[0.6875rem] uppercase tracking-wide text-wt-muted hover:text-wt-conflict"
+                    >
+                      clear
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </label>
+
+          {/* Option 3: None */}
+          <label className={radioClass('none')}>
+            <input
+              type="radio"
+              name="auth-method"
+              checked={selectedMethod === 'none'}
+              onChange={() => setSelectedMethod('none')}
+              disabled={loading || saving}
+              className="mt-0.5 accent-wt-info"
+            />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <ShieldOff className="w-4 h-4 text-wt-fg-2 shrink-0" />
+                <span className="text-sm font-medium">No GitHub auth</span>
+              </div>
+              <p className="text-xs text-wt-fg-2 mt-1">
+                Core worktree features work without auth. PR status and squash archaeology unavailable.
+              </p>
+            </div>
+          </label>
         </div>
-        <div className="mt-5 pt-5 border-t border-wt-border">
+
+        {/* ── Post-create commands ── */}
+        <div className="pt-4 border-t border-wt-border">
           <h3 className="text-sm font-semibold mb-1">Post-create commands</h3>
           <p className="text-xs text-wt-fg-2 mb-2">
             Runs in each new worktree's directory after{' '}
@@ -206,7 +328,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             disabled={!loaded || loading || saving}
             className="px-3 py-1.5 text-sm bg-wt-info/20 border border-wt-info/50 rounded hover:bg-wt-info/30 disabled:opacity-50"
           >
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
       </div>

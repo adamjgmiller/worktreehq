@@ -5,12 +5,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./tauriBridge', () => ({
   readPrCacheFile: vi.fn().mockResolvedValue(''),
   writePrCacheFile: vi.fn().mockResolvedValue(undefined),
+  ghExec: vi.fn().mockRejectedValue(new Error('Tauri runtime unavailable')),
+  keychainRead: vi.fn().mockResolvedValue(null),
+  keychainStore: vi.fn().mockResolvedValue(undefined),
+  keychainDelete: vi.fn().mockResolvedValue(undefined),
 }));
 import { readPrCacheFile } from './tauriBridge';
 const readPrCacheFileMock = readPrCacheFile as unknown as ReturnType<typeof vi.fn>;
 
 // Mock Octokit with shared graphql + paginate methods so tests can configure
-// them per-case. Mirrors the hoisting pattern used elsewhere in the file.
+// them per-case. The Octokit class is now imported in octokitTransport.ts.
 const graphqlMock = vi.fn();
 const paginateMock = vi.fn();
 const usersGetAuthenticatedMock = vi.fn();
@@ -200,10 +204,6 @@ describe('hydratePrCache: on-disk TTL for open PRs', () => {
   });
 
   it('serves entries written recently enough to be within getPR TTL', async () => {
-    // Separate from the hydration-filter tests: this one proves that a hydrated
-    // entry within getPR's own 5-min TTL_MS is actually served from memory
-    // without touching the API. Uses a 1-second-old timestamp so the 5-min
-    // getPR TTL is satisfied in addition to the 7-day hydration TTL.
     const now = Date.now();
     const freshBlob = JSON.stringify({
       version: 1,
@@ -230,10 +230,6 @@ describe('hydratePrCache: on-disk TTL for open PRs', () => {
   it('keeps stale merged-PR entries because their fields are immutable', async () => {
     readPrCacheFileMock.mockResolvedValueOnce(buildDiskCache());
     await hydratePrCache();
-    // Merged PRs are preserved across hydration regardless of age. Inspect
-    // the cache map directly — getPR would still re-fetch due to its
-    // own in-memory TTL_MS, which is an orthogonal concern from the
-    // hydration-time filter this test covers.
     const keys = _getPrCacheKeysForTests();
     expect(keys).toContain('o/r#3');
   });
@@ -247,10 +243,6 @@ describe('invalidatePrCacheForRepo', () => {
   });
 
   it('drops only the entries for the named repo', async () => {
-    // Hydrate three entries: two from owner1/repoA, one from owner2/repoB.
-    // After invalidating owner1/repoA, only the owner2/repoB key should
-    // remain. We use hydration to plant the entries because batchFetchPRs +
-    // graphql roundtripping is unnecessary noise here.
     const now = Date.now();
     const blob = JSON.stringify({
       version: 1,
@@ -283,10 +275,6 @@ describe('invalidatePrCacheForRepo', () => {
   });
 
   it('is a no-op (and skips the disk write) when the repo has no entries', async () => {
-    // No hydration → cache empty. Calling invalidate should not crash and
-    // should not schedule a persist (we can't directly observe the debounced
-    // write here without time travel; but the implementation gates persist
-    // on a non-zero removed count, which we trust via the previous test).
     expect(() => invalidatePrCacheForRepo('owner', 'repo')).not.toThrow();
     expect(_getPrCacheKeysForTests()).toEqual([]);
   });
@@ -350,9 +338,6 @@ describe('listOpenPRsForBranches caching', () => {
 
     await listOpenPRsForBranches('o', 'r', ['feat/a']);
     invalidateOpenPrListCache('o', 'r');
-    // Cache is empty after invalidation, but the next call's paginate
-    // throws. The function should swallow it and return an empty map
-    // (rather than crashing the refresh loop).
     const out = await listOpenPRsForBranches('o', 'r', ['feat/a']);
     expect(out.size).toBe(0);
   });
@@ -406,4 +391,3 @@ describe('validateToken', () => {
     warnSpy.mockRestore();
   });
 });
-

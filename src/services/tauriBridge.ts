@@ -29,6 +29,32 @@ export async function gitExec(repoPath: string, args: string[]): Promise<GitExec
   return invoke<GitExecResult>('git_exec', { repoPath, args });
 }
 
+// ── gh CLI bridge ──────────────────────────────────────────────────────
+
+export interface GhExecResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+}
+
+export async function ghExec(args: string[]): Promise<GhExecResult> {
+  return invoke<GhExecResult>('gh_exec', { args });
+}
+
+// ── OS keychain bridge ─────────────────────────────────────────────────
+
+export async function keychainStore(key: string, value: string): Promise<void> {
+  await invoke<void>('keychain_store', { key, value });
+}
+
+export async function keychainRead(key: string): Promise<string | null> {
+  return invoke<string | null>('keychain_read', { key });
+}
+
+export async function keychainDelete(key: string): Promise<void> {
+  await invoke<void>('keychain_delete', { key });
+}
+
 export async function readClaudeState(
   expectedFingerprint?: string,
 ): Promise<ClaudeStateRaw> {

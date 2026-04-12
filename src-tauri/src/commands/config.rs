@@ -4,15 +4,22 @@ use std::path::PathBuf;
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
+    // Legacy field — new installs store tokens in the OS keychain via the
+    // `keychain_store` command. Kept for backward compat and migration: the
+    // frontend reads this on first launch of the new version, migrates the
+    // value to keychain, and clears it. On steady-state this is always empty.
     #[serde(default)]
     pub github_token: String,
     // When true, the user has explicitly set (or cleared) github_token via
     // Settings, so read_config must NOT fall back to the GITHUB_TOKEN env var
-    // — even when github_token is empty. Without this flag the user couldn't
-    // ever unset their token from the UI: every read_config would silently
-    // re-populate it from the env on next launch.
+    // — even when github_token is empty.
     #[serde(default)]
     pub github_token_explicitly_set: bool,
+    // Persisted auth method preference: "gh-cli", "pat", or "none". When
+    // absent (upgrade from older version), the frontend auto-detects by
+    // trying gh CLI first, then keychain PAT, then falling through to none.
+    #[serde(default)]
+    pub auth_method: String,
     #[serde(default = "default_interval")]
     pub refresh_interval_ms: u64,
     #[serde(default = "default_fetch_interval")]
@@ -93,6 +100,7 @@ pub fn read_config() -> AppResult<AppConfig> {
         return Ok(AppConfig {
             github_token: env_token,
             github_token_explicitly_set: false,
+            auth_method: String::new(),
             refresh_interval_ms: default_interval(),
             fetch_interval_ms: default_fetch_interval(),
             last_repo_path: None,

@@ -9,6 +9,7 @@ export function SquashView() {
   const commits = useRepoStore((s) => s.mainCommits);
   const mappings = useRepoStore((s) => s.squashMappings);
   const authStatus = useRepoStore((s) => s.githubAuthStatus);
+  const authMethod = useRepoStore((s) => s.authMethod);
   const [selected, setSelected] = useState<string | null>(null);
   const mapBySha = new Map(mappings.map((m) => [m.squashCommitSha, m]));
 
@@ -22,8 +23,10 @@ export function SquashView() {
       {authStatus !== 'valid' && authStatus !== 'checking' && (
         <div className="px-4 py-2 bg-wt-dirty/10 border-b border-wt-dirty/40 text-xs text-wt-dirty">
           {authStatus === 'invalid'
-            ? 'GitHub token is invalid or expired — squash archaeology relies on PR metadata and will be empty. Update your token in Settings.'
-            : 'No GitHub token configured — squash archaeology relies on PR metadata and will be empty for every commit. Add a token in Settings to enable squash detection.'}
+            ? authMethod === 'gh-cli'
+              ? 'GitHub CLI auth expired — squash archaeology relies on PR metadata and will be empty. Run `gh auth login` in your terminal to fix.'
+              : 'GitHub token is invalid or expired — squash archaeology relies on PR metadata and will be empty. Update your token in Settings.'
+            : 'No GitHub auth configured — squash archaeology relies on PR metadata and will be empty for every commit. Set up authentication in Settings.'}
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
