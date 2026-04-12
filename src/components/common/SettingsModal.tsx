@@ -135,7 +135,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         cfg: {
           ...base,
           github_token: '',
-          github_token_explicitly_set: true,
           auth_method: selectedMethod,
           post_create_commands: postCreateCommands,
         },

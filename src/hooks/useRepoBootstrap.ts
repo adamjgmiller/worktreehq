@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
-import { invoke, isTauri, keychainRead, keychainStore } from '../services/tauriBridge';
+import { invoke, isTauri, keychainRead } from '../services/tauriBridge';
 import {
   hydratePrCache,
   initGithub,
@@ -122,34 +122,6 @@ async function detectAndInitAuth(
   if (cancelled.current) return;
   if (keychainToken) {
     initGithub('pat', keychainToken);
-    setAuthMethod('pat');
-    setGithubAuthStatus('checking');
-    void validateToken().then((status) => {
-      if (!cancelled.current) setGithubAuthStatus(status);
-    });
-    return;
-  }
-
-  // Try legacy config.toml token and migrate to keychain
-  if (cfg.github_token) {
-    // Migrate plaintext token to keychain and persist auth_method so
-    // subsequent launches skip the auto-detect cascade.
-    try {
-      await keychainStore('github_token', cfg.github_token);
-      if (cancelled.current) return;
-      // Clear the plaintext token from config. Read-modify-write to preserve
-      // other fields.
-      const base = await invoke<Record<string, unknown>>('read_config');
-      if (cancelled.current) return;
-      await invoke('write_config', {
-        cfg: { ...base, github_token: '', github_token_explicitly_set: true, auth_method: 'pat' },
-      });
-    } catch (e) {
-      console.warn('[bootstrap] keychain migration failed, using config token:', e);
-    }
-    if (cancelled.current) return;
-
-    initGithub('pat', cfg.github_token);
     setAuthMethod('pat');
     setGithubAuthStatus('checking');
     void validateToken().then((status) => {
