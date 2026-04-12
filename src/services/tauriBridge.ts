@@ -91,6 +91,15 @@ export async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+// `mkdir -p` for the frontend. Used by createWorktree to make the parent
+// directory (e.g. `<repo>/.claude/worktrees/`) exist before `git worktree
+// add`, since git only creates the leaf. Throws on failure — the caller
+// needs to know so the subsequent git command doesn't fail with a cryptic
+// "No such file or directory" stderr.
+export async function ensureDir(path: string): Promise<void> {
+  await invoke<void>('ensure_dir', { path });
+}
+
 export type ShellOpenAction = 'file_manager' | 'terminal';
 
 // Launch an OS-native app to open the given directory. Fire-and-forget:

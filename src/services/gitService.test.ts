@@ -14,17 +14,20 @@ import {
   listBranches,
   resolveMainUpstreams,
   cherryCheck,
+  createWorktree,
   _clearBranchAbCacheForTests,
 } from './gitService';
 
 vi.mock('./tauriBridge', () => ({
   gitExec: vi.fn(),
   pathExists: vi.fn(),
+  ensureDir: vi.fn(),
 }));
 
-import { gitExec } from './tauriBridge';
+import { gitExec, ensureDir } from './tauriBridge';
 
 const gitExecMock = gitExec as unknown as ReturnType<typeof vi.fn>;
+const ensureDirMock = ensureDir as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   gitExecMock.mockReset();
@@ -715,6 +718,51 @@ describe('listBranches sha-cache', () => {
     const branch = result.find((b) => b.name === 'feat/x');
     // Should stay at the default `unmerged`, NOT be mis-tagged as `empty`.
     expect(branch?.mergeStatus).toBe('unmerged');
+  });
+});
+
+describe('createWorktree', () => {
+  beforeEach(() => {
+    gitExecMock.mockReset();
+    ensureDirMock.mockReset();
+  });
+
+  it('creates the parent directory before running git worktree add', async () => {
+    // The whole point of ensureDir here: `.claude/worktrees/` won't exist on
+    // a fresh clone, and git worktree add only makes the leaf. Order matters
+    // too — if the git command runs first it fails with "No such file or
+    // directory" before we ever get to mkdir.
+    ensureDirMock.mockResolvedValue(undefined);
+    gitExecMock.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await createWorktree('/repo', '/repo/.claude/worktrees/feat-x', 'feat-x', true);
+
+    expect(ensureDirMock).toHaveBeenCalledWith('/repo/.claude/worktrees');
+    expect(gitExecMock).toHaveBeenCalledWith('/repo', [
+      'worktree',
+      'add',
+      '-b',
+      'feat-x',
+      '/repo/.claude/worktrees/feat-x',
+    ]);
+    // Order: ensureDir before git worktree add.
+    const ensureOrder = ensureDirMock.mock.invocationCallOrder[0];
+    const gitOrder = gitExecMock.mock.invocationCallOrder[0];
+    expect(ensureOrder).toBeLessThan(gitOrder);
+  });
+
+  it('passes branch as starting-point argument when reusing an existing branch', async () => {
+    ensureDirMock.mockResolvedValue(undefined);
+    gitExecMock.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await createWorktree('/repo', '/tmp/wt', 'main', false);
+
+    expect(gitExecMock).toHaveBeenCalledWith('/repo', [
+      'worktree',
+      'add',
+      '/tmp/wt',
+      'main',
+    ]);
   });
 });
 
