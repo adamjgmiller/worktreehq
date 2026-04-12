@@ -83,21 +83,18 @@ export class GhCliTransport implements GithubTransport {
       '-f', `owner=${owner}`,
       '-f', `repo=${repo}`,
     ]);
+    // Let transport errors propagate — the caller (batchFetchPRs) catches them
+    // to avoid negative-caching valid PRs on transient failures.
     if (result.code !== 0) {
-      console.warn('[GhCliTransport] batchGetPullRequests failed:', result.stderr);
-      return out;
+      throw new Error(`gh api graphql failed (code ${result.code}): ${result.stderr}`);
     }
 
-    try {
-      const data = JSON.parse(result.stdout);
-      const repoNode = data?.data?.repository ?? {};
-      for (const n of numbers) {
-        const node = repoNode[`p${n}`];
-        if (!node) continue;
-        out.set(n, graphqlNodeToPRInfo(node));
-      }
-    } catch (e) {
-      console.warn('[GhCliTransport] failed to parse GraphQL response:', e);
+    const data = JSON.parse(result.stdout);
+    const repoNode = data?.data?.repository ?? {};
+    for (const n of numbers) {
+      const node = repoNode[`p${n}`];
+      if (!node) continue;
+      out.set(n, graphqlNodeToPRInfo(node));
     }
     return out;
   }

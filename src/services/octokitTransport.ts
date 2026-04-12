@@ -52,16 +52,14 @@ export class OctokitTransport implements GithubTransport {
     if (numbers.length === 0) return out;
 
     const query = buildBatchQuery(numbers);
-    try {
-      const data: any = await this.octokit.graphql(query, { owner, repo });
-      const repoNode = data?.repository ?? {};
-      for (const n of numbers) {
-        const node = repoNode[`p${n}`];
-        if (!node) continue;
-        out.set(n, graphqlNodeToPRInfo(node));
-      }
-    } catch (e: any) {
-      console.warn('[OctokitTransport] batchGetPullRequests failed', e?.status, e?.message);
+    // Let transport errors propagate — the caller (batchFetchPRs) catches them
+    // to avoid negative-caching valid PRs on transient failures.
+    const data: any = await this.octokit.graphql(query, { owner, repo });
+    const repoNode = data?.repository ?? {};
+    for (const n of numbers) {
+      const node = repoNode[`p${n}`];
+      if (!node) continue;
+      out.set(n, graphqlNodeToPRInfo(node));
     }
     return out;
   }

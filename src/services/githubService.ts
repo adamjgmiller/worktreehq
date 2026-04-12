@@ -227,16 +227,21 @@ export async function batchFetchPRs(
 
   for (let i = 0; i < toFetch.length; i += BATCH_CHUNK_SIZE) {
     const chunk = toFetch.slice(i, i + BATCH_CHUNK_SIZE);
-    const chunkOut = await transport.batchGetPullRequests(owner, repo, chunk);
-    for (const [n, pr] of chunkOut) {
-      out.set(n, pr);
-      prCache.set(cacheKey(owner, repo, n), { at: Date.now(), pr });
-    }
-    // Negative-cache any numbers that were requested but not returned.
-    for (const n of chunk) {
-      if (!chunkOut.has(n)) {
-        prCache.set(cacheKey(owner, repo, n), { at: Date.now(), pr: null });
+    try {
+      const chunkOut = await transport.batchGetPullRequests(owner, repo, chunk);
+      for (const [n, pr] of chunkOut) {
+        out.set(n, pr);
+        prCache.set(cacheKey(owner, repo, n), { at: Date.now(), pr });
       }
+      // Negative-cache only after a successful fetch — a missing key means the
+      // API confirmed the PR doesn't exist, not that the request failed.
+      for (const n of chunk) {
+        if (!chunkOut.has(n)) {
+          prCache.set(cacheKey(owner, repo, n), { at: Date.now(), pr: null });
+        }
+      }
+    } catch (e: any) {
+      console.warn('[githubService] batch PR fetch failed, skipping negative-cache:', e?.message);
     }
   }
   schedulePersist();

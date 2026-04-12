@@ -113,6 +113,19 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         base = baseCfgRef.current ?? {};
       }
 
+      // Handle keychain BEFORE persisting config — if keychain write fails,
+      // we don't want config pointing at a missing token.
+      if (selectedMethod === 'pat' && token) {
+        await keychainStore('github_token', token);
+      } else {
+        // Switching away from PAT, or PAT with empty token — remove stale entry
+        try {
+          await keychainDelete('github_token');
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+
       // Persist auth method preference and clear the plaintext token from config
       await invoke('write_config', {
         cfg: {
@@ -123,18 +136,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           post_create_commands: postCreateCommands,
         },
       });
-
-      // Handle PAT storage in keychain
-      if (selectedMethod === 'pat' && token) {
-        await keychainStore('github_token', token);
-      } else if (selectedMethod !== 'pat') {
-        // Switching away from PAT — clean up keychain entry
-        try {
-          await keychainDelete('github_token');
-        } catch {
-          /* best-effort cleanup */
-        }
-      }
 
       // Initialize the transport with the new method
       switch (selectedMethod) {
