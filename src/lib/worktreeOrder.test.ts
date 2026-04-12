@@ -154,7 +154,7 @@ describe('sortWorktrees', () => {
     ]);
   });
 
-  it('status mode: conflicts before dirty before clean, tiebreak by recency', () => {
+  it('status mode: conflicts before dirty before clean, tiebreak alphabetically', () => {
     const out = sortWorktrees(
       [old, conflict, primary, fresh, dirty],
       'status',
