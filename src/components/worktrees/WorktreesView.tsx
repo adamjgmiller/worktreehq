@@ -265,13 +265,20 @@ export function WorktreesView() {
       if (!repo) return;
       try {
         await createWorktree(repo.path, v.path, v.branch, v.newBranch);
-        if (v.pushToRemote) {
-          await pushNewBranch(repo.path, v.branch);
-        }
-        // Close the dialog as soon as the worktree exists — the refresh and
-        // post-create script both run after. Keeping it open through a long
-        // `npm install` would be confusing UX.
+        // Close the dialog as soon as the worktree exists — the push, refresh,
+        // and post-create script all run after. Keeping it open through a slow
+        // push or `npm install` would be confusing UX, and a push failure
+        // shouldn't strand the dialog against an already-created worktree.
         setCreateOpen(false);
+        if (v.pushToRemote) {
+          try {
+            await pushNewBranch(repo.path, v.branch);
+          } catch (e: any) {
+            setError(
+              `Worktree created, but push to origin failed: ${e?.message ?? String(e)}`,
+            );
+          }
+        }
         await refreshOnce({ userInitiated: true });
         // Post-create script runs AFTER git succeeds. If it fails we surface
         // the output via the error banner but deliberately do NOT roll back
@@ -317,7 +324,14 @@ export function WorktreesView() {
       deleteRemoteBranch: boolean;
     }) => {
       if (!repo || !removeTarget) return;
+      // Phase 1: remove the worktree. Throws on failure so the dialog's
+      // local error path can render the git stderr inline — the worktree
+      // still exists and the user might want to retry from the same modal.
       await removeWorktree(repo.path, removeTarget.path, opts.force);
+      // Phase 2: branch cleanup. Errors here are surfaced via the store
+      // error banner, NOT re-thrown: the worktree removal already succeeded,
+      // so keeping the modal open would misleadingly imply the whole op
+      // rolled back.
       const cleanupErrors: string[] = [];
       const branch = branches.find((b) => b.name === removeTarget.branch);
       if (branch && branch.name !== repo.defaultBranch) {

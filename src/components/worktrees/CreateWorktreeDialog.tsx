@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FolderOpen, X } from 'lucide-react';
 import type { Branch } from '../../types';
 import { pathExists } from '../../services/tauriBridge';
@@ -49,7 +49,6 @@ export function CreateWorktreeDialog({
   const [postCreateCommands, setPostCreateCommands] = useState(defaultPostCreateCommands);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const cancelRef = useRef<HTMLButtonElement>(null);
 
   // Escape closes. Unlike destructive dialogs we don't focus Cancel — the
   // branch name input has autoFocus so the user can start typing immediately.
@@ -273,7 +272,6 @@ export function CreateWorktreeDialog({
         </div>
         <div className="mt-6 flex justify-end gap-2">
           <button
-            ref={cancelRef}
             onClick={onCancel}
             disabled={submitting}
             className="px-3 py-1.5 text-sm text-wt-fg-2 disabled:opacity-50"
