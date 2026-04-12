@@ -57,8 +57,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         setGhChecking(false);
         setPostCreateCommands((cfg.post_create_commands as string | undefined) ?? '');
 
-        // Initialize the radio selection from the current method
-        setSelectedMethod(currentAuthMethod);
+        // Initialize the radio selection from the current method (read
+        // directly from the store to avoid a stale closure / dep on
+        // currentAuthMethod, which would re-fire the effect on save).
+        setSelectedMethod(useRepoStore.getState().authMethod);
 
         // Load the PAT from keychain (preferred) or config (legacy)
         let keychainToken: string | null = null;
@@ -82,7 +84,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     return () => {
       cancelled = true;
     };
-  }, [open, currentAuthMethod]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Escape closes; focus the input on open.
   useEffect(() => {
@@ -114,7 +117,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       }
 
       // Handle keychain BEFORE persisting config — if keychain write fails,
-      // we don't want config pointing at a missing token.
+      // the throw aborts the save so config won't be written with
+      // auth_method: 'pat' pointing at a keychain entry that doesn't exist.
       if (selectedMethod === 'pat' && token) {
         await keychainStore('github_token', token);
       } else {

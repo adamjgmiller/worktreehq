@@ -63,6 +63,7 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
   }
 
   const prevToken = currentToken;
+  const prevMethod = currentAuthMethod;
   currentAuthMethod = method;
   currentToken = effectiveToken;
 
@@ -79,7 +80,9 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
   }
 
   // If the effective auth posture changed, drop the in-memory PR cache.
-  if (prevToken !== currentToken || (method === 'gh-cli' && prevToken !== '')) {
+  // Covers: token swap (PAT→PAT), method switch (gh-cli→none, pat→gh-cli),
+  // and re-init of gh-cli with a previously active PAT.
+  if (prevToken !== currentToken || prevMethod !== method) {
     prCache.clear();
   }
 }

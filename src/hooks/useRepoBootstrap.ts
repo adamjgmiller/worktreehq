@@ -78,6 +78,7 @@ async function detectAndInitAuth(
 
   if (cfg.auth_method === 'pat') {
     const keychainToken = await tryKeychainToken();
+    if (cancelled.current) return;
     const token = keychainToken || cfg.github_token || '';
     if (token) {
       initGithub('pat', token);
@@ -88,7 +89,12 @@ async function detectAndInitAuth(
       });
       return;
     }
-    // Explicit PAT preference but no token found — fall through to none
+    // Explicit PAT preference but no token found — fall through to 'none'
+    // rather than auto-detect, so the user's explicit choice is respected.
+    initGithub('none');
+    setAuthMethod('none');
+    setGithubAuthStatus('missing');
+    return;
   }
 
   if (cfg.auth_method === 'none') {
@@ -100,6 +106,7 @@ async function detectAndInitAuth(
 
   // Auto-detect: try gh CLI first (preferred default)
   const ghAvailable = await detectGhCli();
+  if (cancelled.current) return;
   if (ghAvailable) {
     initGithub('gh-cli');
     setAuthMethod('gh-cli');
@@ -112,6 +119,7 @@ async function detectAndInitAuth(
 
   // Try keychain PAT
   const keychainToken = await tryKeychainToken();
+  if (cancelled.current) return;
   if (keychainToken) {
     initGithub('pat', keychainToken);
     setAuthMethod('pat');
@@ -124,18 +132,22 @@ async function detectAndInitAuth(
 
   // Try legacy config.toml token and migrate to keychain
   if (cfg.github_token) {
-    // Migrate plaintext token to keychain
+    // Migrate plaintext token to keychain and persist auth_method so
+    // subsequent launches skip the auto-detect cascade.
     try {
       await keychainStore('github_token', cfg.github_token);
+      if (cancelled.current) return;
       // Clear the plaintext token from config. Read-modify-write to preserve
       // other fields.
       const base = await invoke<Record<string, unknown>>('read_config');
+      if (cancelled.current) return;
       await invoke('write_config', {
-        cfg: { ...base, github_token: '', github_token_explicitly_set: true },
+        cfg: { ...base, github_token: '', github_token_explicitly_set: true, auth_method: 'pat' },
       });
     } catch (e) {
       console.warn('[bootstrap] keychain migration failed, using config token:', e);
     }
+    if (cancelled.current) return;
 
     initGithub('pat', cfg.github_token);
     setAuthMethod('pat');
@@ -338,6 +350,13 @@ export function useRepoBootstrap() {
     return () => {
       cancelled = true;
       cancelledRef.current = true;
+      // Don't call stopWatching() here — the second effect (worktree-paths
+      // watcher) manages the Rust-side watcher's lifecycle, and
+      // start_watching already replaces any prior watcher on its own. If
+      // this cleanup runs (e.g. React strict-mode remount) without the
+      // second effect re-firing, calling stopWatching() would kill the
+      // native watcher with no re-registration, silently disabling
+      // watcher-accelerated refreshes until a worktree path changes.
       if (unlisten) unlisten();
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       stopRefreshLoop();

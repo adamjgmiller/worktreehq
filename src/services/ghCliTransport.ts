@@ -17,17 +17,10 @@ export class GhCliTransport implements GithubTransport {
 
       const stderr = (result.stderr ?? '').toLowerCase();
 
-      // Definitive auth failures — gh explicitly says we're not logged in.
-      const authFailurePatterns = [
-        'not logged in',
-        'authentication',
-        'token',
-        'login required',
-        'no oauth token',
-      ];
-      if (authFailurePatterns.some((p) => stderr.includes(p))) return 'invalid';
-
-      // Network / transient failures — can't prove invalidity, so report
+      // Network / transient failures — checked FIRST so a network error
+      // message that happens to contain "token" or "authentication" (e.g.
+      // "failed to refresh oauth token: connection refused") doesn't get
+      // misclassified as an auth failure. Can't prove invalidity, so report
       // 'valid' (inconclusive) to match OctokitTransport's conservative
       // behavior and avoid a misleading "token invalid" pill during an
       // airport-wifi outage.
@@ -46,6 +39,18 @@ export class GhCliTransport implements GithubTransport {
         console.warn('[GhCliTransport] validateAuth inconclusive (network):', result.stderr);
         return 'valid';
       }
+
+      // Definitive auth failures — gh explicitly says we're not logged in.
+      // Checked after network patterns to avoid false positives from generic
+      // words like "token" or "authentication" in network error messages.
+      const authFailurePatterns = [
+        'not logged in',
+        'authentication',
+        'token',
+        'login required',
+        'no oauth token',
+      ];
+      if (authFailurePatterns.some((p) => stderr.includes(p))) return 'invalid';
 
       // Unknown non-zero exit — default to 'valid' (inconclusive) rather
       // than falsely marking auth as broken.
