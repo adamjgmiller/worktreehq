@@ -330,7 +330,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           </button>
           <button
             onClick={save}
-            disabled={!loaded || loading || saving}
+            disabled={!loaded || loading || saving || (selectedMethod === 'pat' && !token)}
             className="px-3 py-1.5 text-sm bg-wt-info/20 border border-wt-info/50 rounded hover:bg-wt-info/30 disabled:opacity-50"
           >
             {saving ? 'Saving...' : 'Save'}

@@ -93,6 +93,9 @@ export function hasGithubAuth(): boolean {
 
 // ── Token validation ───────────────────────────────────────────────────
 
+/** Delegates to the active transport. Returns 'valid' (not 'invalid')
+ *  on inconclusive network errors to avoid a misleading auth-failure
+ *  pill during transient outages (e.g. airport wifi). */
 export async function validateToken(): Promise<'missing' | 'valid' | 'invalid'> {
   if (!transport) return 'missing';
   return transport.validateAuth();

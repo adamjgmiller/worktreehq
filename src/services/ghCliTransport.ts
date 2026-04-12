@@ -65,8 +65,9 @@ export class GhCliTransport implements GithubTransport {
   async getPullRequest(owner: string, repo: string, number: number): Promise<PRInfo | null> {
     const result = await ghExec(['api', `/repos/${owner}/${repo}/pulls/${number}`]);
     if (result.code !== 0) {
-      // 404 → null, auth/other → throw to let caller decide on caching
+      // 404 → null, auth/other → log + throw to let caller decide on caching
       if (result.stderr.includes('404') || result.stderr.includes('Not Found')) return null;
+      console.warn(`[GhCliTransport] getPullRequest ${owner}/${repo}#${number} failed (code ${result.code}):`, result.stderr);
       throw new Error(`gh api failed (code ${result.code}): ${result.stderr}`);
     }
     const data = JSON.parse(result.stdout);
