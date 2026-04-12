@@ -22,19 +22,17 @@ export function RemoveWorktreeDialog({
   // The dialog reports whether the user wanted to force; the parent runs
   // the actual removeWorktree call so its loading/error state lives in
   // the parent's normal handlers.
-  onConfirm: (opts: { force: boolean; cleanupBranches: boolean }) => Promise<void>;
+  onConfirm: (opts: {
+    force: boolean;
+    deleteLocalBranch: boolean;
+    deleteRemoteBranch: boolean;
+  }) => Promise<void>;
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [typed, setTyped] = useState('');
-  // Only offered on the clean path — force-removing a dirty worktree is
-  // already a big enough decision to not bundle a branch-delete into it.
-  // Default checked: the whole reason this app exists is that squash-merged
-  // branches pile up, and a clean worktree for a merged branch is the most
-  // common delete target.
-  const canCleanup =
-    !isDefaultBranch && (hasLocalBranch || hasRemoteBranch);
-  const [cleanupBranches, setCleanupBranches] = useState(canCleanup);
+  const [deleteLocal, setDeleteLocal] = useState(hasLocalBranch && !isDefaultBranch);
+  const [deleteRemote, setDeleteRemote] = useState(hasRemoteBranch && !isDefaultBranch);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
 
   const dirty =
@@ -44,9 +42,9 @@ export function RemoveWorktreeDialog({
     worktree.hasConflicts ||
     !!worktree.inProgress;
   // Forcing is required when there's uncommitted work, an in-progress op,
-  // or stashes. The typed-confirmation only kicks in when forcing.
+  // or stashes.
   const requiresForce = dirty;
-  const typedOk = !requiresForce || typed === worktree.branch;
+  const typedOk = typed === 'delete';
 
   useEffect(() => {
     cancelRef.current?.focus();
@@ -64,7 +62,8 @@ export function RemoveWorktreeDialog({
     try {
       await onConfirm({
         force: requiresForce,
-        cleanupBranches: !requiresForce && cleanupBranches,
+        deleteLocalBranch: deleteLocal,
+        deleteRemoteBranch: deleteRemote,
       });
     } catch (e: any) {
       setError(e?.message ?? String(e));
@@ -124,55 +123,58 @@ export function RemoveWorktreeDialog({
           </div>
         ) : (
           <div className="bg-wt-clean/10 border border-wt-clean/40 rounded p-3 mb-3 text-xs text-wt-fg-2">
-            Worktree is clean.{' '}
-            {canCleanup
-              ? 'You can also delete its branch below.'
-              : isDefaultBranch
-              ? 'The default branch ref will be preserved.'
-              : 'The branch ref will be preserved.'}
+            Worktree is clean.
           </div>
         )}
-        {!requiresForce && canCleanup && (
-          <label className="flex items-start gap-2 mb-3 text-xs text-wt-fg-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={cleanupBranches}
-              onChange={(e) => setCleanupBranches(e.target.checked)}
-              disabled={submitting}
-              className="mt-0.5"
-            />
-            <span>
-              Also delete{' '}
-              {hasLocalBranch && hasRemoteBranch
-                ? 'local and remote'
-                : hasLocalBranch
-                ? 'local'
-                : 'remote'}{' '}
-              branch <span className="font-mono">{worktree.branch}</span>
-              {hasRemoteBranch && (
-                <span className="text-wt-muted">
-                  {' '}
-                  (pushes <span className="font-mono">--delete</span> to origin)
+        {!isDefaultBranch && (hasLocalBranch || hasRemoteBranch) && (
+          <div className="mb-3 space-y-1.5">
+            {hasLocalBranch && (
+              <label className="flex items-start gap-2 text-xs text-wt-fg-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={deleteLocal}
+                  onChange={(e) => setDeleteLocal(e.target.checked)}
+                  disabled={submitting}
+                  className="mt-0.5"
+                />
+                <span>
+                  Delete local branch{' '}
+                  <span className="font-mono">{worktree.branch}</span>
                 </span>
-              )}
-            </span>
-          </label>
-        )}
-        {requiresForce && (
-          <div className="mb-3">
-            <label className="text-xs text-wt-fg-2">
-              Type{' '}
-              <code className="font-mono text-wt-conflict">{worktree.branch}</code>{' '}
-              to confirm force-removal:
-            </label>
-            <input
-              value={typed}
-              onChange={(e) => setTyped(e.target.value)}
-              disabled={submitting}
-              className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
-            />
+              </label>
+            )}
+            {hasRemoteBranch && (
+              <label className="flex items-start gap-2 text-xs text-wt-fg-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={deleteRemote}
+                  onChange={(e) => setDeleteRemote(e.target.checked)}
+                  disabled={submitting}
+                  className="mt-0.5"
+                />
+                <span>
+                  Delete remote branch{' '}
+                  <span className="font-mono">origin/{worktree.branch}</span>
+                </span>
+              </label>
+            )}
           </div>
         )}
+        <div className="mb-3">
+          <label className="text-xs text-wt-fg-2">
+            Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
+          </label>
+          <input
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={submitting}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
+          />
+        </div>
         {error && (
           <div className="text-xs text-wt-conflict bg-wt-conflict/10 border border-wt-conflict/40 rounded px-2 py-1.5 font-mono mb-3 break-all">
             {error}

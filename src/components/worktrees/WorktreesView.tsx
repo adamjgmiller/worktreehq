@@ -20,6 +20,7 @@ import { CreateWorktreeDialog, type CreateWorktreeValue } from './CreateWorktree
 import { RemoveWorktreeDialog } from './RemoveWorktreeDialog';
 import {
   createWorktree,
+  pushNewBranch,
   removeWorktree,
   pruneWorktrees,
   deleteLocalBranch,
@@ -229,37 +230,44 @@ export function WorktreesView() {
     [sortableIds, setWorktreeOrder, worktreeSortMode, setWorktreeSortMode, repo],
   );
 
+  // Open the Create dialog after fetching the latest saved post-create
+  // commands from config. We await the read BEFORE flipping `createOpen` so
+  // the dialog mounts with the fresh value already in `defaultPostCreate` —
+  // otherwise the previous useEffect-based approach raced the dialog's
+  // `useState(defaultPostCreateCommands)` initial-value capture and the
+  // first open after a Settings change would show a stale script. The
+  // config read is a local TOML file read (sub-millisecond in practice) so
+  // there's no perceptible delay between click and dialog appearing.
+  async function openCreate() {
+    try {
+      const cfg = await invoke<{ post_create_commands?: string }>('read_config');
+      setDefaultPostCreate(cfg.post_create_commands ?? '');
+    } catch {
+      /* leave previous value in place — better a stale default than no dialog */
+    }
+    setCreateOpen(true);
+  }
+
   // Listen for the global keyboard shortcut (N) to open the Create dialog.
   useEffect(() => {
-    const handler = () => setCreateOpen(true);
+    const handler = () => {
+      void openCreate();
+    };
     window.addEventListener('wthq:create-worktree', handler);
     return () => window.removeEventListener('wthq:create-worktree', handler);
+    // openCreate closes over setDefaultPostCreate + setCreateOpen, both
+    // stable from useState — safe to depend on nothing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Re-read the saved default whenever the Create dialog opens so a change
-  // made in Settings between creations shows up immediately. Best-effort:
-  // on failure we just fall back to whatever was last loaded (or empty).
-  useEffect(() => {
-    if (!createOpen) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const cfg = await invoke<{ post_create_commands?: string }>('read_config');
-        if (!cancelled) setDefaultPostCreate(cfg.post_create_commands ?? '');
-      } catch {
-        /* leave previous value in place */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [createOpen]);
 
   const handleCreate = useCallback(
     async (v: CreateWorktreeValue) => {
       if (!repo) return;
       try {
         await createWorktree(repo.path, v.path, v.branch, v.newBranch);
+        if (v.pushToRemote) {
+          await pushNewBranch(repo.path, v.branch);
+        }
         // Close the dialog as soon as the worktree exists — the refresh and
         // post-create script both run after. Keeping it open through a long
         // `npm install` would be confusing UX.
@@ -279,6 +287,12 @@ export function WorktreesView() {
                 (body ? `:\n${body}` : '.'),
             );
           }
+          // Second refresh after the script finishes: the first refresh above
+          // showed the bare worktree immediately so the card isn't stuck
+          // behind a slow `npm install`, but any files the script touched
+          // (cp .env, install dirs, generated configs) wouldn't otherwise
+          // reflect in the dirty indicator until the 15s poll catches up.
+          await refreshOnce({ userInitiated: true });
         }
       } catch (e: any) {
         setError(e?.message ?? String(e));
@@ -297,50 +311,30 @@ export function WorktreesView() {
   }, []);
 
   const handleConfirmRemove = useCallback(
-    async (opts: { force: boolean; cleanupBranches: boolean }) => {
+    async (opts: {
+      force: boolean;
+      deleteLocalBranch: boolean;
+      deleteRemoteBranch: boolean;
+    }) => {
       if (!repo || !removeTarget) return;
-      // Phase 1: remove the worktree. Throws on failure so the dialog's local
-      // error path can render the git stderr inline — the worktree still
-      // exists and the user might want to retry from the same modal.
       await removeWorktree(repo.path, removeTarget.path, opts.force);
-      // Phase 2: branch cleanup. Errors here are surfaced via the store error
-      // banner, NOT re-thrown: the worktree removal already succeeded, so
-      // keeping the modal open would misleadingly imply the whole op rolled
-      // back. We still want the user to see what failed, but next to the
-      // (now empty) worktree slot.
       const cleanupErrors: string[] = [];
-      if (opts.cleanupBranches) {
-        // Look up the Branch record fresh so we only attempt deletes for refs
-        // that actually exist — avoids a confusing "remote ref does not
-        // exist" error when only the local branch is around (or vice versa).
-        const branch = branches.find((b) => b.name === removeTarget.branch);
-        if (branch && branch.name !== repo.defaultBranch) {
-          // Local first: if the remote delete succeeds but the local one
-          // fails, the user is left with an orphaned local ref that's
-          // harder to explain than the reverse.
-          if (branch.hasLocal) {
-            try {
-              // Force (-D): the worktree was just removed and a clean worktree
-              // for a squash-merged branch still looks "unmerged" to `git
-              // branch -d`, which would reject the delete. The whole point of
-              // this checkbox is to clean those up.
-              await deleteLocalBranch(repo.path, branch.name, true);
-            } catch (e: any) {
-              cleanupErrors.push(`local branch: ${e?.message ?? String(e)}`);
-            }
+      const branch = branches.find((b) => b.name === removeTarget.branch);
+      if (branch && branch.name !== repo.defaultBranch) {
+        if (opts.deleteLocalBranch && branch.hasLocal) {
+          try {
+            await deleteLocalBranch(repo.path, branch.name, true);
+          } catch (e: any) {
+            cleanupErrors.push(`local branch: ${e?.message ?? String(e)}`);
           }
-          if (branch.hasRemote) {
-            try {
-              await deleteRemoteBranch(repo.path, 'origin', branch.name);
-            } catch (e: any) {
-              // Tolerate "remote ref does not exist": GitHub's auto-delete-
-              // after-merge setting can remove the remote branch before our
-              // 15s poll refreshes hasRemote, so the user's intent ("make the
-              // remote branch not exist") is already satisfied.
-              const msg = e?.message ?? String(e);
-              if (!/remote ref does not exist|unable to delete.*remote ref/i.test(msg)) {
-                cleanupErrors.push(`remote branch: ${msg}`);
-              }
+        }
+        if (opts.deleteRemoteBranch && branch.hasRemote) {
+          try {
+            await deleteRemoteBranch(repo.path, 'origin', branch.name);
+          } catch (e: any) {
+            const msg = e?.message ?? String(e);
+            if (!/remote ref does not exist|unable to delete.*remote ref/i.test(msg)) {
+              cleanupErrors.push(`remote branch: ${msg}`);
             }
           }
         }
@@ -385,7 +379,9 @@ export function WorktreesView() {
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-6 pt-4">
         <button
-          onClick={() => setCreateOpen(true)}
+          onClick={() => {
+            void openCreate();
+          }}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-info/20 border border-wt-info/50 text-wt-info rounded hover:bg-wt-info/30"
         >
           <Plus className="w-3.5 h-3.5" /> New worktree <kbd className="ml-1 text-[10px] opacity-60">N</kbd>
@@ -464,6 +460,7 @@ export function WorktreesView() {
       )}
       {createOpen && repo && (
         <CreateWorktreeDialog
+          repoPath={repo.path}
           branches={branches}
           defaultBranch={repo.defaultBranch}
           defaultPostCreateCommands={defaultPostCreate}

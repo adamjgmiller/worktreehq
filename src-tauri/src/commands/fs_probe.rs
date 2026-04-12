@@ -17,3 +17,20 @@ pub async fn path_exists(path: String) -> AppResult<bool> {
         .await
         .map_err(|e| AppError::Msg(format!("path_exists join error: {e}")))?
 }
+
+// `mkdir -p` for the frontend. Used before `git worktree add <path>` so the
+// parent directory (e.g. `<repo>/.claude/worktrees/`) exists on a fresh repo
+// where Claude Code hasn't created it yet — git worktree add itself creates
+// only the leaf, not intermediate parents.
+//
+// Async + spawn_blocking so a slow disk can't stall the Tauri main thread.
+// No-op if the directory already exists (create_dir_all contract).
+#[tauri::command]
+pub async fn ensure_dir(path: String) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&path)
+            .map_err(|e| AppError::Msg(format!("ensure_dir({path}) failed: {e}")))
+    })
+    .await
+    .map_err(|e| AppError::Msg(format!("ensure_dir join error: {e}")))?
+}

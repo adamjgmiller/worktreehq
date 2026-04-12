@@ -1,4 +1,4 @@
-import { gitExec, pathExists } from './tauriBridge';
+import { gitExec, pathExists, ensureDir } from './tauriBridge';
 import type { Worktree, Branch, MainCommit, WorktreeStatus, InProgressOp } from '../types';
 
 async function run(repo: string, args: string[]): Promise<string> {
@@ -755,6 +755,10 @@ export async function deleteRemoteBranch(repo: string, remote: string, name: str
   await run(repo, ['push', remote, '--delete', name]);
 }
 
+export async function pushNewBranch(repo: string, branch: string): Promise<void> {
+  await run(repo, ['push', '-u', 'origin', branch]);
+}
+
 // Create a local tag pointing at the tip of a branch (used by the archive-and-delete flow).
 export function archiveTagNameFor(branch: string): string {
   return `archive/${branch}`;
@@ -774,11 +778,26 @@ export async function createWorktree(
   branch: string,
   newBranch: boolean,
 ): Promise<void> {
+  // `git worktree add <path>` creates the leaf directory but NOT intermediate
+  // parents. With the new default of `<repo>/.claude/worktrees/<branch>`, a
+  // brand-new clone won't have `.claude/worktrees/` yet, so pre-create it.
+  // No-op when the parent already exists.
+  const parent = parentDir(path);
+  if (parent) await ensureDir(parent);
+
   const args = ['worktree', 'add'];
   if (newBranch) args.push('-b', branch);
   args.push(path);
   if (!newBranch) args.push(branch);
   await run(repo, args);
+}
+
+// Last path-separator split. Handles both `/` and `\` so we don't assume a
+// posix-only environment, even though the rest of the app is macOS-first.
+// Returns empty string for bare names (no parent to create).
+function parentDir(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return i > 0 ? p.slice(0, i) : '';
 }
 
 export async function removeWorktree(repo: string, path: string, force = false): Promise<void> {

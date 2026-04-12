@@ -26,14 +26,7 @@ export function ForceDeleteSquashDialog({
   onConfirm: () => void;
 }) {
   const [typed, setTyped] = useState('');
-  // Any item whose original mode touched the remote — we'll re-issue the
-  // remote delete in the parent's force path, so the typed-confirm gate is
-  // required.
-  const touchesRemote = rejected.some(
-    (r) => r.mode === 'both' || r.mode === 'archive-and-delete',
-  );
-  const requiresType = touchesRemote || rejected.length > 5;
-  const canConfirm = !submitting && (!requiresType || typed === 'delete');
+  const canConfirm = !submitting && typed === 'delete';
   const cancelRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -83,19 +76,21 @@ export function ForceDeleteSquashDialog({
             </div>
           ))}
         </div>
-        {requiresType && (
-          <div className="mb-3">
-            <label className="text-xs text-wt-fg-2">
-              Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
-            </label>
-            <input
-              value={typed}
-              onChange={(e) => setTyped(e.target.value)}
-              disabled={submitting}
-              className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
-            />
-          </div>
-        )}
+        <div className="mb-3">
+          <label className="text-xs text-wt-fg-2">
+            Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
+          </label>
+          <input
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={submitting}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
+          />
+        </div>
         <div className="flex justify-end gap-2">
           <button
             ref={cancelRef}

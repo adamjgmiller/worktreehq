@@ -29,14 +29,7 @@ export function ConfirmDeleteDialog({
   onConfirm: () => void;
 }) {
   const [typed, setTyped] = useState('');
-  // Type-to-confirm gates: bulk operations, AND any operation that touches
-  // the remote (delete propagates to origin → not locally reversible). The
-  // archive-and-delete mode is also remote-touching, so it's covered by the
-  // touchesRemote clause. Previously this only triggered above 5 branches,
-  // leaving 1-5 branch remote deletes one click away from a destructive op.
-  const touchesRemote = mode !== 'local';
-  const requiresType = branches.length > 5 || touchesRemote;
-  const canConfirm = !submitting && (!requiresType || typed === 'delete');
+  const canConfirm = !submitting && typed === 'delete';
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   // Focus Cancel on open (instead of the destructive primary action) and
   // wire up Escape-to-cancel + backdrop-click-to-cancel. Native dialogs
@@ -88,19 +81,21 @@ export function ConfirmDeleteDialog({
             Archive tags preserve the original commits so Squash Archaeology can recover them later.
           </p>
         )}
-        {requiresType && (
-          <div className="mb-3">
-            <label className="text-xs text-wt-fg-2">
-              Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
-            </label>
-            <input
-              value={typed}
-              onChange={(e) => setTyped(e.target.value)}
-              disabled={submitting}
-              className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
-            />
-          </div>
-        )}
+        <div className="mb-3">
+          <label className="text-xs text-wt-fg-2">
+            Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
+          </label>
+          <input
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={submitting}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
+          />
+        </div>
         <div className="flex justify-end gap-2">
           <button
             ref={cancelRef}
