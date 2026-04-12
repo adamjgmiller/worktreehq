@@ -40,6 +40,13 @@ fn gh_exec_blocking(args: Vec<String>) -> AppResult<GhExecResult> {
     cmd.env("GH_PROMPT_DISABLED", "1");
     cmd.env("NO_COLOR", "1");
 
+    // Remove GITHUB_TOKEN / GH_TOKEN so `gh` uses its own credential store
+    // (gh auth login) rather than silently picking up whatever token the
+    // user's shell exports. Same rationale as the env scrubbing in git_exec —
+    // without this, the auth method the user configured is bypassed.
+    cmd.env_remove("GITHUB_TOKEN");
+    cmd.env_remove("GH_TOKEN");
+
     let mut child = cmd.spawn().map_err(|e| {
         // Distinguish "gh not installed" from other spawn failures so the
         // frontend can fall through to the PAT path gracefully.

@@ -1,6 +1,6 @@
 import type { PRInfo } from '../types';
 import type { GithubTransport } from './githubTransport';
-import { graphqlNodeToPRInfo, buildBatchQuery } from './githubApiMapping';
+import { restDataToPRInfo, graphqlNodeToPRInfo, buildBatchQuery } from './githubApiMapping';
 import { ghExec } from './tauriBridge';
 
 /**
@@ -13,7 +13,44 @@ export class GhCliTransport implements GithubTransport {
   async validateAuth(): Promise<'missing' | 'valid' | 'invalid'> {
     try {
       const result = await ghExec(['auth', 'status', '--hostname', 'github.com']);
-      return result.code === 0 ? 'valid' : 'invalid';
+      if (result.code === 0) return 'valid';
+
+      const stderr = (result.stderr ?? '').toLowerCase();
+
+      // Definitive auth failures — gh explicitly says we're not logged in.
+      const authFailurePatterns = [
+        'not logged in',
+        'authentication',
+        'token',
+        'login required',
+        'no oauth token',
+      ];
+      if (authFailurePatterns.some((p) => stderr.includes(p))) return 'invalid';
+
+      // Network / transient failures — can't prove invalidity, so report
+      // 'valid' (inconclusive) to match OctokitTransport's conservative
+      // behavior and avoid a misleading "token invalid" pill during an
+      // airport-wifi outage.
+      const networkPatterns = [
+        'connection',
+        'timeout',
+        'dns',
+        'resolve host',
+        'network',
+        'could not resolve',
+        'no such host',
+        'tls',
+        'certificate',
+      ];
+      if (networkPatterns.some((p) => stderr.includes(p))) {
+        console.warn('[GhCliTransport] validateAuth inconclusive (network):', result.stderr);
+        return 'valid';
+      }
+
+      // Unknown non-zero exit — default to 'valid' (inconclusive) rather
+      // than falsely marking auth as broken.
+      console.warn('[GhCliTransport] validateAuth inconclusive (unknown):', result.stderr);
+      return 'valid';
     } catch {
       // ghExec throws when Tauri bridge is unavailable (tests, plain dev).
       return 'missing';
@@ -28,17 +65,7 @@ export class GhCliTransport implements GithubTransport {
       throw new Error(`gh api failed (code ${result.code}): ${result.stderr}`);
     }
     const data = JSON.parse(result.stdout);
-    return {
-      number: data.number,
-      title: data.title,
-      state: data.merged ? 'merged' : (data.state as 'open' | 'closed'),
-      mergedAt: data.merged_at ?? undefined,
-      mergeCommitSha: data.merge_commit_sha ?? undefined,
-      headRef: data.head.ref,
-      url: data.html_url,
-      isDraft: data.draft ?? false,
-      mergeable: data.mergeable ?? null,
-    };
+    return restDataToPRInfo(data);
   }
 
   async batchGetPullRequests(

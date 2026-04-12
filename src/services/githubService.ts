@@ -22,10 +22,18 @@ export function getAuthMethod(): AuthMethod {
   return currentAuthMethod;
 }
 
-/** Detect whether `gh` CLI is installed and authenticated. */
+/** Detect whether `gh` CLI is installed and authenticated.
+ *  Races the actual `gh auth status` call against a 3-second timeout so a
+ *  hung `gh` process doesn't block the bootstrap critical path. */
 export async function detectGhCli(): Promise<boolean> {
   try {
-    const result = await ghExec(['auth', 'status', '--hostname', 'github.com']);
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('gh cli detection timed out')), 3000),
+    );
+    const result = await Promise.race([
+      ghExec(['auth', 'status', '--hostname', 'github.com']),
+      timeout,
+    ]);
     return result.code === 0;
   } catch {
     return false;
