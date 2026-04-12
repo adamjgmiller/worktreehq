@@ -1,4 +1,4 @@
-import type { ClaudePresence, Worktree, WorktreeSortMode } from '../types';
+import type { ClaudePresence, MergeStatus, Worktree, WorktreeSortMode } from '../types';
 
 /**
  * Reconcile live worktrees with a persisted manual ordering.
@@ -33,18 +33,27 @@ export function reconcileOrder(
   return ordered;
 }
 
-// Higher = sorts earlier in 'status' mode. Conflicts win over in-progress ops
-// because an unresolved conflict is the most urgent thing a user can be
-// looking at; in-progress ops (rebase/merge/cherry-pick) come next because
-// they're a step away from becoming conflicts. Dirty/diverged are routine.
-// Orphaned ('prunable') cards sink to the bottom regardless of other state.
-function statusRank(wt: Worktree): number {
-  if (wt.prunable) return -1;
-  if (wt.hasConflicts || wt.status === 'conflict') return 5;
-  if (wt.inProgress) return 4;
-  if (wt.status === 'dirty') return 3;
-  if (wt.status === 'diverged') return 2;
-  return 1; // clean
+// Higher = sorts earlier in 'status' mode. Two-tier ranking: all unmerged
+// worktrees sort above all merged ones, with working-tree status as the
+// tiebreaker within each group. Prunable (orphaned) worktrees always sink
+// to the very bottom.
+//
+// Unmerged tier (1–5): conflict > in-progress > dirty > diverged > clean
+// Merged tier  (-9–-5): same relative order, offset by -10
+// Prunable:     -20
+function statusRank(wt: Worktree, mergeStatus?: MergeStatus): number {
+  if (wt.prunable) return -20;
+
+  let rank: number;
+  if (wt.hasConflicts || wt.status === 'conflict') rank = 5;
+  else if (wt.inProgress) rank = 4;
+  else if (wt.status === 'dirty') rank = 3;
+  else if (wt.status === 'diverged') rank = 2;
+  else rank = 1; // clean
+
+  const isMerged =
+    mergeStatus === 'merged-normally' || mergeStatus === 'squash-merged';
+  return isMerged ? rank - 10 : rank;
 }
 
 // Timestamp (ms) of the most recent user-visible activity on a worktree:
@@ -76,6 +85,8 @@ function worktreeName(wt: Worktree): string {
 export interface SortContext {
   claudePresence: Map<string, ClaudePresence>;
   manualOrder: string[];
+  /** Branch name → MergeStatus. Used by 'status' mode to group unmerged above merged. */
+  mergeStatusByBranch?: Map<string, MergeStatus>;
 }
 
 /**
@@ -112,7 +123,10 @@ export function sortWorktrees(
           worktreeName(a).localeCompare(worktreeName(b));
       case 'status':
         return (a: Worktree, b: Worktree) => {
-          const diff = statusRank(b) - statusRank(a);
+          const msMap = ctx.mergeStatusByBranch;
+          const diff =
+            statusRank(b, msMap?.get(b.branch)) -
+            statusRank(a, msMap?.get(a.branch));
           if (diff !== 0) return diff;
           // Tiebreak by recency so "all clean" lists still feel useful.
           return (

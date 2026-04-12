@@ -149,6 +149,16 @@ async function runRefreshOnce(): Promise<void> {
       name: remote.name,
     });
 
+    // Exclude worktrees whose branch is already merged (squash-merged or
+    // merged-normally) from conflict detection — conflicts between them are
+    // not actionable because the changes are already on main.
+    const mergedBranches = new Set(
+      detect.updatedBranches
+        .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged')
+        .map((b) => b.name),
+    );
+    const conflictCandidateWts = wts.filter((w) => !mergedBranches.has(w.branch));
+
     // Claude Code awareness + cross-worktree conflict detection both depend
     // only on `wts` and are independent of each other — run in parallel.
     // Each has its own error handling so a failure in one doesn't block the
@@ -160,7 +170,7 @@ async function runRefreshOnce(): Promise<void> {
       detectCrossWorktreeConflicts({
         repoPath: repo.path,
         defaultBranch: repo.defaultBranch,
-        worktrees: wts,
+        worktrees: conflictCandidateWts,
       }).catch((e) => {
         console.warn('[refreshLoop] conflict detection failed:', e);
         return { pairs: [], summaryByPath: new Map() } as ConflictDetectResult;
