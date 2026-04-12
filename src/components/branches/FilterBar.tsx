@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import type { FilterPreset } from '../../lib/filters';
+import { useRepoStore } from '../../store/useRepoStore';
 import { Tooltip } from '../common/Tooltip';
 
 const presets: Array<{ key: FilterPreset; label: string; tip: string; description?: string }> = [
@@ -32,6 +33,8 @@ export function FilterBar({
   search: string;
   onSearch: (s: string) => void;
 }) {
+  const authStatus = useRepoStore((s) => s.githubAuthStatus);
+  const authUnavailable = authStatus !== 'valid' && authStatus !== 'checking';
   const active = presets.find((p) => p.key === value);
   const description = mine && active?.description
     ? `${active.description} Local empty branches are included since they have no meaningful author.`
@@ -80,6 +83,17 @@ export function FilterBar({
       {description && (
         <div className="px-4 pb-3 text-xs text-wt-muted">
           {description}
+        </div>
+      )}
+      {value === 'active' && authUnavailable && (
+        <div className="px-4 pb-3 text-xs text-wt-dirty">
+          Without GitHub auth, this filter only shows branches checked out in a worktree — branches with open PRs won't appear.{' '}
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent('wthq:open-settings'))}
+            className="underline hover:text-wt-info transition-colors"
+          >
+            Set up auth
+          </button>
         </div>
       )}
     </div>

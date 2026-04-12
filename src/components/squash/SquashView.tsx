@@ -62,6 +62,19 @@ export function SquashView() {
       <div className="flex-1 overflow-auto">
         {detail ? (
           <SquashDetail mapping={detail} />
+        ) : selected && !detail && authStatus !== 'valid' && authStatus !== 'checking' &&
+            commits.find((c) => c.sha === selected)?.prNumber ? (
+          <EmptyState
+            title="PR data unavailable"
+            hint="Squash archaeology requires GitHub auth to look up PR metadata."
+          >
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent('wthq:open-settings'))}
+              className="mt-2 text-xs text-wt-info hover:underline"
+            >
+              Set up auth in Settings
+            </button>
+          </EmptyState>
         ) : (
           <EmptyState title="Select a commit" hint="Click a squash commit to see archaeology." />
         )}

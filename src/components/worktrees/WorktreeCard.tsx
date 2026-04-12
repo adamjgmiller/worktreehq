@@ -146,6 +146,7 @@ function WorktreeCardInner({
     return <OrphanedCard wt={wt} onPruneOrphan={onPruneOrphan} onRemove={onRemove} isDragging={isDragging} animateLayout={animateLayout} isOverlay={isOverlay} />;
   }
   const setError = useRepoStore((s) => s.setError);
+  const authStatus = useRepoStore((s) => s.githubAuthStatus);
   // Composite pill that respects BOTH the branch's commit-history merge
   // status and the worktree's filesystem state, and replaces the lineage
   // label entirely on the default branch with an "on main" hint that warns
@@ -415,7 +416,7 @@ function WorktreeCardInner({
               </span>
             </Tooltip>
           )}
-          {branchInfo?.pr && (
+          {branchInfo?.pr ? (
             <a
               href={branchInfo.pr.url}
               target="_blank"
@@ -426,7 +427,16 @@ function WorktreeCardInner({
               #{branchInfo.pr.number}
               <ExternalLink className="w-2.5 h-2.5" />
             </a>
-          )}
+          ) : !isOnDefaultBranch && branchInfo && authStatus !== 'valid' && authStatus !== 'checking' ? (
+            <Tooltip label="PR status requires GitHub auth">
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('wthq:open-settings'))}
+                className="text-[0.5625rem] text-wt-muted hover:text-wt-info transition-colors"
+              >
+                PR?
+              </button>
+            </Tooltip>
+          ) : null}
         </div>
       )}
       {wt.inProgress && (
