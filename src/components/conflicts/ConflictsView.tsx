@@ -6,11 +6,20 @@ import { EmptyState } from '../common/EmptyState';
 
 export function ConflictsView() {
   const worktrees = useRepoStore((s) => s.worktrees);
+  const branches = useRepoStore((s) => s.branches);
   const pairs = useRepoStore((s) => s.crossWorktreeConflicts);
   const [selectedPair, setSelectedPair] = useState<{ a: string; b: string } | null>(null);
 
-  // Need at least 2 non-primary worktrees for pairwise comparison
-  const candidates = worktrees.filter((w) => !w.isPrimary && !w.prunable && w.branch && w.branch !== 'HEAD');
+  // Need at least 2 non-primary worktrees for pairwise comparison.
+  // Exclude merged branches — conflicts between them aren't actionable.
+  const mergedBranches = new Set(
+    branches
+      .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged')
+      .map((b) => b.name),
+  );
+  const candidates = worktrees.filter(
+    (w) => !w.isPrimary && !w.prunable && w.branch && w.branch !== 'HEAD' && !mergedBranches.has(w.branch),
+  );
   if (candidates.length < 2) {
     return (
       <EmptyState

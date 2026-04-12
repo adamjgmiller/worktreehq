@@ -118,9 +118,11 @@ export function WorktreesView() {
   // re-render and dnd-kit's SortableContext doesn't invalidate item indices.
   const orderedWorktreesRef = useRef<Worktree[]>([]);
   const orderedWorktrees = useMemo(() => {
+    const mergeStatusByBranch = new Map(branches.map((b) => [b.name, b.mergeStatus]));
     const next = sortWorktrees(worktrees, worktreeSortMode, {
       claudePresence,
       manualOrder: worktreeOrder,
+      mergeStatusByBranch,
     });
     const prev = orderedWorktreesRef.current;
     if (
@@ -131,7 +133,7 @@ export function WorktreesView() {
     }
     orderedWorktreesRef.current = next;
     return next;
-  }, [worktrees, worktreeSortMode, claudePresence, worktreeOrder]);
+  }, [worktrees, worktreeSortMode, claudePresence, worktreeOrder, branches]);
   // Same ref-stable trick for sortableIds. SortableContext takes this as
   // `items`; when the array reference changes, every useSortable hook in
   // the context re-evaluates. On quiet ticks the path list is identical,

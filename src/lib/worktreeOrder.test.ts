@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { reconcileOrder, sortWorktrees } from './worktreeOrder';
-import type { ClaudePresence, Worktree } from '../types';
+import type { ClaudePresence, MergeStatus, Worktree } from '../types';
 
 function wt(
   overrides: Partial<Worktree> & { path: string; branch?: string },
@@ -166,6 +166,47 @@ describe('sortWorktrees', () => {
       '/repo/wt-dirty',
       '/repo/wt-fresh',
       '/repo/wt-old',
+    ]);
+  });
+
+  it('status mode: unmerged worktrees sort above squash-merged ones', () => {
+    const merged = wt({
+      path: '/repo/wt-merged',
+      branch: 'merged-feat',
+      status: 'dirty',
+      lastCommit: {
+        sha: 's',
+        message: 'm',
+        date: '2026-04-01T00:00:00Z',
+        author: 'a',
+      },
+    });
+    const unmergedClean = wt({
+      path: '/repo/wt-unmerged',
+      branch: 'active-feat',
+      status: 'clean',
+      lastCommit: {
+        sha: 's',
+        message: 'm',
+        date: '2024-01-01T00:00:00Z',
+        author: 'a',
+      },
+    });
+    const mergeStatusByBranch = new Map<string, MergeStatus>([
+      ['merged-feat', 'squash-merged'],
+      ['active-feat', 'unmerged'],
+    ]);
+    // Even though merged is dirty (rank 3 normally) and unmergedClean is
+    // clean (rank 1 normally), unmerged should still come first.
+    const out = sortWorktrees(
+      [merged, primary, unmergedClean],
+      'status',
+      { claudePresence: emptyPresence, manualOrder: [], mergeStatusByBranch },
+    );
+    expect(out.map((w) => w.path)).toEqual([
+      '/repo',
+      '/repo/wt-unmerged',
+      '/repo/wt-merged',
     ]);
   });
 
