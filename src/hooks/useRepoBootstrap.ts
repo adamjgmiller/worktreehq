@@ -31,8 +31,7 @@ const WATCHER_MIN_INTERVAL_MS = 2000;
 
 interface AppConfig {
   github_token: string;
-  // True once the user has explicitly set or cleared the token via Settings;
-  // suppresses the GITHUB_TOKEN env fallback so explicit clears stick.
+  // Legacy field — kept for config deserialization compat only; no longer read.
   github_token_explicitly_set?: boolean;
   // Persisted auth method preference. When set, bootstrap uses this instead
   // of auto-detecting. Allows the user to force a specific method (e.g.
@@ -56,8 +55,7 @@ interface RepoInfo {
  *   1. Check persisted auth_method preference
  *   2. Try gh CLI (auto-detect)
  *   3. Try keychain PAT
- *   4. Try legacy config.toml token (migrate to keychain)
- *   5. Fall back to 'none'
+ *   4. Fall back to 'none'
  */
 async function detectAndInitAuth(
   cfg: AppConfig,

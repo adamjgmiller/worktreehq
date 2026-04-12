@@ -25,10 +25,11 @@ export function getAuthMethod(): AuthMethod {
  *  Races the actual `gh auth status` call against a 3-second timeout so a
  *  hung `gh` process doesn't block the bootstrap critical path. */
 export async function detectGhCli(): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('gh cli detection timed out')), 3000),
-    );
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('gh cli detection timed out')), 3000);
+    });
     const result = await Promise.race([
       ghExec(['auth', 'status', '--hostname', 'github.com']),
       timeout,
@@ -36,6 +37,8 @@ export async function detectGhCli(): Promise<boolean> {
     return result.code === 0;
   } catch {
     return false;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

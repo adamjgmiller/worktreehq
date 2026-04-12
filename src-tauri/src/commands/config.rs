@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
-    // Legacy field — no longer read, kept so serde doesn't reject existing
-    // config files that still contain it.
+    // Legacy field — kept so serde doesn't reject existing config files.
+    // Still read as a PAT fallback by the TS frontend when auth_method is
+    // "pat" and no keychain entry exists (one-time upgrade path).
     #[serde(default)]
     pub github_token: String,
     // Legacy field — no longer read, kept so serde doesn't reject existing
