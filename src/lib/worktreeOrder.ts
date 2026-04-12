@@ -128,11 +128,11 @@ export function sortWorktrees(
             statusRank(b, msMap?.get(b.branch)) -
             statusRank(a, msMap?.get(a.branch));
           if (diff !== 0) return diff;
-          // Tiebreak by recency so "all clean" lists still feel useful.
-          return (
-            lastActivityMs(b, ctx.claudePresence.get(b.path)) -
-            lastActivityMs(a, ctx.claudePresence.get(a.path))
-          );
+          // Tiebreak alphabetically so cards within a status tier have a
+          // fully stable order. The previous recency tiebreaker caused
+          // cards to shuffle on background refreshes whenever Claude
+          // presence timestamps ticked forward.
+          return worktreeName(a).localeCompare(worktreeName(b));
         };
     }
   })();
