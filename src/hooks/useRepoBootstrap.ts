@@ -53,8 +53,8 @@ interface RepoInfo {
 /**
  * Auth detection cascade:
  *   1. Check persisted auth_method preference
- *   2. Try gh CLI (auto-detect)
- *   3. Try keychain PAT
+ *   2. Try gh CLI (auto-detect; persists to config on success)
+ *   3. Try keychain PAT (persists to config on success)
  *   4. Fall back to 'none'
  */
 async function detectAndInitAuth(
@@ -109,6 +109,8 @@ async function detectAndInitAuth(
     initGithub('gh-cli');
     setAuthMethod('gh-cli');
     setGithubAuthStatus('checking');
+    // Persist so subsequent launches skip the subprocess detection
+    void invoke('write_config', { cfg: { ...cfg, auth_method: 'gh-cli' } });
     void validateToken().then((status) => {
       if (!cancelled.current) setGithubAuthStatus(status);
     });
@@ -122,6 +124,8 @@ async function detectAndInitAuth(
     initGithub('pat', keychainToken);
     setAuthMethod('pat');
     setGithubAuthStatus('checking');
+    // Persist so subsequent launches skip the detection cascade
+    void invoke('write_config', { cfg: { ...cfg, auth_method: 'pat' } });
     void validateToken().then((status) => {
       if (!cancelled.current) setGithubAuthStatus(status);
     });
@@ -195,8 +199,10 @@ export function useRepoBootstrap() {
         }
         const cfg = await invoke<AppConfig>('read_config');
 
-        // Auth detection cascade — tries gh CLI, keychain, legacy config token
-        await detectAndInitAuth(cfg, setGithubAuthStatus, setAuthMethod, cancelledRef);
+        // Auth detection cascade — fire-and-forget so it doesn't block the
+        // UI boot. The core worktree/branch data doesn't need auth; the auth
+        // pill updates once detection settles.
+        void detectAndInitAuth(cfg, setGithubAuthStatus, setAuthMethod, cancelledRef);
 
         // Mirror the Rust default (config.rs default_interval = 15_000) and the
         // store default. The previous `|| 5000` silently undermined the
