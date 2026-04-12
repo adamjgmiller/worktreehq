@@ -23,6 +23,15 @@ async function tryRun(repo: string, args: string[]): Promise<string> {
   }
 }
 
+/** Probe whether the `git` binary is reachable on PATH. Returns the version
+ *  string (e.g. "git version 2.43.0") on success, or null if git can't be
+ *  spawned. Uses tryRun so a spawn failure (binary missing) is caught
+ *  gracefully rather than surfacing as an unhandled bridge error. */
+export async function checkGitAvailable(repo: string): Promise<string | null> {
+  const out = await tryRun(repo, ['--version']);
+  return out.startsWith('git version') ? out.trim() : null;
+}
+
 export async function getDefaultBranch(repo: string): Promise<string> {
   const head = await tryRun(repo, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   const m = head.trim().match(/^origin\/(.+)$/);

@@ -8,7 +8,7 @@ import {
   validateToken,
   type AuthMethod,
 } from '../services/githubService';
-import { getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
+import { checkGitAvailable, getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
 import {
   refreshOnce,
   runFetchOnce,
@@ -254,6 +254,13 @@ export function useRepoBootstrap() {
         const info = await invoke<RepoInfo>('resolve_repo', { path: launchPath });
         if (!info.is_git) {
           setError(`Not a git repository: ${info.path}`);
+          return;
+        }
+        const gitVersion = await checkGitAvailable(info.path);
+        if (!gitVersion) {
+          setError(
+            'git is not installed or not on your PATH. WorktreeHQ requires git — install it and restart the app.',
+          );
           return;
         }
         const defaultBranch = await getDefaultBranch(info.path);
