@@ -115,22 +115,16 @@ export class GhCliTransport implements GithubTransport {
       `/repos/${owner}/${repo}/pulls?state=open&per_page=100`,
     ]);
     if (result.code !== 0) {
-      console.warn('[GhCliTransport] listOpenPullRequests failed:', result.stderr);
-      return [];
+      throw new Error(`gh api --paginate failed (code ${result.code}): ${result.stderr}`);
     }
 
-    try {
-      const data = JSON.parse(result.stdout);
-      return (data as any[]).map((p) => ({
-        number: p.number,
-        title: p.title,
-        headRef: p.head.ref,
-        url: p.html_url,
-        isDraft: p.draft ?? false,
-      }));
-    } catch (e) {
-      console.warn('[GhCliTransport] failed to parse open PRs response:', e);
-      return [];
-    }
+    const data = JSON.parse(result.stdout);
+    return (data as any[]).map((p) => ({
+      number: p.number,
+      title: p.title,
+      headRef: p.head.ref,
+      url: p.html_url,
+      isDraft: p.draft ?? false,
+    }));
   }
 }

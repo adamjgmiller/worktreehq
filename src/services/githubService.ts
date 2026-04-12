@@ -14,8 +14,7 @@ export type AuthMethod = 'gh-cli' | 'pat' | 'none';
 let transport: GithubTransport | null = null;
 let currentAuthMethod: AuthMethod = 'none';
 // Kept for the PAT path: the OctokitTransport needs the raw token for its
-// Octokit constructor, and hasGithubAuth() gates the "no auth" short-circuit
-// in batchFetchPRs / listOpenPRsForBranches.
+// Octokit constructor.
 let currentToken = '';
 
 export function getAuthMethod(): AuthMethod {
@@ -85,10 +84,6 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
   if (prevToken !== currentToken || prevMethod !== method) {
     prCache.clear();
   }
-}
-
-export function hasGithubAuth(): boolean {
-  return currentAuthMethod !== 'none';
 }
 
 // ── Token validation ───────────────────────────────────────────────────
@@ -196,13 +191,11 @@ export async function getPR(owner: string, repo: string, number: number): Promis
     prCache.set(key, { at: Date.now(), pr });
     schedulePersist();
     return pr;
-  } catch (e: any) {
-    // Only negative-cache the definitive 404 case. For auth/rate-limit/network
-    // errors, leave cache untouched so a transient hiccup doesn't wipe data.
-    if (e?.status === 404) {
-      prCache.set(key, { at: Date.now(), pr: null });
-      schedulePersist();
-    }
+  } catch {
+    // Both transports return null (not throw) for 404s, so they are
+    // negative-cached in the try block above. Any error reaching here is
+    // an auth/rate-limit/network failure — leave cache untouched so a
+    // transient hiccup doesn't wipe data.
     return null;
   }
 }

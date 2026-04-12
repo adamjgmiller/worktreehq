@@ -90,7 +90,13 @@ fn gh_exec_blocking(args: Vec<String>) -> AppResult<GhExecResult> {
                 libc::kill(child_id as libc::pid_t, libc::SIGKILL);
             }
             #[cfg(not(unix))]
-            let _ = child_id;
+            {
+                // On Windows, kill via taskkill since we only have the PID
+                // (child was moved into the wait thread).
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &child_id.to_string()])
+                    .output();
+            }
             let _ = wait_handle.join();
             let _ = stdout_handle.join();
             let _ = stderr_handle.join();
