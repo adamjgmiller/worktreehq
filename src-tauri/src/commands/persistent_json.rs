@@ -7,7 +7,7 @@
 use crate::error::{AppError, AppResult};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Resolve a file path under the app's config directory.
@@ -29,7 +29,7 @@ pub fn cache_file_path(filename: &str) -> AppResult<PathBuf> {
 }
 
 /// Write `content` atomically: write to `.tmp`, then rename over the target.
-pub fn atomic_write(path: &PathBuf, content: &str) -> AppResult<()> {
+pub fn atomic_write(path: &Path, content: &str) -> AppResult<()> {
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, content).map_err(AppError::Io)?;
     std::fs::rename(&tmp, path).map_err(AppError::Io)?;

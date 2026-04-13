@@ -1,13 +1,15 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 
 /**
  * Shared dialog/modal wrapper. Handles:
  * - Fixed overlay backdrop with click-to-dismiss
- * - Escape key to dismiss
- * - Focus management (auto-focuses a ref or first focusable element)
+ * - Escape key to dismiss (blocked when `disabled`)
  * - ARIA dialog attributes
  * - Consistent panel styling
+ *
+ * Focus management is left to consumers — destructive dialogs should focus
+ * Cancel via a local ref, creation dialogs can use autoFocus on an input.
  */
 export function Dialog({
   open = true,
@@ -29,9 +31,7 @@ export function Dialog({
   className?: string;
   children: ReactNode;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  // Escape-to-close + auto-focus
+  // Escape-to-close
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -54,7 +54,6 @@ export function Dialog({
       }}
     >
       <div
-        ref={panelRef}
         className={`bg-wt-panel border border-wt-border rounded-xl p-6 ${width}${className ? ` ${className}` : ''}`}
       >
         {children}
