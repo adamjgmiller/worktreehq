@@ -36,7 +36,17 @@ export function RemoveWorktreeDialog({
     worktree.hasConflicts ||
     !!worktree.inProgress;
   const requiresForce = dirty;
-  const typedOk = typed === 'delete';
+  // Tier the typed confirmation to actual blast radius. Worktree removal on a
+  // clean tree with no branch cleanup is reversible (`git worktree add`
+  // recreates it). Each of the other paths is unrecoverable in some way:
+  // force-removing a dirty worktree discards uncommitted work; deleting the
+  // remote branch is team-visible; deleting the local branch here uses
+  // `git branch -D` (force=true at WorktreesView handleConfirmRemove) so it
+  // can silently drop unmerged commits — unlike the ConfirmDeleteDialog local
+  // path which uses `git -d` and is refused by git for unmerged branches.
+  // Any of those three keeps the typing gate.
+  const requiresTyping = dirty || deleteRemote || deleteLocal;
+  const typedOk = !requiresTyping || typed === 'delete';
 
   useEffect(() => {
     cancelRef.current?.focus();
@@ -139,21 +149,23 @@ export function RemoveWorktreeDialog({
           )}
         </div>
       )}
-      <div className="mb-3">
-        <label className="text-xs text-wt-fg-2">
-          Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
-        </label>
-        <input
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-          disabled={submitting}
-          autoCapitalize="off"
-          autoCorrect="off"
-          autoComplete="off"
-          spellCheck={false}
-          className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
-        />
-      </div>
+      {requiresTyping && (
+        <div className="mb-3">
+          <label className="text-xs text-wt-fg-2">
+            Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
+          </label>
+          <input
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={submitting}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
+          />
+        </div>
+      )}
       {error && (
         <div className="text-xs text-wt-conflict bg-wt-conflict/10 border border-wt-conflict/40 rounded px-2 py-1.5 font-mono mb-3 break-all">
           {error}
