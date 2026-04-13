@@ -88,11 +88,13 @@ export function branchDisposition(
   };
 }
 
-// "Has the user touched the worktree at all?" — the trigger for demoting an
-// `empty` branch's pill to `unmerged`. We treat any uncommitted edit, conflict,
-// or in-progress op as activity. Stash count is intentionally NOT included:
-// stashes can outlive their original branch context and a stash on an
-// otherwise-pristine empty branch shouldn't make it look in-flight.
+// "Has the user touched the worktree at all?" — used by both the refresh
+// loop's post-ratchet demotion (data layer: mutates Branch.mergeStatus in
+// the store) and the branchDisposition display-only override (belt-and-
+// suspenders). We treat any uncommitted edit, conflict, or in-progress op
+// as activity. Stash count is intentionally NOT included: stashes can
+// outlive their original branch context and a stash on an otherwise-
+// pristine empty branch shouldn't make it look in-flight.
 export function worktreeHasActivity(wt: Worktree): boolean {
   if (wt.inProgress) return true;
   if (wt.hasConflicts) return true;

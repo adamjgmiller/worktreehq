@@ -73,7 +73,7 @@ function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
       return { ...b, mergeStatus: old.mergeStatus };
     }
     // Empty: always ratchet against regression to unmerged. The
-    // dirty-worktree demotion runs after ratcheting (post-ratchet step in
+    // activity-based demotion runs after ratcheting (post-ratchet step in
     // runRefreshOnce) so it can override when warranted.
     if (old.mergeStatus === 'empty' && b.mergeStatus === 'unmerged') {
       changed = true;
@@ -162,11 +162,11 @@ async function runRefreshOnce(): Promise<void> {
     // caching inside gitService can't accidentally leak attached fields
     // across repos or ticks.
     //
-    // Note: empty→unmerged demotion for dirty worktrees is applied AFTER
-    // the ratchet (see the post-ratchet step below). Keeping it here would
-    // force the ratchet to carve out worktree-attached branches, which
-    // breaks ratchet protection when a rev-list subprocess transiently
-    // fails on a worktree-attached branch.
+    // Note: empty→unmerged demotion for worktrees with activity is applied
+    // AFTER the ratchet (see the post-ratchet step below). Keeping it here
+    // would force the ratchet to carve out worktree-attached branches,
+    // which breaks ratchet protection when a rev-list subprocess
+    // transiently fails on a worktree-attached branch.
     const wtByBranch = new Map(wts.map((w) => [w.branch, w.path]));
     let enrichedBranches = branches.map((b) => {
       const wp = wtByBranch.get(b.name);
