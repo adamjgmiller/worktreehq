@@ -17,10 +17,6 @@ let currentAuthMethod: AuthMethod = 'none';
 // Octokit constructor.
 let currentToken = '';
 
-export function getAuthMethod(): AuthMethod {
-  return currentAuthMethod;
-}
-
 /** Detect whether `gh` CLI is installed and authenticated.
  *  Races the actual `gh auth status` call against a 3-second timeout so a
  *  hung `gh` process doesn't block the bootstrap critical path. */
@@ -81,11 +77,15 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
       break;
   }
 
-  // If the effective auth posture changed, drop the in-memory PR cache.
+  // If the effective auth posture changed, drop both in-memory caches.
   // Covers: token swap (PAT→PAT), method switch (gh-cli→none, pat→gh-cli),
-  // and re-init of gh-cli with a previously active PAT.
+  // and re-init of gh-cli with a previously active PAT. The open-PR list
+  // cache must be cleared alongside the per-PR cache — otherwise switching
+  // from 'none' to an authenticated method serves a stale (empty) open-PR
+  // list for up to 60 seconds.
   if (prevToken !== currentToken || prevMethod !== method) {
     prCache.clear();
+    openPrListCache.clear();
   }
 }
 

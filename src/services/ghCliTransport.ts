@@ -109,7 +109,9 @@ export class GhCliTransport implements GithubTransport {
     owner: string,
     repo: string,
   ): Promise<Array<Omit<PRInfo, 'state'>>> {
-    // gh api --paginate concatenates all pages into a single JSON array.
+    // gh api --paginate merges paginated JSON arrays into a single array.
+    // Requires gh CLI >= 2.4.0 — older versions concatenate raw pages
+    // (`[...][...]`) which is invalid JSON and will fail the parse below.
     const result = await ghExec([
       'api', '--paginate',
       `/repos/${owner}/${repo}/pulls?state=open&per_page=100`,
@@ -118,8 +120,15 @@ export class GhCliTransport implements GithubTransport {
       throw new Error(`gh api --paginate failed (code ${result.code}): ${result.stderr}`);
     }
 
-    const data = JSON.parse(result.stdout);
-    return (data as any[]).map((p) => ({
+    let data: any[];
+    try {
+      data = JSON.parse(result.stdout);
+    } catch {
+      throw new Error(
+        'Failed to parse paginated PR response. This usually means your gh CLI is too old — upgrade to gh >= 2.4.0.',
+      );
+    }
+    return data.map((p: any) => ({
       number: p.number,
       title: p.title,
       headRef: p.head.ref,

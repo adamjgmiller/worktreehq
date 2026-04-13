@@ -21,7 +21,6 @@ type AppConfigShape = Record<string, unknown> & {
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const setGithubAuthStatus = useRepoStore((s) => s.setGithubAuthStatus);
   const setAuthMethod = useRepoStore((s) => s.setAuthMethod);
-  const currentAuthMethod = useRepoStore((s) => s.authMethod);
 
   const [selectedMethod, setSelectedMethod] = useState<AuthMethod>('none');
   const [token, setToken] = useState('');
@@ -57,11 +56,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         setGhChecking(false);
         setPostCreateCommands((cfg.post_create_commands as string | undefined) ?? '');
 
-        // Initialize the radio selection from the current method (read
-        // directly from the store to avoid a stale closure / dep on
-        // currentAuthMethod, which would re-fire the effect on save).
-        setSelectedMethod(useRepoStore.getState().authMethod);
-
         // Load the PAT from keychain (preferred) or config (legacy)
         let keychainToken: string | null = null;
         try {
@@ -70,7 +64,29 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           /* keychain may not be available */
         }
         if (cancelled) return;
-        setToken(keychainToken || (cfg.github_token as string | undefined) || '');
+        const loadedToken = keychainToken || (cfg.github_token as string | undefined) || '';
+        setToken(loadedToken);
+
+        // Initialize the radio selection from the persisted config, not the
+        // store. The store's authMethod is set by the fire-and-forget
+        // detection cascade in useRepoBootstrap, which may not have settled
+        // yet if the user opens Settings quickly. Reading from the config
+        // avoids a race where the radio defaults to 'none' and a save
+        // accidentally overwrites the auto-detected method.
+        //
+        // Exception: when the config says 'pat' but no token was found (e.g.
+        // keychain entry was deleted externally), fall back to the store's
+        // settled method. Otherwise the radio selects "PAT" with an empty
+        // token field, Save is disabled, and the user can't change unrelated
+        // settings without first manually switching auth modes.
+        const persistedMethod = cfg.auth_method as AuthMethod | undefined;
+        const configMethodValid =
+          persistedMethod === 'gh-cli' || persistedMethod === 'pat' || persistedMethod === 'none';
+        const effectiveMethod =
+          configMethodValid && !(persistedMethod === 'pat' && !loadedToken)
+            ? persistedMethod
+            : useRepoStore.getState().authMethod;
+        setSelectedMethod(effectiveMethod);
         setLoaded(true);
       } catch (e: any) {
         if (cancelled) return;
@@ -119,14 +135,18 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       // Handle keychain BEFORE persisting config — if keychain write fails,
       // the throw aborts the save so config won't be written with
       // auth_method: 'pat' pointing at a keychain entry that doesn't exist.
+      let keychainWarning: string | null = null;
       if (selectedMethod === 'pat' && token) {
         await keychainStore('github_token', token);
       } else {
-        // Switching away from PAT, or PAT with empty token — remove stale entry
+        // Switching away from PAT, or PAT with empty token — remove stale entry.
+        // Warn (but don't block) on non-trivial failures so the user knows
+        // their old PAT may still be in the keychain.
         try {
           await keychainDelete('github_token');
-        } catch {
-          /* best-effort cleanup */
+        } catch (e: any) {
+          console.warn('[Settings] keychain delete failed:', e?.message ?? e);
+          keychainWarning = 'Auth saved, but the old token could not be removed from the OS keychain.';
         }
       }
 
@@ -161,7 +181,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       } else {
         setGithubAuthStatus('missing');
       }
-      onClose();
+      // Keep the modal open if there's a non-fatal warning (e.g. keychain
+      // delete failure) so the user can read it before dismissing.
+      if (keychainWarning) {
+        setError(keychainWarning);
+      } else {
+        onClose();
+      }
     } catch (e: any) {
       setError(`Save failed: ${e?.message ?? e}`);
     } finally {

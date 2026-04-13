@@ -56,6 +56,10 @@ interface RepoInfo {
  *   2. Try gh CLI (auto-detect; persists to config on success)
  *   3. Try keychain PAT (persists to config on success)
  *   4. Fall back to 'none'
+ *
+ * When auth is established, triggers an extra refreshOnce() so PR
+ * enrichment and squash detection land as soon as auth is ready, rather
+ * than waiting for the next 15s poll tick.
  */
 async function detectAndInitAuth(
   cfg: AppConfig,
@@ -63,14 +67,33 @@ async function detectAndInitAuth(
   setAuthMethod: (m: AuthMethod) => void,
   cancelled: { current: boolean },
 ): Promise<void> {
+  // Helper: after auth is established, validate and kick a refresh so the
+  // first load gets PR data without waiting a full poll interval. The
+  // refresh is gated on `dataRepoPath` (not just `repo`) so it only fires
+  // after the initial fetch + refresh cycle has committed data. Without
+  // this, a fast auth detection could trigger refreshOnce() between
+  // setRepo() and runFetchOnce(), committing a snapshot derived from stale
+  // origin/* refs — the shimmer would lift on pre-fetch data until the
+  // fetch-corrected refresh lands. When auth resolves before the fetch,
+  // the extra tick is harmlessly skipped: initGithub() already ran
+  // synchronously, so the fetch's own chained refreshOnce has the
+  // transport set and picks up PR data on its own.
+  const validateAndRefresh = () => {
+    setGithubAuthStatus('checking');
+    void validateToken().then((status) => {
+      if (cancelled.current) return;
+      setGithubAuthStatus(status);
+      if (status === 'valid' && useRepoStore.getState().dataRepoPath) {
+        void refreshOnce();
+      }
+    });
+  };
+
   // If user has explicitly chosen an auth method, honor it.
   if (cfg.auth_method === 'gh-cli') {
     initGithub('gh-cli');
     setAuthMethod('gh-cli');
-    setGithubAuthStatus('checking');
-    void validateToken().then((status) => {
-      if (!cancelled.current) setGithubAuthStatus(status);
-    });
+    validateAndRefresh();
     return;
   }
 
@@ -81,10 +104,7 @@ async function detectAndInitAuth(
     if (token) {
       initGithub('pat', token);
       setAuthMethod('pat');
-      setGithubAuthStatus('checking');
-      void validateToken().then((status) => {
-        if (!cancelled.current) setGithubAuthStatus(status);
-      });
+      validateAndRefresh();
       return;
     }
     // Explicit PAT preference but no token found — fall through to 'none'
@@ -108,12 +128,9 @@ async function detectAndInitAuth(
   if (ghAvailable) {
     initGithub('gh-cli');
     setAuthMethod('gh-cli');
-    setGithubAuthStatus('checking');
     // Persist so subsequent launches skip the subprocess detection
     void invoke('write_config', { cfg: { ...cfg, auth_method: 'gh-cli' } });
-    void validateToken().then((status) => {
-      if (!cancelled.current) setGithubAuthStatus(status);
-    });
+    validateAndRefresh();
     return;
   }
 
@@ -123,12 +140,9 @@ async function detectAndInitAuth(
   if (keychainToken) {
     initGithub('pat', keychainToken);
     setAuthMethod('pat');
-    setGithubAuthStatus('checking');
     // Persist so subsequent launches skip the detection cascade
     void invoke('write_config', { cfg: { ...cfg, auth_method: 'pat' } });
-    void validateToken().then((status) => {
-      if (!cancelled.current) setGithubAuthStatus(status);
-    });
+    validateAndRefresh();
     return;
   }
 
