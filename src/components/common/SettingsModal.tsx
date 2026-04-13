@@ -33,7 +33,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [ghDetected, setGhDetected] = useState<boolean | null>(null);
   const [ghChecking, setGhChecking] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const baseCfgRef = useRef<AppConfigShape | null>(null);
 
   // Re-fetch config + detect gh CLI every time the modal opens.
   useEffect(() => {
@@ -51,7 +50,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           detectGhCli(),
         ]);
         if (cancelled) return;
-        baseCfgRef.current = cfg;
 
         setGhDetected(gh);
         setGhChecking(false);

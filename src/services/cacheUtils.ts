@@ -22,12 +22,14 @@ export class TTLCache<K, V> {
     this.trimFraction = opts.trimFraction ?? 0.25;
   }
 
-  /** Get a value if present and not expired. Returns undefined on miss. */
+  /** Get a value if present and not expired. Returns undefined on miss.
+   *  Expired entries are NOT deleted — they remain accessible via `getStale()`
+   *  for stale-while-revalidate fallbacks. Cleanup happens via `set()` (which
+   *  triggers FIFO trim) and `clear()`. */
   get(key: K): V | undefined {
     const entry = this.map.get(key);
     if (!entry) return undefined;
     if (this.ttlMs !== null && Date.now() - entry.at > this.ttlMs) {
-      this.map.delete(key);
       return undefined;
     }
     return entry.value;
