@@ -105,8 +105,8 @@ export function BranchRow({
               </span>
             </Tooltip>
           )}
-          {branch.mergeStatus === 'empty' && (
-            <Tooltip label="Not checked out in any worktree — probably abandoned">
+          {branch.mergeStatus === 'empty' && !branch.worktreePath && (
+            <Tooltip label="No commits ahead of main and not checked out — probably abandoned">
               <span className="text-wt-muted-2 text-[0.5625rem] font-mono">no worktree</span>
             </Tooltip>
           )}
