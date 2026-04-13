@@ -26,10 +26,10 @@ import {
 } from '../lib/structuralShare';
 import type { Branch, MergeStatus } from '../types';
 
-// Statuses whose detection depends on the GitHub API or other external
-// data that can transiently fail. A single cache miss or failed re-fetch
-// would bounce these back to unmerged, so the ratchet preserves them when
-// the branch SHA hasn't moved.
+// Statuses whose detection depends on subprocesses or external data that
+// can transiently fail. A single cache miss, failed re-fetch, or subprocess
+// error would bounce these back to unmerged, so the ratchet preserves them
+// when the branch SHA hasn't moved.
 const RATCHETED_STATUSES: ReadonlySet<MergeStatus> = new Set([
   'squash-merged',
   'merged-normally',
@@ -42,9 +42,10 @@ const RATCHETED_STATUSES: ReadonlySet<MergeStatus> = new Set([
 //
 // Three layers of protection:
 //
-// 1. API-dependent statuses (squash-merged, merged-normally): always
-//    ratcheted. These depend on the GitHub API or git merge-base, and a
-//    single failed fetch would otherwise bounce them back to unmerged.
+// 1. Detection-dependent statuses (squash-merged, merged-normally,
+//    direct-merged): always ratcheted. These depend on the GitHub API,
+//    git merge-base, or git reflog subprocesses, and a single failed
+//    probe would otherwise bounce them back to unmerged.
 //
 // 2. `empty` status: always ratcheted against regression to unmerged.
 //    `empty` depends on a successful `git rev-list` subprocess (the result
@@ -261,9 +262,9 @@ async function runRefreshOnce(): Promise<void> {
       }
     }
 
-    // Exclude worktrees whose branch is already merged (squash-merged or
-    // merged-normally) from conflict detection — conflicts between them are
-    // not actionable because the changes are already on main.
+    // Exclude worktrees whose branch is already merged (squash-merged,
+    // merged-normally, or direct-merged) from conflict detection — conflicts
+    // between them are not actionable because the changes are already on main.
     const mergedBranches = new Set(
       postRatchet
         .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged' || b.mergeStatus === 'direct-merged')

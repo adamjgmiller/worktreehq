@@ -378,12 +378,12 @@ export async function isAncestor(repo: string, ref: string, base: string): Promi
   }
 }
 
-// Cache of per-branch ahead/behind/merged results, keyed by the tuple of
-// `(branch sha, main sha, ref shape)`. The keys are content-addressed, so
-// when either sha moves the key changes and we re-compute; when nothing has
-// moved between ticks we skip a `rev-list` + `merge-base --is-ancestor`
-// subprocess per branch. On a 100-branch repo that's ~200 spawns/tick
-// eliminated in the steady state.
+// Cache of per-branch ahead/behind/merged/directMerged results, keyed by
+// the tuple of `(branch sha, main sha, ref shape)`. The keys are
+// content-addressed, so when either sha moves the key changes and we
+// re-compute; when nothing has moved between ticks we skip the `rev-list`,
+// `merge-base --is-ancestor`, and (for empty local branches) `reflog`
+// subprocesses per branch.
 //
 // No TTL: stale entries are harmless because a stale key only becomes
 // reachable again if the branch/main sha actually regresses to the same

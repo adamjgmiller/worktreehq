@@ -87,7 +87,7 @@ export function GraphView() {
       <div className="mt-6 flex gap-4 text-xs">
         <Legend color="#10b981" label="unmerged / active" />
         <Legend color="#a855f7" label="squash-merged" />
-        <Legend color="#3b82f6" label="merged normally" />
+        <Legend color="#3b82f6" label="merged / direct-merged" />
         <Legend color="#f59e0b" label="stale" />
       </div>
     </div>
