@@ -1,6 +1,7 @@
 export type MergeStatus =
   | 'merged-normally'
   | 'squash-merged'
+  | 'direct-merged'
   | 'unmerged'
   | 'empty'
   | 'stale';

@@ -52,7 +52,7 @@ function statusRank(wt: Worktree, mergeStatus?: MergeStatus): number {
   else rank = 1; // clean
 
   const isMerged =
-    mergeStatus === 'merged-normally' || mergeStatus === 'squash-merged';
+    mergeStatus === 'merged-normally' || mergeStatus === 'squash-merged' || mergeStatus === 'direct-merged';
   return isMerged ? rank - 10 : rank;
 }
 

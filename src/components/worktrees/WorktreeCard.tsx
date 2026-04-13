@@ -160,7 +160,8 @@ function WorktreeCardInner({
   const isMerged =
     isOnDefaultBranch ||
     branchInfo?.mergeStatus === 'merged-normally' ||
-    branchInfo?.mergeStatus === 'squash-merged';
+    branchInfo?.mergeStatus === 'squash-merged' ||
+    branchInfo?.mergeStatus === 'direct-merged';
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   // Close the action menu on outside click or Escape. Without this the menu

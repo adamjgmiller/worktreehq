@@ -14,7 +14,7 @@ export function ConflictsView() {
   // Exclude merged branches — conflicts between them aren't actionable.
   const mergedBranches = new Set(
     branches
-      .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged')
+      .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged' || b.mergeStatus === 'direct-merged')
       .map((b) => b.name),
   );
   const candidates = worktrees.filter(

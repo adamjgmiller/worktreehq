@@ -28,7 +28,7 @@ export function worktreeStatusClass(
       return 'border-wt-info/60 bg-wt-info/5';
     case 'clean': {
       if (isPrimary) return 'border-wt-clean/60 bg-wt-clean/5';
-      if (mergeStatus === 'merged-normally' || mergeStatus === 'squash-merged') {
+      if (mergeStatus === 'merged-normally' || mergeStatus === 'squash-merged' || mergeStatus === 'direct-merged') {
         return 'border-wt-clean/60 bg-wt-clean/5';
       }
       return 'border-wt-active/60 bg-wt-active/5';
@@ -42,6 +42,8 @@ export function mergeStatusLabel(s: MergeStatus): string {
       return 'merged';
     case 'squash-merged':
       return 'merged (squash)';
+    case 'direct-merged':
+      return 'merged (direct)';
     case 'unmerged':
       return 'unmerged';
     case 'empty':
@@ -55,6 +57,9 @@ export function mergeStatusTooltip(s: MergeStatus): string | null {
   if (s === 'empty') {
     return 'No commits ahead of main — nothing to merge.';
   }
+  if (s === 'direct-merged') {
+    return 'Branch commits were pushed directly to main without a pull request.';
+  }
   if (s === 'stale') return 'Unmerged branch with no commits in the last 30 days.';
   return null;
 }
@@ -65,6 +70,8 @@ export function mergeStatusClass(s: MergeStatus): string {
       return 'bg-wt-info/15 text-wt-info border-wt-info/40';
     case 'squash-merged':
       return 'bg-wt-squash/15 text-wt-squash border-wt-squash/40';
+    case 'direct-merged':
+      return 'bg-wt-info/15 text-wt-info border-wt-info/40';
     case 'unmerged':
       return 'bg-wt-clean/15 text-wt-clean border-wt-clean/40';
     case 'empty':

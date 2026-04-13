@@ -723,6 +723,193 @@ describe('listBranches sha-cache', () => {
     // Should stay at the default `unmerged`, NOT be mis-tagged as `empty`.
     expect(branch?.mergeStatus).toBe('unmerged');
   });
+
+  it('upgrades empty to direct-merged when reflog has commit entries', async () => {
+    gitExecMock.mockImplementation(async (_repo: string, args: string[]) => {
+      if (args[0] === 'for-each-ref' && args.includes('refs/heads')) {
+        return {
+          stdout:
+            'main\tmainsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>\n' +
+            'feat/pushed\tpushedsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args[0] === 'for-each-ref' && args.includes('refs/remotes')) {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (
+        args[0] === 'rev-list' &&
+        args.includes('--first-parent') &&
+        !args.includes('--count')
+      ) {
+        // pushedsha is on main's first-parent line
+        return { stdout: 'mainsha\npushedsha\nolder\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'rev-list') {
+        return { stdout: '0\t0\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'merge-base') {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      // Reflog check: shows a commit action
+      if (args[0] === 'reflog') {
+        return {
+          stdout: 'commit: chore(ci): skip CLA check\nbranch: Created from main\n',
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await listBranches('/repo', 'main');
+    const branch = result.find((b) => b.name === 'feat/pushed');
+    expect(branch?.mergeStatus).toBe('direct-merged');
+  });
+
+  it('stays empty when reflog has no commit entries', async () => {
+    gitExecMock.mockImplementation(async (_repo: string, args: string[]) => {
+      if (args[0] === 'for-each-ref' && args.includes('refs/heads')) {
+        return {
+          stdout:
+            'main\tmainsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>\n' +
+            'feat/fresh\tmainsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args[0] === 'for-each-ref' && args.includes('refs/remotes')) {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (
+        args[0] === 'rev-list' &&
+        args.includes('--first-parent') &&
+        !args.includes('--count')
+      ) {
+        return { stdout: 'mainsha\nolder\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'rev-list') {
+        return { stdout: '0\t0\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'merge-base') {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      // Reflog: only creation, no commits
+      if (args[0] === 'reflog') {
+        return {
+          stdout: 'branch: Created from main\n',
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result = await listBranches('/repo', 'main');
+    const branch = result.find((b) => b.name === 'feat/fresh');
+    expect(branch?.mergeStatus).toBe('empty');
+  });
+
+  it('serves direct-merged from cache on second call', async () => {
+    gitExecMock.mockImplementation(async (_repo: string, args: string[]) => {
+      if (args[0] === 'for-each-ref' && args.includes('refs/heads')) {
+        return {
+          stdout:
+            'main\tmainsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>\n' +
+            'feat/cached\tcachedsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args[0] === 'for-each-ref' && args.includes('refs/remotes')) {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (
+        args[0] === 'rev-list' &&
+        args.includes('--first-parent') &&
+        !args.includes('--count')
+      ) {
+        return { stdout: 'mainsha\ncachedsha\nolder\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'rev-list') {
+        return { stdout: '0\t0\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'merge-base') {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (args[0] === 'reflog') {
+        return {
+          stdout: 'commit: work done\nbranch: Created from main\n',
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    const result1 = await listBranches('/repo', 'main');
+    expect(result1.find((b) => b.name === 'feat/cached')?.mergeStatus).toBe('direct-merged');
+
+    // Second call — reflog should NOT be called again (served from cache)
+    const reflogCalls = gitExecMock.mock.calls.filter((c) => c[1][0] === 'reflog');
+    const countBefore = reflogCalls.length;
+
+    const result2 = await listBranches('/repo', 'main');
+    expect(result2.find((b) => b.name === 'feat/cached')?.mergeStatus).toBe('direct-merged');
+
+    const reflogCallsAfter = gitExecMock.mock.calls.filter((c) => c[1][0] === 'reflog');
+    expect(reflogCallsAfter.length).toBe(countBefore); // no new reflog calls
+  });
+
+  it('does NOT cache when reflog probe fails (allows retry next tick)', async () => {
+    let reflogShouldFail = true;
+    gitExecMock.mockImplementation(async (_repo: string, args: string[]) => {
+      if (args[0] === 'for-each-ref' && args.includes('refs/heads')) {
+        return {
+          stdout:
+            'main\tmainsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>\n' +
+            'feat/flaky\tflakysha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args[0] === 'for-each-ref' && args.includes('refs/remotes')) {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (
+        args[0] === 'rev-list' &&
+        args.includes('--first-parent') &&
+        !args.includes('--count')
+      ) {
+        return { stdout: 'mainsha\nflakysha\nolder\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'rev-list') {
+        return { stdout: '0\t0\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'merge-base') {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (args[0] === 'reflog') {
+        if (reflogShouldFail) throw new Error('transient failure');
+        return {
+          stdout: 'commit: real work\nbranch: Created from main\n',
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    // Tick 1: reflog fails → empty (not cached due to reflogSucceeded guard)
+    const result1 = await listBranches('/repo', 'main');
+    expect(result1.find((b) => b.name === 'feat/flaky')?.mergeStatus).toBe('empty');
+
+    // Tick 2: reflog succeeds → should retry and find direct-merged
+    reflogShouldFail = false;
+    const result2 = await listBranches('/repo', 'main');
+    expect(result2.find((b) => b.name === 'feat/flaky')?.mergeStatus).toBe('direct-merged');
+  });
 });
 
 describe('createWorktree', () => {

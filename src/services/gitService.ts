@@ -378,12 +378,12 @@ export async function isAncestor(repo: string, ref: string, base: string): Promi
   }
 }
 
-// Cache of per-branch ahead/behind/merged results, keyed by the tuple of
-// `(branch sha, main sha, ref shape)`. The keys are content-addressed, so
-// when either sha moves the key changes and we re-compute; when nothing has
-// moved between ticks we skip a `rev-list` + `merge-base --is-ancestor`
-// subprocess per branch. On a 100-branch repo that's ~200 spawns/tick
-// eliminated in the steady state.
+// Cache of per-branch ahead/behind/merged/directMerged results, keyed by
+// the tuple of `(branch sha, main sha, ref shape)`. The keys are
+// content-addressed, so when either sha moves the key changes and we
+// re-compute; when nothing has moved between ticks we skip the `rev-list`,
+// `merge-base --is-ancestor`, and (for empty local branches) `reflog`
+// subprocesses per branch.
 //
 // No TTL: stale entries are harmless because a stale key only becomes
 // reachable again if the branch/main sha actually regresses to the same
@@ -393,6 +393,7 @@ interface BranchAbCacheEntry {
   aheadOfMain: number;
   behindMain: number;
   merged: boolean;
+  directMerged?: boolean;
 }
 const branchAbCache = new TTLCache<string, BranchAbCacheEntry>({ maxSize: 2000 });
 
@@ -515,6 +516,8 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
           b.behindMain = cached.behindMain;
           if (cached.merged) {
             b.mergeStatus = 'merged-normally';
+          } else if (cached.directMerged) {
+            b.mergeStatus = 'direct-merged';
           } else if (cached.aheadOfMain === 0) {
             // Mirror the empty-tag rule applied below to cold computes — the
             // cache stores the raw counts, the empty derivation is stateless.
@@ -579,11 +582,38 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
         // would be mis-tagged as empty instead of staying `unmerged`.
         b.mergeStatus = 'empty';
       }
-      // Only cache when both probes returned a usable answer. A partial
+      // Reflog check: if the branch is tagged `empty` but the reflog shows
+      // a `commit:` action, the user made real commits that ended up on
+      // main (e.g., pushed directly without a PR). Upgrade to
+      // `direct-merged` so the UI says "your work landed" instead of "no
+      // work here". Only local branches have a meaningful reflog.
+      let directMerged = false;
+      // True when we either didn't need to run the reflog probe (branch
+      // isn't empty or isn't local) or it returned a usable answer. When
+      // the probe fails transiently, we must NOT cache the result — a
+      // false `directMerged` would stick to the cache key and the reflog
+      // would never be retried. Same invariant as abMatch/mergeBaseSucceeded.
+      let reflogSucceeded = true;
+      if (b.mergeStatus === 'empty' && b.hasLocal) {
+        reflogSucceeded = false;
+        const reflogResult = await gitExec(repo, [
+          'reflog', 'show', '--format=%gs', b.name,
+        ]).catch(() => null);
+        if (reflogResult && reflogResult.code === 0) {
+          reflogSucceeded = true;
+          const hasCommits = reflogResult.stdout.trim().split('\n')
+            .some((line) => line.startsWith('commit'));
+          if (hasCommits) {
+            b.mergeStatus = 'direct-merged';
+            directMerged = true;
+          }
+        }
+      }
+      // Only cache when all probes returned a usable answer. A partial
       // failure means we may have a stale 0/0/false; serving that from cache
       // would lock it in until the branch sha actually moves.
-      if (key && abMatch && mergeBaseSucceeded) {
-        branchAbCache.set(key, { aheadOfMain, behindMain, merged });
+      if (key && abMatch && mergeBaseSucceeded && reflogSucceeded) {
+        branchAbCache.set(key, { aheadOfMain, behindMain, merged, directMerged });
       }
     }),
   );

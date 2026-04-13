@@ -40,6 +40,13 @@ describe('applyPreset', () => {
     ).map((x) => x.name);
     expect(out).toContain('old-empty');
   });
+  it('safe-to-delete includes direct-merged branches', () => {
+    const out = applyPreset(
+      [...branches, b({ name: 'direct', mergeStatus: 'direct-merged' })],
+      'safe-to-delete',
+    ).map((x) => x.name);
+    expect(out).toContain('direct');
+  });
   it('safe-to-delete excludes empty branches with missing date (safe direction)', () => {
     const out = applyPreset(
       [...branches, b({ name: 'no-date', mergeStatus: 'empty', lastCommitDate: '' })],
