@@ -25,25 +25,22 @@ import {
 } from '../lib/structuralShare';
 import type { Branch, MergeStatus } from '../types';
 
-// Merge-status priority — higher index = more "resolved". When a branch's
-// SHA hasn't moved between ticks but this tick's detection produced a
-// lower-priority status, the previous (better) status is preserved. This
-// prevents transient failures (subprocess error, GitHub API blip, cache
-// miss) from flickering resolved branches back to unmerged/empty.
-const STATUS_PRIORITY: Record<MergeStatus, number> = {
-  unmerged: 0,
-  empty: 1,
-  stale: 2,
-  'squash-merged': 3,
-  'merged-normally': 4,
-};
+// Statuses whose detection depends on the GitHub API or other external
+// data that can transiently fail. A single cache miss or failed re-fetch
+// would bounce these back to unmerged, so the ratchet preserves them when
+// the branch SHA hasn't moved. Locally-derived statuses (empty, stale)
+// are cheap and deterministic — they don't need protection.
+const RATCHETED_STATUSES: ReadonlySet<MergeStatus> = new Set([
+  'squash-merged',
+  'merged-normally',
+]);
 
-// Apply a one-way ratchet: if the previous tick resolved a branch to a
-// "better" status and its SHA hasn't changed, keep the previous status.
-// This is critical for multi-commit squash merges that the cherry-check
-// can't detect — their squash-merged status depends entirely on the GitHub
-// API returning PR data, and a single failed re-fetch would otherwise
-// bounce them back to unmerged until the next successful fetch.
+// Apply a one-way ratchet: if the previous tick resolved a branch to an
+// API-dependent status and its SHA hasn't changed, keep the previous
+// status. This is critical for multi-commit squash merges that the
+// cherry-check can't detect — their squash-merged status depends entirely
+// on the GitHub API returning PR data, and a single failed re-fetch would
+// otherwise bounce them back to unmerged until the next successful fetch.
 function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
   if (prev.length === 0) return next;
   const prevByName = new Map(prev.map((b) => [b.name, b]));
@@ -53,12 +50,10 @@ function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
     if (!old) return b;
     // SHA moved — the branch has new commits; trust the fresh detection.
     if (old.lastCommitSha !== b.lastCommitSha) return b;
-    // Worktree attachment changed — trust the fresh detection. The
-    // empty→unmerged demotion is intentional for worktree-attached branches.
-    if (Boolean(old.worktreePath) !== Boolean(b.worktreePath)) return b;
-    const oldPriority = STATUS_PRIORITY[old.mergeStatus] ?? 0;
-    const newPriority = STATUS_PRIORITY[b.mergeStatus] ?? 0;
-    if (oldPriority > newPriority) {
+    // Only protect statuses that depend on external APIs. Locally-derived
+    // statuses (empty, stale) can legitimately change without a SHA move
+    // (e.g. worktree attachment, main fast-forwarding past the branch).
+    if (RATCHETED_STATUSES.has(old.mergeStatus) && !RATCHETED_STATUSES.has(b.mergeStatus)) {
       changed = true;
       return { ...b, mergeStatus: old.mergeStatus };
     }

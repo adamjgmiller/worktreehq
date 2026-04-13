@@ -617,7 +617,9 @@ describe('merge-status ratchet', () => {
     expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
   });
 
-  it('preserves empty status when detection transiently regresses to unmerged', async () => {
+  it('does not ratchet locally-derived statuses (empty, stale)', async () => {
+    // empty and stale are derived from local git state, not external APIs,
+    // so the ratchet should not protect them from legitimate transitions.
     const emptyBranch = makeBranch('feat/empty', 'empty');
     asMock(squash.detectSquashMerges).mockResolvedValueOnce({
       updatedBranches: [emptyBranch],
@@ -634,6 +636,30 @@ describe('merge-status ratchet', () => {
     });
     asMock(git.listBranches).mockResolvedValueOnce([regressed]);
     await refreshOnce();
+    // empty is not ratcheted — fresh detection is trusted.
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('unmerged');
+  });
+
+  it('allows stale→empty transition when main fast-forwards past the branch', async () => {
+    const staleBranch = makeBranch('feat/old', 'stale');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [staleBranch],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([staleBranch]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('stale');
+
+    // Main advanced to include this branch's commits — same branch SHA,
+    // but aheadOfMain drops to 0 so detection returns empty.
+    const nowEmpty = makeBranch('feat/old', 'empty');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [nowEmpty],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([nowEmpty]);
+    await refreshOnce();
+    // stale is not ratcheted — the transition to empty is allowed.
     expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
   });
 });
