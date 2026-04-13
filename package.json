@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "A squash-merge-aware git worktree dashboard for developers running parallel AI coding sessions.",
   "author": "Adam Miller",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE.md",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/adamjgmiller/worktreehq.git"
