@@ -225,7 +225,7 @@ async function runRefreshOnce(): Promise<void> {
 
     // Diagnostic: log merge-status changes between ticks so bouncing is
     // visible in the dev console. Only fires when something actually changed.
-    if (prevBranches.length > 0) {
+    if (import.meta.env.DEV && prevBranches.length > 0) {
       const prevByName = new Map(prevBranches.map((b) => [b.name, b]));
       const diffs: string[] = [];
       for (const b of ratcheted) {
