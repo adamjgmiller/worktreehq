@@ -861,6 +861,55 @@ describe('listBranches sha-cache', () => {
     const reflogCallsAfter = gitExecMock.mock.calls.filter((c) => c[1][0] === 'reflog');
     expect(reflogCallsAfter.length).toBe(countBefore); // no new reflog calls
   });
+
+  it('does NOT cache when reflog probe fails (allows retry next tick)', async () => {
+    let reflogShouldFail = true;
+    gitExecMock.mockImplementation(async (_repo: string, args: string[]) => {
+      if (args[0] === 'for-each-ref' && args.includes('refs/heads')) {
+        return {
+          stdout:
+            'main\tmainsha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>\n' +
+            'feat/flaky\tflakysha\t2026-01-01T00:00:00+00:00\t\t<u@x.com>',
+          stderr: '',
+          code: 0,
+        };
+      }
+      if (args[0] === 'for-each-ref' && args.includes('refs/remotes')) {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (
+        args[0] === 'rev-list' &&
+        args.includes('--first-parent') &&
+        !args.includes('--count')
+      ) {
+        return { stdout: 'mainsha\nflakysha\nolder\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'rev-list') {
+        return { stdout: '0\t0\n', stderr: '', code: 0 };
+      }
+      if (args[0] === 'merge-base') {
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (args[0] === 'reflog') {
+        if (reflogShouldFail) throw new Error('transient failure');
+        return {
+          stdout: 'commit: real work\nbranch: Created from main\n',
+          stderr: '',
+          code: 0,
+        };
+      }
+      return { stdout: '', stderr: '', code: 0 };
+    });
+
+    // Tick 1: reflog fails → empty (not cached due to reflogSucceeded guard)
+    const result1 = await listBranches('/repo', 'main');
+    expect(result1.find((b) => b.name === 'feat/flaky')?.mergeStatus).toBe('empty');
+
+    // Tick 2: reflog succeeds → should retry and find direct-merged
+    reflogShouldFail = false;
+    const result2 = await listBranches('/repo', 'main');
+    expect(result2.find((b) => b.name === 'feat/flaky')?.mergeStatus).toBe('direct-merged');
+  });
 });
 
 describe('createWorktree', () => {

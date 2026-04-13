@@ -588,11 +588,19 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
       // `direct-merged` so the UI says "your work landed" instead of "no
       // work here". Only local branches have a meaningful reflog.
       let directMerged = false;
+      // True when we either didn't need to run the reflog probe (branch
+      // isn't empty or isn't local) or it returned a usable answer. When
+      // the probe fails transiently, we must NOT cache the result — a
+      // false `directMerged` would stick to the cache key and the reflog
+      // would never be retried. Same invariant as abMatch/mergeBaseSucceeded.
+      let reflogSucceeded = true;
       if (b.mergeStatus === 'empty' && b.hasLocal) {
+        reflogSucceeded = false;
         const reflogResult = await gitExec(repo, [
           'reflog', 'show', '--format=%gs', b.name,
         ]).catch(() => null);
         if (reflogResult && reflogResult.code === 0) {
+          reflogSucceeded = true;
           const hasCommits = reflogResult.stdout.trim().split('\n')
             .some((line) => line.startsWith('commit'));
           if (hasCommits) {
@@ -601,10 +609,10 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
           }
         }
       }
-      // Only cache when both probes returned a usable answer. A partial
+      // Only cache when all probes returned a usable answer. A partial
       // failure means we may have a stale 0/0/false; serving that from cache
       // would lock it in until the branch sha actually moves.
-      if (key && abMatch && mergeBaseSucceeded) {
+      if (key && abMatch && mergeBaseSucceeded && reflogSucceeded) {
         branchAbCache.set(key, { aheadOfMain, behindMain, merged, directMerged });
       }
     }),
