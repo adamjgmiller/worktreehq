@@ -102,6 +102,17 @@ describe('branchDisposition — clean worktree (no contradiction)', () => {
     expect(d?.label).toBe('stale');
     expect(d?.className).toContain('border-wt-dirty');
   });
+
+  it('direct-merged + clean → plain "merged (direct)" with info palette', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'direct-merged' }),
+      mkWorktree({ status: 'clean' }),
+    );
+    expect(d?.label).toBe('merged (direct)');
+    expect(d?.className).toContain('border-wt-info');
+    expect(d?.className).not.toContain('border-wt-dirty');
+    expect(d?.tooltip).toMatch(/directly to main/);
+  });
 });
 
 // `empty` is a commit-history label, but the moment the worktree shows any
@@ -197,6 +208,16 @@ describe('branchDisposition — merged + workspace contradictions', () => {
     expect(d?.tooltip).toMatch(/2 untracked/);
     expect(d?.tooltip).toMatch(/1 modified/);
     expect(d?.tooltip).toMatch(/3 staged/);
+  });
+
+  it('direct-merged + dirty → "merged (direct) · edits" with dirty accent', () => {
+    const d = callDisp(
+      mkBranch({ mergeStatus: 'direct-merged' }),
+      mkWorktree({ status: 'dirty', modifiedCount: 1 }),
+    );
+    expect(d?.label).toBe('merged (direct) · edits');
+    expect(d?.className).toContain('text-wt-info');
+    expect(d?.className).toContain('border-wt-dirty/60');
   });
 
   it('squash-merged + dirty → "merged (squash) · edits" with dirty accent', () => {

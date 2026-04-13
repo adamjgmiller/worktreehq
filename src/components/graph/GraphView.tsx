@@ -9,6 +9,8 @@ function branchColor(b: Branch): string {
       return '#a855f7';
     case 'merged-normally':
       return '#3b82f6';
+    case 'direct-merged':
+      return '#3b82f6';
     case 'stale':
       return '#f59e0b';
     case 'empty':

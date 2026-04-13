@@ -33,6 +33,7 @@ import type { Branch, MergeStatus } from '../types';
 const RATCHETED_STATUSES: ReadonlySet<MergeStatus> = new Set([
   'squash-merged',
   'merged-normally',
+  'direct-merged',
 ]);
 
 // Apply a one-way ratchet: if the previous tick resolved a branch to a
@@ -265,7 +266,7 @@ async function runRefreshOnce(): Promise<void> {
     // not actionable because the changes are already on main.
     const mergedBranches = new Set(
       postRatchet
-        .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged')
+        .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged' || b.mergeStatus === 'direct-merged')
         .map((b) => b.name),
     );
     const conflictCandidateWts = wts.filter((w) => !mergedBranches.has(w.branch));

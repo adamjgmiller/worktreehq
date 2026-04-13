@@ -678,6 +678,29 @@ describe('merge-status ratchet', () => {
     expect(useRepoStore.getState().branches[0].mergeStatus).toBe('unmerged');
   });
 
+  it('preserves direct-merged status when detection transiently regresses to unmerged', async () => {
+    const directBranch = makeBranch('feat/direct', 'direct-merged');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [directBranch],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([directBranch]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('direct-merged');
+
+    // Tick 2: same SHA, but reflog check fails → status regresses to unmerged.
+    const regressed = makeBranch('feat/direct', 'unmerged');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [regressed],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([regressed]);
+    await refreshOnce();
+
+    // Ratchet should preserve direct-merged.
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('direct-merged');
+  });
+
   it('keeps empty when a clean worktree is attached', async () => {
     // Tick 1: branch has no worktree, status is empty.
     const emptyBranch = makeBranch('feat', 'empty');

@@ -29,6 +29,7 @@ export function applyPreset(
           !b.worktreePath &&
           (b.mergeStatus === 'merged-normally' ||
             b.mergeStatus === 'squash-merged' ||
+            b.mergeStatus === 'direct-merged' ||
             isEmptyAndAbandoned(b)),
       );
     case 'empty':

@@ -66,7 +66,7 @@ export function branchDisposition(
 
   const baseLabel = mergeStatusLabel(displayStatus);
   const isMerged =
-    displayStatus === 'merged-normally' || displayStatus === 'squash-merged';
+    displayStatus === 'merged-normally' || displayStatus === 'squash-merged' || displayStatus === 'direct-merged';
 
   const contradiction = isMerged ? mergedContradiction(worktree) : null;
 
@@ -83,7 +83,7 @@ export function branchDisposition(
     // Swap only the border to a dirty accent. Keeping bg/text on the merged
     // palette preserves "this is still the merged pill" while the orange
     // outline says "read the suffix before you delete this".
-    className: dirtyAccentClass(displayStatus as 'merged-normally' | 'squash-merged'),
+    className: dirtyAccentClass(displayStatus as 'merged-normally' | 'squash-merged' | 'direct-merged'),
     tooltip: contradiction.tooltip,
   };
 }
@@ -150,12 +150,14 @@ function mergedContradiction(wt: Worktree): Contradiction | null {
   return null;
 }
 
-function dirtyAccentClass(s: 'merged-normally' | 'squash-merged'): string {
+function dirtyAccentClass(s: 'merged-normally' | 'squash-merged' | 'direct-merged'): string {
   switch (s) {
     case 'merged-normally':
       return 'bg-wt-info/15 text-wt-info border-wt-dirty/60';
     case 'squash-merged':
       return 'bg-wt-squash/15 text-wt-squash border-wt-dirty/60';
+    case 'direct-merged':
+      return 'bg-wt-info/15 text-wt-info border-wt-dirty/60';
   }
 }
 
@@ -165,6 +167,8 @@ function defaultTooltip(s: MergeStatus): string {
       return 'Branch is merged into main and the worktree is clean — safe to remove.';
     case 'squash-merged':
       return 'Branch was squash-merged into main (patch-equivalent commits are present). Worktree is clean — safe to remove.';
+    case 'direct-merged':
+      return 'Branch commits were pushed directly to main without a pull request. Worktree is clean — safe to remove.';
     case 'unmerged':
       return 'Branch has commits not yet in main.';
     case 'empty':

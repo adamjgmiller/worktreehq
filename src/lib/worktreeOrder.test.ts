@@ -210,6 +210,46 @@ describe('sortWorktrees', () => {
     ]);
   });
 
+  it('status mode: direct-merged worktrees sort in the merged tier', () => {
+    const directMerged = wt({
+      path: '/repo/wt-direct',
+      branch: 'direct-feat',
+      status: 'clean',
+      lastCommit: {
+        sha: 's',
+        message: 'm',
+        date: '2026-04-01T00:00:00Z',
+        author: 'a',
+      },
+    });
+    const unmergedClean = wt({
+      path: '/repo/wt-unmerged',
+      branch: 'active-feat',
+      status: 'clean',
+      lastCommit: {
+        sha: 's',
+        message: 'm',
+        date: '2024-01-01T00:00:00Z',
+        author: 'a',
+      },
+    });
+    const mergeStatusByBranch = new Map<string, MergeStatus>([
+      ['direct-feat', 'direct-merged'],
+      ['active-feat', 'unmerged'],
+    ]);
+    const out = sortWorktrees(
+      [directMerged, primary, unmergedClean],
+      'status',
+      { claudePresence: emptyPresence, manualOrder: [], mergeStatusByBranch },
+    );
+    // Unmerged should sort above direct-merged (same as squash-merged).
+    expect(out.map((w) => w.path)).toEqual([
+      '/repo',
+      '/repo/wt-unmerged',
+      '/repo/wt-direct',
+    ]);
+  });
+
   it('manual mode: delegates to reconcileOrder', () => {
     const out = sortWorktrees([primary, fresh, old], 'manual', {
       claudePresence: emptyPresence,

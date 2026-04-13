@@ -112,7 +112,7 @@ export function BranchesView() {
             // force-delete follow-up dialog, so the tag IS desired in that case.
             const shouldTag =
               mode === 'archive-and-delete' &&
-              (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged');
+              (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged' || b.mergeStatus === 'direct-merged');
             if (shouldTag) {
               await tagBranch(repo.path, b.name, archiveTagNameFor(b.name));
             }
