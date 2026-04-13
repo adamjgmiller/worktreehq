@@ -76,6 +76,9 @@ export function ConfirmDeleteDialog({
           <label className="text-xs text-wt-fg-2">
             Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
           </label>
+          <p className="text-xs text-wt-muted mt-1">
+            The remote branch is shared with collaborators; deleting it removes it for everyone.
+          </p>
           <input
             value={typed}
             onChange={(e) => setTyped(e.target.value)}

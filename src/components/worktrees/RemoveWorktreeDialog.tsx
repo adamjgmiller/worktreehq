@@ -154,6 +154,15 @@ export function RemoveWorktreeDialog({
           <label className="text-xs text-wt-fg-2">
             Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
           </label>
+          {dirty ? (
+            <p className="text-xs text-wt-muted mt-1">
+              This discards the uncommitted state listed above and can't be undone.
+            </p>
+          ) : deleteLocal ? (
+            <p className="text-xs text-wt-muted mt-1">
+              The local branch is force-deleted, which can drop commits not merged anywhere else.
+            </p>
+          ) : null}
           <input
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
