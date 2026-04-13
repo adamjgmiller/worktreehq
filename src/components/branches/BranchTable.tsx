@@ -1,4 +1,5 @@
 import type { Branch } from '../../types';
+import { useRepoStore } from '../../store/useRepoStore';
 import { BranchRow } from './BranchRow';
 
 export function BranchTable({
@@ -12,6 +13,8 @@ export function BranchTable({
   onToggle: (name: string) => void;
   onToggleAll: () => void;
 }) {
+  const authStatus = useRepoStore((s) => s.githubAuthStatus);
+  const authUnavailable = authStatus !== 'valid' && authStatus !== 'checking';
   const allSelected = branches.length > 0 && branches.every((b) => selection.has(b.name));
   return (
     <div className="overflow-auto">
@@ -25,7 +28,14 @@ export function BranchTable({
             <th className="px-3 py-2">Where</th>
             <th className="px-3 py-2">Merge status</th>
             <th className="px-3 py-2">Vs main</th>
-            <th className="px-3 py-2">PR</th>
+            <th className="px-3 py-2">
+              PR
+              {authUnavailable && (
+                <span className="ml-1 normal-case tracking-normal text-wt-dirty font-normal">
+                  (no auth)
+                </span>
+              )}
+            </th>
             <th className="px-3 py-2">Last commit</th>
           </tr>
         </thead>
@@ -36,6 +46,7 @@ export function BranchTable({
               branch={b}
               selected={selection.has(b.name)}
               onToggle={() => onToggle(b.name)}
+              authStatus={authStatus}
             />
           ))}
         </tbody>

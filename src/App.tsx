@@ -192,10 +192,10 @@ export default function App() {
       {dataReady && authStatus !== 'valid' && authStatus !== 'checking' && (
         <div className="px-6 pt-4 text-xs text-wt-dirty">
           {authStatus === 'invalid'
-            ? 'GitHub token is invalid or expired — PR enrichment and squash-merge detection are degraded.'
-            : 'No GitHub token configured — squash-merge detection from PRs will be limited.'}{' '}
+            ? 'GitHub authentication failed — PR enrichment and squash-merge detection are degraded.'
+            : 'No GitHub auth configured — squash-merge detection from PRs will be limited.'}{' '}
           <button onClick={() => setSettingsOpen(true)} className="underline">
-            {authStatus === 'invalid' ? 'Update it' : 'Set one'}
+            {authStatus === 'invalid' ? 'Fix in Settings' : 'Set up auth'}
           </button>
           .
         </div>

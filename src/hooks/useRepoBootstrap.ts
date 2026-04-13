@@ -1,8 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
-import { invoke, isTauri } from '../services/tauriBridge';
-import { hydratePrCache, initGithub, validateToken } from '../services/githubService';
-import { getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
+import { invoke, isTauri, keychainRead } from '../services/tauriBridge';
+import {
+  hydratePrCache,
+  initGithub,
+  detectGhCli,
+  validateToken,
+  type AuthMethod,
+} from '../services/githubService';
+import { checkGitAvailable, getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
 import {
   refreshOnce,
   runFetchOnce,
@@ -25,9 +31,12 @@ const WATCHER_MIN_INTERVAL_MS = 2000;
 
 interface AppConfig {
   github_token: string;
-  // True once the user has explicitly set or cleared the token via Settings;
-  // suppresses the GITHUB_TOKEN env fallback so explicit clears stick.
+  // Legacy field — kept for config deserialization compat only; no longer read.
   github_token_explicitly_set?: boolean;
+  // Persisted auth method preference. When set, bootstrap uses this instead
+  // of auto-detecting. Allows the user to force a specific method (e.g.
+  // prefer PAT over gh-cli, or explicitly opt out).
+  auth_method?: AuthMethod;
   refresh_interval_ms: number;
   fetch_interval_ms: number;
   last_repo_path?: string;
@@ -41,10 +50,129 @@ interface RepoInfo {
   is_git: boolean;
 }
 
+/**
+ * Auth detection cascade:
+ *   1. Check persisted auth_method preference
+ *   2. Try gh CLI (auto-detect; persists to config on success)
+ *   3. Try keychain PAT (persists to config on success)
+ *   4. Fall back to 'none'
+ *
+ * When auth is established, triggers an extra refreshOnce() so PR
+ * enrichment and squash detection land as soon as auth is ready, rather
+ * than waiting for the next 15s poll tick.
+ */
+async function detectAndInitAuth(
+  cfg: AppConfig,
+  setGithubAuthStatus: (s: 'missing' | 'checking' | 'valid' | 'invalid') => void,
+  setAuthMethod: (m: AuthMethod) => void,
+  cancelled: { current: boolean },
+): Promise<void> {
+  // Helper: after auth is established, validate and kick a refresh so the
+  // first load gets PR data without waiting a full poll interval. The
+  // refresh is gated on `dataRepoPath` (not just `repo`) so it only fires
+  // after the initial fetch + refresh cycle has committed data. Without
+  // this, a fast auth detection could trigger refreshOnce() between
+  // setRepo() and runFetchOnce(), committing a snapshot derived from stale
+  // origin/* refs — the shimmer would lift on pre-fetch data until the
+  // fetch-corrected refresh lands. When auth resolves before the fetch,
+  // the extra tick is harmlessly skipped: initGithub() already ran
+  // synchronously, so the fetch's own chained refreshOnce has the
+  // transport set and picks up PR data on its own.
+  const validateAndRefresh = () => {
+    setGithubAuthStatus('checking');
+    void validateToken().then((status) => {
+      if (cancelled.current) return;
+      setGithubAuthStatus(status);
+      if (status === 'valid' && useRepoStore.getState().dataRepoPath) {
+        void refreshOnce();
+      }
+    });
+  };
+
+  // If user has explicitly chosen an auth method, honor it.
+  if (cfg.auth_method === 'gh-cli') {
+    initGithub('gh-cli');
+    setAuthMethod('gh-cli');
+    validateAndRefresh();
+    return;
+  }
+
+  if (cfg.auth_method === 'pat') {
+    const keychainToken = await tryKeychainToken();
+    if (cancelled.current) return;
+    const token = keychainToken || cfg.github_token || '';
+    if (token) {
+      initGithub('pat', token);
+      setAuthMethod('pat');
+      validateAndRefresh();
+      return;
+    }
+    // Explicit PAT preference but no token found — fall through to 'none'
+    // rather than auto-detect, so the user's explicit choice is respected.
+    initGithub('none');
+    setAuthMethod('none');
+    setGithubAuthStatus('missing');
+    return;
+  }
+
+  if (cfg.auth_method === 'none') {
+    initGithub('none');
+    setAuthMethod('none');
+    setGithubAuthStatus('missing');
+    return;
+  }
+
+  // Auto-detect: try gh CLI first (preferred default)
+  const ghAvailable = await detectGhCli();
+  if (cancelled.current) return;
+  if (ghAvailable) {
+    initGithub('gh-cli');
+    setAuthMethod('gh-cli');
+    // Persist so subsequent launches skip the subprocess detection.
+    // Re-read config to avoid overwriting fields changed by concurrent
+    // writers (repoSelect, Settings, etc.) since bootstrap captured `cfg`.
+    void invoke<AppConfig>('read_config')
+      .then((fresh) => invoke('write_config', { cfg: { ...fresh, auth_method: 'gh-cli' } }))
+      .catch(() => {});
+    validateAndRefresh();
+    return;
+  }
+
+  // Try keychain PAT
+  const keychainToken = await tryKeychainToken();
+  if (cancelled.current) return;
+  if (keychainToken) {
+    initGithub('pat', keychainToken);
+    setAuthMethod('pat');
+    // Persist so subsequent launches skip the detection cascade.
+    // Re-read config to avoid overwriting fields changed by concurrent
+    // writers (repoSelect, Settings, etc.) since bootstrap captured `cfg`.
+    void invoke<AppConfig>('read_config')
+      .then((fresh) => invoke('write_config', { cfg: { ...fresh, auth_method: 'pat' } }))
+      .catch(() => {});
+    validateAndRefresh();
+    return;
+  }
+
+  // No auth available
+  initGithub('none');
+  setAuthMethod('none');
+  setGithubAuthStatus('missing');
+}
+
+async function tryKeychainToken(): Promise<string | null> {
+  try {
+    return await keychainRead('github_token');
+  } catch {
+    return null;
+  }
+}
+
 export function useRepoBootstrap() {
   const setRepo = useRepoStore((s) => s.setRepo);
   const setError = useRepoStore((s) => s.setError);
   const setGithubAuthStatus = useRepoStore((s) => s.setGithubAuthStatus);
+  const setAuthMethod = useRepoStore((s) => s.setAuthMethod);
   const setRefreshInterval = useRepoStore((s) => s.setRefreshInterval);
   const setFetchInterval = useRepoStore((s) => s.setFetchInterval);
   const setZoomLevel = useRepoStore((s) => s.setZoomLevel);
@@ -83,6 +211,7 @@ export function useRepoBootstrap() {
 
   useEffect(() => {
     let cancelled = false;
+    const cancelledRef = { current: false };
     let unlisten: (() => void) | null = null;
     (async () => {
       try {
@@ -91,19 +220,12 @@ export function useRepoBootstrap() {
           return;
         }
         const cfg = await invoke<AppConfig>('read_config');
-        initGithub(cfg.github_token || '');
-        // Kick token validation without awaiting so bootstrap keeps flowing.
-        // The pill starts in 'checking' and flips to the real state within
-        // ~200ms typical; a slow validation can't block the rest of the
-        // boot sequence. `cancelled` is captured so a repo-switch mid-flight
-        // doesn't overwrite the new repo's pill state.
-        if (cfg.github_token) {
-          void validateToken().then((status) => {
-            if (!cancelled) setGithubAuthStatus(status);
-          });
-        } else {
-          setGithubAuthStatus('missing');
-        }
+
+        // Auth detection cascade — fire-and-forget so it doesn't block the
+        // UI boot. The core worktree/branch data doesn't need auth; the auth
+        // pill updates once detection settles.
+        void detectAndInitAuth(cfg, setGithubAuthStatus, setAuthMethod, cancelledRef);
+
         // Mirror the Rust default (config.rs default_interval = 15_000) and the
         // store default. The previous `|| 5000` silently undermined the
         // documented 15s default whenever the field deserialized to 0.
@@ -142,6 +264,13 @@ export function useRepoBootstrap() {
         const info = await invoke<RepoInfo>('resolve_repo', { path: launchPath });
         if (!info.is_git) {
           setError(`Not a git repository: ${info.path}`);
+          return;
+        }
+        const gitVersion = await checkGitAvailable(info.path);
+        if (!gitVersion) {
+          setError(
+            'git is not installed or not on your PATH. WorktreeHQ requires git — install it and restart the app.',
+          );
           return;
         }
         const defaultBranch = await getDefaultBranch(info.path);
@@ -197,25 +326,9 @@ export function useRepoBootstrap() {
         if (fetchIntervalMs > 0) {
           await runFetchOnce();
           if (cancelled) return;
-          // `runFetchOnce` swallows all errors internally (see
-          // refreshLoop.ts:313-397), so a try/catch here would never fire.
-          // The reliable signal is `lastFetchError`: on background fetch
-          // success it's cleared to null, on background fetch failure it's
-          // set to the error message. This is the same signal the RepoBar
-          // indicator reads and is covered by the `sets lastFetchError on
-          // background fetch failure` test in refreshLoop.test.ts.
           initialFetchSucceeded = useRepoStore.getState().lastFetchError === null;
         }
         startRefreshLoop();
-        // When the initial fetch actually succeeded, suppress startFetchLoop's
-        // immediate first tick — otherwise it would fire a second back-to-back
-        // `fetchAllPrune` subprocess against refs that were JUST fetched (the
-        // `fetchInFlight` guard can't dedupe it because the awaited fetch
-        // already cleared the flag). When the initial fetch *failed* (transient
-        // network blip, SSH agent not yet unlocked at login, etc.), we do NOT
-        // skip — we want the fetch loop's immediate tick to retry right away
-        // instead of making the user wait a full `fetchIntervalMs` for fresh
-        // data.
         startFetchLoop({ skipFirstTick: initialFetchSucceeded });
 
         // Wire the filesystem watcher events to a debounced refresh tick.
@@ -234,10 +347,7 @@ export function useRepoBootstrap() {
     })();
     return () => {
       cancelled = true;
-      if (unlisten) unlisten();
-      if (debounceTimer.current) clearTimeout(debounceTimer.current);
-      stopRefreshLoop();
-      stopFetchLoop();
+      cancelledRef.current = true;
       // Don't call stopWatching() here — the second effect (worktree-paths
       // watcher) manages the Rust-side watcher's lifecycle, and
       // start_watching already replaces any prior watcher on its own. If
@@ -245,11 +355,16 @@ export function useRepoBootstrap() {
       // second effect re-firing, calling stopWatching() would kill the
       // native watcher with no re-registration, silently disabling
       // watcher-accelerated refreshes until a worktree path changes.
+      if (unlisten) unlisten();
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      stopRefreshLoop();
+      stopFetchLoop();
     };
   }, [
     setRepo,
     setError,
     setGithubAuthStatus,
+    setAuthMethod,
     setRefreshInterval,
     setFetchInterval,
     setZoomLevel,

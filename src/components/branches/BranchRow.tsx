@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import type { Branch, ChecksStatus, ReviewDecision } from '../../types';
+import type { GithubAuthStatus } from '../../store/useRepoStore';
 import { mergeStatusClass, mergeStatusLabel, mergeStatusTooltip } from '../../lib/colors';
 import { relativeTime, aheadBehind, shortSha } from '../../lib/format';
 import {
@@ -64,15 +65,22 @@ function ReviewIcon({ decision }: { decision: ReviewDecision }) {
   );
 }
 
+function openSettings() {
+  window.dispatchEvent(new CustomEvent('wthq:open-settings'));
+}
+
 export function BranchRow({
   branch,
   selected,
   onToggle,
+  authStatus,
 }: {
   branch: Branch;
   selected: boolean;
   onToggle: () => void;
+  authStatus: GithubAuthStatus;
 }) {
+  const authUnavailable = authStatus !== 'valid' && authStatus !== 'checking';
   return (
     <tr className="border-b border-wt-border hover:bg-wt-panel/60">
       <td className="px-3 py-3">
@@ -184,6 +192,15 @@ export function BranchRow({
               </Tooltip>
             )}
           </div>
+        ) : authUnavailable ? (
+          <Tooltip label="PR status requires GitHub auth">
+            <button
+              onClick={openSettings}
+              className="text-wt-muted hover:text-wt-info text-[0.625rem] transition-colors"
+            >
+              set up auth
+            </button>
+          </Tooltip>
         ) : (
           <span className="text-wt-muted">—</span>
         )}

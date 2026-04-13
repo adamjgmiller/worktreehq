@@ -1,0 +1,139 @@
+import type { PRInfo } from '../types';
+import type { GithubTransport } from './githubTransport';
+import { restDataToPRInfo, graphqlNodeToPRInfo, buildBatchQuery } from './githubApiMapping';
+import { ghExec } from './tauriBridge';
+
+/**
+ * GitHub transport that delegates all API calls to the `gh` CLI. The app
+ * never sees, stores, or handles a token — `gh` reads its own credential
+ * store. Each API call spawns a subprocess; the ~50-100ms overhead is
+ * negligible against network RTT.
+ */
+export class GhCliTransport implements GithubTransport {
+  async validateAuth(): Promise<'missing' | 'valid' | 'invalid'> {
+    try {
+      const result = await ghExec(['auth', 'status', '--hostname', 'github.com']);
+      if (result.code === 0) return 'valid';
+
+      const stderr = (result.stderr ?? '').toLowerCase();
+
+      // Network / transient failures — checked FIRST so a network error
+      // message that happens to contain "token" or "authentication" (e.g.
+      // "failed to refresh oauth token: connection refused") doesn't get
+      // misclassified as an auth failure. Can't prove invalidity, so report
+      // 'valid' (inconclusive) to match OctokitTransport's conservative
+      // behavior and avoid a misleading "token invalid" pill during an
+      // airport-wifi outage.
+      const networkPatterns = [
+        'connection',
+        'timeout',
+        'dns',
+        'resolve host',
+        'network',
+        'could not resolve',
+        'no such host',
+        'tls',
+        'certificate',
+      ];
+      if (networkPatterns.some((p) => stderr.includes(p))) {
+        console.warn('[GhCliTransport] validateAuth inconclusive (network):', result.stderr);
+        return 'valid';
+      }
+
+      // Definitive auth failures — gh explicitly says we're not logged in.
+      // Checked after network patterns to avoid false positives from generic
+      // words like "token" or "authentication" in network error messages.
+      const authFailurePatterns = [
+        'not logged in',
+        'authentication',
+        'token',
+        'login required',
+        'no oauth token',
+      ];
+      if (authFailurePatterns.some((p) => stderr.includes(p))) return 'invalid';
+
+      // Unknown non-zero exit — default to 'valid' (inconclusive) rather
+      // than falsely marking auth as broken.
+      console.warn('[GhCliTransport] validateAuth inconclusive (unknown):', result.stderr);
+      return 'valid';
+    } catch {
+      // ghExec throws when Tauri bridge is unavailable (tests, plain dev).
+      return 'missing';
+    }
+  }
+
+  async getPullRequest(owner: string, repo: string, number: number): Promise<PRInfo | null> {
+    const result = await ghExec(['api', `/repos/${owner}/${repo}/pulls/${number}`]);
+    if (result.code !== 0) {
+      // 404 → null, auth/other → log + throw to let caller decide on caching
+      if (result.stderr.includes('404') || result.stderr.includes('Not Found')) return null;
+      console.warn(`[GhCliTransport] getPullRequest ${owner}/${repo}#${number} failed (code ${result.code}):`, result.stderr);
+      throw new Error(`gh api failed (code ${result.code}): ${result.stderr}`);
+    }
+    const data = JSON.parse(result.stdout);
+    return restDataToPRInfo(data);
+  }
+
+  async batchGetPullRequests(
+    owner: string,
+    repo: string,
+    numbers: number[],
+  ): Promise<Map<number, PRInfo>> {
+    const out = new Map<number, PRInfo>();
+    if (numbers.length === 0) return out;
+
+    const query = buildBatchQuery(numbers);
+    const result = await ghExec([
+      'api', 'graphql',
+      '-f', `query=${query}`,
+      '-f', `owner=${owner}`,
+      '-f', `repo=${repo}`,
+    ]);
+    // Let transport errors propagate — the caller (batchFetchPRs) catches them
+    // to avoid negative-caching valid PRs on transient failures.
+    if (result.code !== 0) {
+      throw new Error(`gh api graphql failed (code ${result.code}): ${result.stderr}`);
+    }
+
+    const data = JSON.parse(result.stdout);
+    const repoNode = data?.data?.repository ?? {};
+    for (const n of numbers) {
+      const node = repoNode[`p${n}`];
+      if (!node) continue;
+      out.set(n, graphqlNodeToPRInfo(node));
+    }
+    return out;
+  }
+
+  async listOpenPullRequests(
+    owner: string,
+    repo: string,
+  ): Promise<Array<Omit<PRInfo, 'state'>>> {
+    // gh api --paginate merges paginated JSON arrays into a single array.
+    // Requires gh CLI >= 2.4.0 — older versions concatenate raw pages
+    // (`[...][...]`) which is invalid JSON and will fail the parse below.
+    const result = await ghExec([
+      'api', '--paginate',
+      `/repos/${owner}/${repo}/pulls?state=open&per_page=100`,
+    ]);
+    if (result.code !== 0) {
+      throw new Error(`gh api --paginate failed (code ${result.code}): ${result.stderr}`);
+    }
+
+    let data: any[];
+    try {
+      data = JSON.parse(result.stdout);
+    } catch {
+      throw new Error(
+        'Failed to parse paginated PR response. This usually means your gh CLI is too old — upgrade to gh >= 2.4.0.',
+      );
+    }
+    return data.map((p: any) => ({
+      number: p.number,
+      title: p.title,
+      headRef: p.head.ref,
+      url: p.html_url,
+      isDraft: p.draft ?? false,
+    }));
+  }
+}

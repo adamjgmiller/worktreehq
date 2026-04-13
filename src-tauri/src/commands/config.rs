@@ -4,15 +4,20 @@ use std::path::PathBuf;
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
+    // Legacy field — kept so serde doesn't reject existing config files.
+    // Still read as a PAT fallback by the TS frontend when auth_method is
+    // "pat" and no keychain entry exists (one-time upgrade path).
     #[serde(default)]
     pub github_token: String,
-    // When true, the user has explicitly set (or cleared) github_token via
-    // Settings, so read_config must NOT fall back to the GITHUB_TOKEN env var
-    // — even when github_token is empty. Without this flag the user couldn't
-    // ever unset their token from the UI: every read_config would silently
-    // re-populate it from the env on next launch.
+    // Legacy field — no longer read, kept so serde doesn't reject existing
+    // config files that still contain it.
     #[serde(default)]
     pub github_token_explicitly_set: bool,
+    // Persisted auth method preference: "gh-cli", "pat", or "none". When
+    // absent (upgrade from older version), the frontend auto-detects by
+    // trying gh CLI first, then keychain PAT, then falling through to none.
+    #[serde(default)]
+    pub auth_method: String,
     #[serde(default = "default_interval")]
     pub refresh_interval_ms: u64,
     #[serde(default = "default_fetch_interval")]
@@ -86,32 +91,16 @@ fn config_path() -> AppResult<PathBuf> {
 pub fn read_config() -> AppResult<AppConfig> {
     let p = config_path()?;
     if !p.exists() {
-        // No config yet → fall back to GITHUB_TOKEN if present. The user
-        // hasn't made an explicit choice yet so the legacy env behavior is
-        // the right default for first-run UX.
-        let env_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
         return Ok(AppConfig {
-            github_token: env_token,
-            github_token_explicitly_set: false,
             refresh_interval_ms: default_interval(),
             fetch_interval_ms: default_fetch_interval(),
-            last_repo_path: None,
-            recent_repo_paths: Vec::new(),
             zoom_level: default_zoom_level(),
             theme: default_theme(),
-            post_create_commands: String::new(),
+            ..Default::default()
         });
     }
     let text = std::fs::read_to_string(&p).map_err(AppError::Io)?;
     let mut cfg: AppConfig = toml::from_str(&text)?;
-    // Env fallback only fires when the user has NOT explicitly set the token
-    // via Settings. This lets a user clear their token from the UI even when
-    // GITHUB_TOKEN is exported in their shell.
-    if cfg.github_token.is_empty() && !cfg.github_token_explicitly_set {
-        if let Ok(t) = std::env::var("GITHUB_TOKEN") {
-            cfg.github_token = t;
-        }
-    }
     if cfg.refresh_interval_ms == 0 {
         cfg.refresh_interval_ms = default_interval();
     }
