@@ -63,6 +63,9 @@ export function ForceDeleteSquashDialog({
         <label className="text-xs text-wt-fg-2">
           Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
         </label>
+        <p className="text-xs text-wt-muted mt-1">
+          If WorktreeHQ's detection is wrong, the commits on these branches will be unrecoverable.
+        </p>
         <input
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
