@@ -94,44 +94,63 @@ fn git_exec_blocking(
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(&repo_path);
 
-    // When the user chose gh-cli auth, inject `credential.helper` so git
-    // fetch/push authenticate via `gh auth git-credential` instead of
-    // triggering the macOS `git-credential-osxkeychain` keychain prompt.
-    // An empty `credential.helper=` first resets the multi-valued helper
-    // list so system-level helpers (osxkeychain, etc.) are removed; then
-    // the gh helper is the only one git will consult.
-    if auth_method == "gh-cli" {
-        cmd.arg("-c").arg("credential.helper=");
-        cmd.arg("-c")
-            .arg("credential.helper=!gh auth git-credential");
+    // Only inject credential helpers for git subcommands that contact a
+    // remote. Local commands (status, log, branch, etc.) never need
+    // credentials, and restricting injection keeps the PAT env var out
+    // of repository-controlled hooks that fire during non-network
+    // operations. For network commands that DO trigger hooks (push
+    // triggers pre-push, pull triggers post-merge), the env var is
+    // still visible — see the credential-helper-binary tracking issue
+    // for the long-term fix.
+    let needs_credentials = args.first().map_or(false, |sub| {
+        matches!(
+            sub.as_str(),
+            "fetch" | "push" | "pull" | "ls-remote" | "clone"
+        )
+    });
 
-        // On macOS, GUI-launched apps inherit a minimal PATH that doesn't
-        // include Homebrew dirs. Git spawns a shell to run `!`-prefixed
-        // credential helpers, so `gh` must be findable on PATH. Same
-        // extension as gh_exec.rs.
-        #[cfg(target_os = "macos")]
-        {
-            let path = std::env::var("PATH").unwrap_or_default();
-            if !path.contains("/opt/homebrew/bin") || !path.contains("/usr/local/bin") {
-                cmd.env("PATH", format!("{path}:/opt/homebrew/bin:/usr/local/bin"));
+    if needs_credentials {
+        // When the user chose gh-cli auth, inject `credential.helper` so
+        // git fetch/push authenticate via `gh auth git-credential` instead
+        // of triggering the macOS `git-credential-osxkeychain` keychain
+        // prompt. An empty `credential.helper=` first resets the
+        // multi-valued helper list so system-level helpers (osxkeychain,
+        // etc.) are removed; then the gh helper is the only one git will
+        // consult.
+        if auth_method == "gh-cli" {
+            cmd.arg("-c").arg("credential.helper=");
+            cmd.arg("-c")
+                .arg("credential.helper=!gh auth git-credential");
+
+            // On macOS, GUI-launched apps inherit a minimal PATH that
+            // doesn't include Homebrew dirs. Git spawns a shell to run
+            // `!`-prefixed credential helpers, so `gh` must be findable
+            // on PATH. Same extension as gh_exec.rs.
+            #[cfg(target_os = "macos")]
+            {
+                let path = std::env::var("PATH").unwrap_or_default();
+                if !path.contains("/opt/homebrew/bin") || !path.contains("/usr/local/bin") {
+                    cmd.env("PATH", format!("{path}:/opt/homebrew/bin:/usr/local/bin"));
+                }
             }
-        }
-    } else if auth_method == "pat" {
-        if let Some(ref token) = auth_token {
-            if !token.is_empty() {
-                // Pass the PAT via a private env var so it never shows in
-                // `ps` output. The shell credential helper receives "get"
-                // as $1 (argv) and echoes the token back to git. Scoped
-                // to github.com so the token is never accidentally sent to
-                // a non-GitHub remote. Reset the global helper list first
-                // so system-level helpers (osxkeychain, etc.) can't
-                // trigger prompts if the scoped helper fails.
-                cmd.arg("-c").arg("credential.helper=");
-                cmd.env("__WORKTREEHQ_PAT", token);
-                cmd.arg("-c").arg(concat!(
-                    "credential.https://github.com.helper=",
-                    r#"!f() { test "$1" = get && printf 'username=x-access-token\npassword=%s\n' "$__WORKTREEHQ_PAT"; }; f"#,
-                ));
+        } else if auth_method == "pat" {
+            if let Some(ref token) = auth_token {
+                if !token.is_empty() {
+                    // Pass the PAT via a private env var so it never shows
+                    // in `ps` output. The shell credential helper receives
+                    // "get" as $1 (argv) and echoes the token back to git.
+                    // Scoped to github.com so the token is never
+                    // accidentally sent to a non-GitHub remote. Reset the
+                    // global helper list first so system-level helpers
+                    // (osxkeychain, etc.) can't trigger prompts if the
+                    // scoped helper fails.
+                    cmd.arg("-c").arg("credential.helper=");
+                    cmd.env("__WORKTREEHQ_PAT", token);
+                    cmd.arg("-c").arg(concat!(
+                        "credential.https://github.com.helper=",
+                        r#"!f() { test "$1" = get && printf 'username=x-access-token\npassword=%s\n' "$__WORKTREEHQ_PAT"; }; f"#,
+                    ));
+                }
             }
         }
     }
