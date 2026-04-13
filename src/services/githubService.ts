@@ -3,6 +3,7 @@ import type { GithubTransport } from './githubTransport';
 import { OctokitTransport } from './octokitTransport';
 import { GhCliTransport } from './ghCliTransport';
 import { readPrCacheFile, writePrCacheFile, ghExec } from './tauriBridge';
+import { TTLCache } from './cacheUtils';
 
 // Re-export mapping helpers so existing test imports still resolve.
 export { mapChecksStatus, mapReviewDecision, mapMergeable } from './githubApiMapping';
@@ -101,16 +102,15 @@ export async function validateToken(): Promise<'missing' | 'valid' | 'invalid'> 
 
 // ── PR cache ───────────────────────────────────────────────────────────
 
-interface CacheEntry {
+const prCache = new TTLCache<string, PRInfo | null>({ ttlMs: 5 * 60 * 1000 });
+
+interface PersistedCacheEntry {
   at: number;
   pr: PRInfo | null;
 }
-const prCache = new Map<string, CacheEntry>();
-const TTL_MS = 5 * 60 * 1000;
-
 interface PersistedCache {
   version: 1;
-  entries: Record<string, CacheEntry>;
+  entries: Record<string, PersistedCacheEntry>;
 }
 
 let hydratePromise: Promise<void> | null = null;
@@ -137,7 +137,7 @@ export function hydratePrCache(): Promise<void> {
       for (const [k, v] of Object.entries(parsed.entries)) {
         const isOpen = v.pr?.state === 'open';
         if (isOpen && now - v.at > STALE_OPEN_PR_MS) continue;
-        prCache.set(k, v);
+        prCache.setWithTimestamp(k, v.pr, v.at);
       }
     } catch {
       /* corrupt cache: ignore and start fresh */
@@ -149,8 +149,10 @@ export function hydratePrCache(): Promise<void> {
 function schedulePersist() {
   if (persistDebounce) clearTimeout(persistDebounce);
   persistDebounce = setTimeout(() => {
-    const entries: Record<string, CacheEntry> = {};
-    for (const [k, v] of prCache.entries()) entries[k] = v;
+    const entries: Record<string, PersistedCacheEntry> = {};
+    for (const [k, entry] of prCache.entries()) {
+      entries[k] = { at: entry.at, pr: entry.value };
+    }
     const payload: PersistedCache = { version: 1, entries };
     void writePrCacheFile(JSON.stringify(payload));
   }, 500);
@@ -167,18 +169,12 @@ export function _clearPrCacheForTests() {
 
 export function invalidatePrCacheForRepo(owner: string, repo: string): void {
   const prefix = `${owner}/${repo}#`;
-  let removed = 0;
-  for (const k of Array.from(prCache.keys())) {
-    if (k.startsWith(prefix)) {
-      prCache.delete(k);
-      removed++;
-    }
-  }
+  const removed = prCache.deleteWhere((k) => k.startsWith(prefix));
   if (removed > 0) schedulePersist();
 }
 
 export function _getPrCacheKeysForTests(): string[] {
-  return Array.from(prCache.keys());
+  return Array.from(prCache.entries()).map(([k]) => k);
 }
 
 // ── Single PR fetch ────────────────────────────────────────────────────
@@ -186,12 +182,12 @@ export function _getPrCacheKeysForTests(): string[] {
 export async function getPR(owner: string, repo: string, number: number): Promise<PRInfo | null> {
   await hydratePrCache();
   const key = cacheKey(owner, repo, number);
-  const hit = prCache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.pr;
+  const cached = prCache.get(key);
+  if (cached !== undefined) return cached;
   if (!transport) return null;
   try {
     const pr = await transport.getPullRequest(owner, repo, number);
-    prCache.set(key, { at: Date.now(), pr });
+    prCache.set(key, pr);
     schedulePersist();
     return pr;
   } catch {
@@ -218,9 +214,9 @@ export async function batchFetchPRs(
   const toFetch: number[] = [];
   for (const n of unique) {
     const key = cacheKey(owner, repo, n);
-    const hit = prCache.get(key);
-    if (hit && Date.now() - hit.at < TTL_MS) {
-      if (hit.pr) out.set(n, hit.pr);
+    const cached = prCache.get(key);
+    if (cached !== undefined) {
+      if (cached) out.set(n, cached);
     } else {
       toFetch.push(n);
     }
@@ -233,13 +229,13 @@ export async function batchFetchPRs(
       const chunkOut = await transport.batchGetPullRequests(owner, repo, chunk);
       for (const [n, pr] of chunkOut) {
         out.set(n, pr);
-        prCache.set(cacheKey(owner, repo, n), { at: Date.now(), pr });
+        prCache.set(cacheKey(owner, repo, n), pr);
       }
       // Negative-cache only after a successful fetch — a missing key means the
       // API confirmed the PR doesn't exist, not that the request failed.
       for (const n of chunk) {
         if (!chunkOut.has(n)) {
-          prCache.set(cacheKey(owner, repo, n), { at: Date.now(), pr: null });
+          prCache.set(cacheKey(owner, repo, n), null);
         }
       }
     } catch (e: any) {
@@ -253,12 +249,7 @@ export async function batchFetchPRs(
 // ── Open PR list ───────────────────────────────────────────────────────
 
 type OpenPrListEntry = Omit<PRInfo, 'state'>;
-interface OpenPrListCacheEntry {
-  at: number;
-  prs: OpenPrListEntry[];
-}
-const openPrListCache = new Map<string, OpenPrListCacheEntry>();
-const OPEN_PR_LIST_TTL_MS = 60_000;
+const openPrListCache = new TTLCache<string, OpenPrListEntry[]>({ ttlMs: 60_000 });
 
 function openPrListCacheKey(owner: string, repo: string): string {
   return `${owner}/${repo}`;
@@ -270,7 +261,7 @@ export function invalidateOpenPrListCache(owner?: string, repo?: string): void {
 }
 
 export function _getOpenPrListCacheKeysForTests(): string[] {
-  return Array.from(openPrListCache.keys());
+  return Array.from(openPrListCache.entries()).map(([k]) => k);
 }
 
 export async function listOpenPRsForBranches(
@@ -283,18 +274,14 @@ export async function listOpenPRsForBranches(
   const wanted = new Set(branchNames);
 
   const key = openPrListCacheKey(owner, repo);
-  const now = Date.now();
-  const hit = openPrListCache.get(key);
-  let prs: OpenPrListEntry[];
-  if (hit && now - hit.at < OPEN_PR_LIST_TTL_MS) {
-    prs = hit.prs;
-  } else {
+  let prs: OpenPrListEntry[] | undefined = openPrListCache.get(key);
+  if (!prs) {
     try {
       prs = await transport.listOpenPullRequests(owner, repo);
-      openPrListCache.set(key, { at: now, prs });
+      openPrListCache.set(key, prs);
     } catch (e: any) {
       console.warn('[github] listOpenPRsForBranches failed', e?.status, e?.message);
-      prs = hit?.prs ?? [];
+      prs = openPrListCache.getStale(key) ?? [];
     }
   }
 

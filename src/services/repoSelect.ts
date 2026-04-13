@@ -6,7 +6,7 @@
 // new repo on the next tick.
 
 import { useRepoStore } from '../store/useRepoStore';
-import { invoke } from './tauriBridge';
+import { invoke, updateConfig } from './tauriBridge';
 import { getDefaultBranch, getRemoteUrl } from './gitService';
 import { refreshOnce } from './refreshLoop';
 import { readWorktreeOrder } from './worktreeOrderService';
@@ -16,15 +16,7 @@ interface RepoInfo {
   is_git: boolean;
 }
 
-interface AppConfigShape {
-  github_token: string;
-  github_token_explicitly_set?: boolean;
-  refresh_interval_ms: number;
-  fetch_interval_ms: number;
-  last_repo_path?: string | null;
-  recent_repo_paths?: string[];
-  zoom_level?: number;
-}
+
 
 // Cap on the persisted recent-repos list. Eight is enough to comfortably
 // cover a "what am I working on this week" set without the dropdown growing
@@ -122,13 +114,9 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     // recents[0]) so an older binary that only knows about `last_repo_path`
     // still resolves to the same repo on launch.
     try {
-      const cfg = await invoke<AppConfigShape>('read_config');
-      await invoke('write_config', {
-        cfg: {
-          ...cfg,
-          last_repo_path: nextRecents[0] ?? info.path,
-          recent_repo_paths: nextRecents,
-        },
+      await updateConfig({
+        last_repo_path: nextRecents[0] ?? info.path,
+        recent_repo_paths: nextRecents,
       });
     } catch {
       /* persist is best-effort; the in-memory repo still works */
@@ -152,13 +140,9 @@ export async function removeFromRecents(path: string): Promise<void> {
   if (next.length === recentRepoPaths.length) return;
   setRecentRepoPaths(next);
   try {
-    const cfg = await invoke<AppConfigShape>('read_config');
-    await invoke('write_config', {
-      cfg: {
-        ...cfg,
-        last_repo_path: next[0] ?? null,
-        recent_repo_paths: next,
-      },
+    await updateConfig({
+      last_repo_path: next[0] ?? null,
+      recent_repo_paths: next,
     });
   } catch {
     /* persistence is best-effort; the in-memory list is already updated */

@@ -1,17 +1,9 @@
 use crate::error::{AppError, AppResult};
-use serde::Serialize;
-use std::io::Read;
+use super::subprocess::{wait_with_timeout, SubprocessResult};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
 
-#[derive(Serialize)]
-pub struct GhExecResult {
-    pub stdout: String,
-    pub stderr: String,
-    pub code: i32,
-}
+pub type GhExecResult = SubprocessResult;
 
 // 30s timeout. API calls shouldn't take as long as git fetches. Generous
 // enough for paginated responses on repos with hundreds of open PRs.
@@ -61,7 +53,7 @@ fn gh_exec_blocking(args: Vec<String>) -> AppResult<GhExecResult> {
     cmd.env_remove("GITHUB_TOKEN");
     cmd.env_remove("GH_TOKEN");
 
-    let mut child = cmd.spawn().map_err(|e| {
+    let child = cmd.spawn().map_err(|e| {
         // Distinguish "gh not installed" from other spawn failures so the
         // frontend can fall through to the PAT path gracefully.
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -70,68 +62,6 @@ fn gh_exec_blocking(args: Vec<String>) -> AppResult<GhExecResult> {
             AppError::Io(e)
         }
     })?;
-
-    // Drain stdout/stderr on background threads. Same pattern as git_exec.
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
-    let stdout_handle = thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = stdout_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-    let stderr_handle = thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = stderr_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-
-    let child_id = child.id();
-    let (tx, rx) = mpsc::channel::<std::io::Result<std::process::ExitStatus>>();
-    let wait_handle = thread::spawn(move || {
-        let result = child.wait();
-        let _ = tx.send(result);
-    });
-
-    let status = match rx.recv_timeout(GH_EXEC_TIMEOUT) {
-        Ok(s) => s,
-        Err(_) => {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(child_id as libc::pid_t, libc::SIGKILL);
-            }
-            #[cfg(not(unix))]
-            {
-                // On Windows, kill via taskkill since we only have the PID
-                // (child was moved into the wait thread).
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &child_id.to_string()])
-                    .output();
-            }
-            let _ = wait_handle.join();
-            let _ = stdout_handle.join();
-            let _ = stderr_handle.join();
-            return Err(AppError::Msg(format!(
-                "gh {} timed out after {}s",
-                args.join(" "),
-                GH_EXEC_TIMEOUT.as_secs()
-            )));
-        }
-    };
-    let _ = wait_handle.join();
-    let stdout = stdout_handle.join().unwrap_or_default();
-    let stderr = stderr_handle.join().unwrap_or_default();
-    let code = match status {
-        Ok(s) => s.code().unwrap_or(-1),
-        Err(e) => return Err(AppError::Io(e)),
-    };
-
-    Ok(GhExecResult {
-        stdout: String::from_utf8_lossy(&stdout).to_string(),
-        stderr: String::from_utf8_lossy(&stderr).to_string(),
-        code,
-    })
+    let label = format!("gh {}", args.join(" "));
+    wait_with_timeout(child, GH_EXEC_TIMEOUT, &label)
 }

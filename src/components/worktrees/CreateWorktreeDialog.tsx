@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FolderOpen, X } from 'lucide-react';
+import { FolderOpen } from 'lucide-react';
 import type { Branch } from '../../types';
 import { pathExists } from '../../services/tauriBridge';
+import { Dialog, DialogHeader, DialogFooter } from '../common/Dialog';
 
 export interface CreateWorktreeValue {
   path: string;
@@ -49,16 +50,6 @@ export function CreateWorktreeDialog({
   const [postCreateCommands, setPostCreateCommands] = useState(defaultPostCreateCommands);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  // Escape closes. Unlike destructive dialogs we don't focus Cancel — the
-  // branch name input has autoFocus so the user can start typing immediately.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !submitting) onCancel();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onCancel, submitting]);
 
   const existingBranches = useMemo(() => {
     const seen = new Set<string>();
@@ -138,19 +129,8 @@ export function CreateWorktreeDialog({
   };
 
   return (
-    <div
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !submitting) onCancel();
-      }}
-    >
-      <div className="bg-wt-panel border border-wt-border rounded-xl p-6 w-[680px]">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Create worktree</h2>
-          <button onClick={onCancel} disabled={submitting} aria-label="close">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+    <Dialog onClose={onCancel} disabled={submitting} width="w-[680px]">
+      <DialogHeader title="Create worktree" onClose={onCancel} disabled={submitting} />
         <div className="space-y-4">
           <div>
             <div className="flex gap-2 text-xs mb-2">
@@ -270,23 +250,24 @@ export function CreateWorktreeDialog({
           </div>
           {error && <div className="text-xs text-wt-conflict">{error}</div>}
         </div>
-        <div className="mt-6 flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            disabled={submitting}
-            className="px-3 py-1.5 text-sm text-wt-fg-2 disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={submit}
-            disabled={submitting}
-            className="px-3 py-1.5 text-sm bg-wt-info/20 border border-wt-info/50 rounded hover:bg-wt-info/30 disabled:opacity-50"
-          >
-            {submitting ? 'Creating…' : 'Create'}
-          </button>
+        <div className="mt-6">
+          <DialogFooter>
+            <button
+              onClick={onCancel}
+              disabled={submitting}
+              className="px-3 py-1.5 text-sm text-wt-fg-2 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={submit}
+              disabled={submitting}
+              className="px-3 py-1.5 text-sm bg-wt-info/20 border border-wt-info/50 rounded hover:bg-wt-info/30 disabled:opacity-50"
+            >
+              {submitting ? 'Creating…' : 'Create'}
+            </button>
+          </DialogFooter>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

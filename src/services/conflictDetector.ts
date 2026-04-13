@@ -6,16 +6,15 @@ import type {
   WorktreeConflictSummary,
 } from '../types';
 import { getChangedFiles, getMergeBase, resolveRef, simulateMerge } from './gitService';
+import { TTLCache } from './cacheUtils';
 
 // ─── Caches ────────────────────────────────────────────────────────────
 // Content-addressed by branch + head SHA so entries auto-invalidate when
 // a branch tip moves. Same pattern as branchAbCache in gitService.ts.
 
-const changedFilesCache = new Map<string, string[]>();
-const CHANGED_FILES_CACHE_MAX = 200;
+const changedFilesCache = new TTLCache<string, string[]>({ maxSize: 200, trimFraction: 0.5 });
 
-const mergeBaseCache = new Map<string, string>();
-const MERGE_BASE_CACHE_MAX = 500;
+const mergeBaseCache = new TTLCache<string, string>({ maxSize: 500, trimFraction: 0.5 });
 
 // Top-level result cache keyed by the full set of inputs that can affect
 // the result: the repo path, the default branch, and a sorted signature of
@@ -189,14 +188,6 @@ export async function detectCrossWorktreeConflicts(
   }
 
   // ── Phase 1: changed-file sets (parallel, cached) ──────────────────
-  // Trim cache if it's grown too large
-  if (changedFilesCache.size > CHANGED_FILES_CACHE_MAX) {
-    const keys = Array.from(changedFilesCache.keys());
-    for (let i = 0; i < keys.length - CHANGED_FILES_CACHE_MAX / 2; i++) {
-      changedFilesCache.delete(keys[i]);
-    }
-  }
-
   const filesByBranch = new Map<string, Set<string>>();
   await Promise.all(
     candidates.map(async (wt) => {
@@ -263,13 +254,6 @@ export async function detectCrossWorktreeConflicts(
   }
 
   // ── Phase 3: merge simulation (only overlapping pairs, capped) ─────
-  if (mergeBaseCache.size > MERGE_BASE_CACHE_MAX) {
-    const keys = Array.from(mergeBaseCache.keys());
-    for (let i = 0; i < keys.length - MERGE_BASE_CACHE_MAX / 2; i++) {
-      mergeBaseCache.delete(keys[i]);
-    }
-  }
-
   const resolvedPairs = await withConcurrency(
     overlappingPairs.map(({ a, b, overlap }) => async (): Promise<WorktreePairOverlap> => {
       // Cached merge-base lookup, keyed by sorted SHAs
