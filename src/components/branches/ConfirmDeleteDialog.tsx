@@ -26,7 +26,13 @@ export function ConfirmDeleteDialog({
   onConfirm: () => void;
 }) {
   const [typed, setTyped] = useState('');
-  const canConfirm = !submitting && typed === 'delete';
+  // Tier confirmation to blast radius: local-only deletes use `git -d` which
+  // refuses unmerged branches, so git itself prevents data loss — no need to
+  // gate behind typing. Remote-touching modes (remote, both, archive-and-delete)
+  // are team-visible and stay behind the typed confirmation. Squash-merged
+  // rejections route to ForceDeleteSquashDialog, which always requires typing.
+  const requiresTyping = mode !== 'local';
+  const canConfirm = !submitting && (!requiresTyping || typed === 'delete');
   const cancelRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -65,21 +71,23 @@ export function ConfirmDeleteDialog({
           Archive tags preserve the original commits so Squash Archaeology can recover them later.
         </p>
       )}
-      <div className="mb-3">
-        <label className="text-xs text-wt-fg-2">
-          Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
-        </label>
-        <input
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-          disabled={submitting}
-          autoCapitalize="off"
-          autoCorrect="off"
-          autoComplete="off"
-          spellCheck={false}
-          className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
-        />
-      </div>
+      {requiresTyping && (
+        <div className="mb-3">
+          <label className="text-xs text-wt-fg-2">
+            Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
+          </label>
+          <input
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={submitting}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
+          />
+        </div>
+      )}
       <DialogFooter>
         <button
           ref={cancelRef}

@@ -46,7 +46,7 @@ Before touching anything non-trivial, read [`CLAUDE.md`](./CLAUDE.md). The load-
 
 - TypeScript everywhere on the frontend; canonical types live in `src/types/index.ts`. Match those when adding fields.
 - Tailwind with `wt-`-prefixed custom tokens defined in `tailwind.config.js`. Use those (`wt-bg`, `wt-dirty`, etc.) instead of raw color classes so the dark theme stays consistent.
-- Destructive UI dialogs (`ConfirmDeleteDialog`, `RemoveWorktreeDialog`) follow a shared shape: Escape closes, backdrop click closes, focus lands on Cancel, anything irreversible requires typed confirmation. New destructive flows should match.
+- Destructive UI dialogs (`ConfirmDeleteDialog`, `RemoveWorktreeDialog`, `ForceDeleteSquashDialog`) follow a shared shape: Escape closes, backdrop click closes, focus lands on Cancel. Typed "delete" confirmation is tiered by blast radius: local-only branch deletes (`git -d`, safe) and clean-worktree removals without remote deletion are click-to-confirm; remote-touching or force operations require typing "delete". New destructive flows should match.
 - When adding a new Rust command, register it in **both** `src-tauri/src/commands/mod.rs` and the `invoke_handler![]` macro in `src-tauri/src/lib.rs`, and add a TS wrapper in `tauriBridge.ts` or the relevant service.
 
 ## Commit messages

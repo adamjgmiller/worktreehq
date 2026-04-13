@@ -36,7 +36,13 @@ export function RemoveWorktreeDialog({
     worktree.hasConflicts ||
     !!worktree.inProgress;
   const requiresForce = dirty;
-  const typedOk = typed === 'delete';
+  // Tier the typed confirmation to actual blast radius. Worktree removal on a
+  // clean tree is reversible (`git worktree add` recreates it), and the opt-in
+  // local branch checkbox doesn't warrant typing on its own. Force-removing a
+  // dirty worktree discards uncommitted work; deleting the remote branch is
+  // team-visible. Either of those keeps the typing gate.
+  const requiresTyping = dirty || deleteRemote;
+  const typedOk = !requiresTyping || typed === 'delete';
 
   useEffect(() => {
     cancelRef.current?.focus();
@@ -139,21 +145,23 @@ export function RemoveWorktreeDialog({
           )}
         </div>
       )}
-      <div className="mb-3">
-        <label className="text-xs text-wt-fg-2">
-          Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
-        </label>
-        <input
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-          disabled={submitting}
-          autoCapitalize="off"
-          autoCorrect="off"
-          autoComplete="off"
-          spellCheck={false}
-          className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
-        />
-      </div>
+      {requiresTyping && (
+        <div className="mb-3">
+          <label className="text-xs text-wt-fg-2">
+            Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
+          </label>
+          <input
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={submitting}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
+          />
+        </div>
+      )}
       {error && (
         <div className="text-xs text-wt-conflict bg-wt-conflict/10 border border-wt-conflict/40 rounded px-2 py-1.5 font-mono mb-3 break-all">
           {error}
