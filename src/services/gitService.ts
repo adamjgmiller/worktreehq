@@ -926,7 +926,12 @@ export async function getChangedFiles(
 ): Promise<string[]> {
   // Three-dot diff: files changed on branch since it diverged from defaultBranch.
   // tryRun so a transient failure degrades to "no files" for one tick.
-  const out = await tryRun(repo, ['diff', '--name-only', `origin/${defaultBranch}...${branch}`]);
+  // --no-renames decomposes renames into delete+add so both the old and new
+  // paths appear in the file set. Without this, git's rename detection shows
+  // only the new name, and a rename/modify conflict (branch A renames foo→bar,
+  // branch B modifies foo) would have no file overlap — the pair would be
+  // skipped by Phase 2's prefilter before simulateMerge could detect it.
+  const out = await tryRun(repo, ['diff', '--no-renames', '--name-only', `origin/${defaultBranch}...${branch}`]);
   return out.split('\n').filter(Boolean);
 }
 
@@ -961,6 +966,70 @@ export interface MergeSimResult {
    *  Contains lines like "CONFLICT (content): Merge conflict in file.txt"
    *  that the UI can show as conflict descriptions. Keyed by file path. */
   infoByFile: Map<string, string>;
+}
+
+/**
+ * Best-effort parser for git merge-tree informational messages. Extracts file
+ * paths from known message formats and maps them to their full message text.
+ *
+ * Git explicitly states these messages are "not designed to be machine
+ * parseable", so this is inherently best-effort. The `conflictedFiles` list
+ * from `--name-only` is the authoritative source; `infoByFile` is decoration
+ * for the ConflictPairDetail UI. Files that don't match any pattern get the
+ * generic fallback in the conflict detector.
+ */
+export function parseConflictMessages(messageSection: string): Map<string, string> {
+  const infoByFile = new Map<string, string>();
+  if (!messageSection) return infoByFile;
+
+  for (const line of messageSection.split('\n').filter((l) => l.trim())) {
+    let filePath: string | undefined;
+
+    // 1. Auto-merging: "Auto-merging path/to/file.txt"
+    const autoMatch = line.match(/^Auto-merging\s+(.+)$/);
+    if (autoMatch) {
+      filePath = autoMatch[1].trim();
+    }
+
+    // 2. modify/delete: "CONFLICT (modify/delete): <file> deleted in <ref> ..."
+    //    The filename comes FIRST, before "deleted in" / "modified in".
+    if (!filePath) {
+      const modDelMatch = line.match(
+        /^CONFLICT\s+\((?:modify\/delete|delete\/modify)\):\s+(\S+)\s+(?:deleted|modified)\s+in\s+/,
+      );
+      if (modDelMatch) filePath = modDelMatch[1];
+    }
+
+    // 3. rename/delete and rename/rename: "CONFLICT (rename/delete): <old> renamed ..."
+    if (!filePath) {
+      const renameMatch = line.match(/^CONFLICT\s+\(rename\/\w+\):\s+(\S+)\s+/);
+      if (renameMatch) filePath = renameMatch[1];
+    }
+
+    // 4. content, binary, submodule: "CONFLICT (<type>): Merge conflict in <file>"
+    if (!filePath) {
+      const contentMatch = line.match(
+        /^CONFLICT\s+\([^)]+\):.*\bMerge conflict in\s+(.+?)\.?\s*$/,
+      );
+      if (contentMatch) filePath = contentMatch[1].trim();
+    }
+
+    // 5. Generic fallback: first path-looking token (contains / or .)
+    if (!filePath) {
+      const genericMatch = line.match(/^CONFLICT\s+\([^)]+\):\s+(\S+)/);
+      if (genericMatch && (genericMatch[1].includes('/') || genericMatch[1].includes('.'))) {
+        filePath = genericMatch[1];
+      }
+    }
+
+    if (filePath) {
+      // Accumulate all messages for a given file (there can be multiple,
+      // e.g. Auto-merging + CONFLICT for the same file).
+      const existing = infoByFile.get(filePath);
+      infoByFile.set(filePath, existing ? existing + '\n' + line : line);
+    }
+  }
+  return infoByFile;
 }
 
 /**
@@ -1020,28 +1089,7 @@ export async function simulateMerge(
       // file paths (only present when exit code is 1).
       const conflictedFiles = fileLines.slice(1).map((l) => l.trim()).filter(Boolean);
 
-      // Parse informational messages and associate them with file paths.
-      // Lines look like:
-      //   "CONFLICT (content): Merge conflict in path/to/file.txt"
-      //   "CONFLICT (modify/delete): file.txt deleted in refB and modified in refA."
-      //   "Auto-merging path/to/file.txt"
-      const infoByFile = new Map<string, string>();
-      if (messageSection) {
-        const msgLines = messageSection.split('\n').filter((l) => l.trim());
-        for (const line of msgLines) {
-          // Try to match the file path from the message. These patterns
-          // cover the common git merge-tree informational message forms.
-          const conflictMatch = line.match(/CONFLICT[^:]*:\s+.*?(?:in|of)\s+(.+?)\.?\s*$/);
-          const autoMergeMatch = conflictMatch ? null : line.match(/^Auto-merging\s+(.+)$/);
-          const filePath = (conflictMatch?.[1] || autoMergeMatch?.[1])?.trim();
-          if (filePath) {
-            // Accumulate all messages for a given file (there can be
-            // multiple, e.g. Auto-merging + CONFLICT for the same file).
-            const existing = infoByFile.get(filePath);
-            infoByFile.set(filePath, existing ? existing + '\n' + line : line);
-          }
-        }
-      }
+      const infoByFile = parseConflictMessages(messageSection);
 
       return { hasConflicts: r.code === 1, output: '', conflictedFiles, infoByFile };
     }

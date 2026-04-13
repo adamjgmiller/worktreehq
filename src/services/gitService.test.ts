@@ -19,6 +19,7 @@ import {
   parseGitVersion,
   setGitVersion,
   supportsWriteTree,
+  parseConflictMessages,
 } from './gitService';
 
 vi.mock('./tauriBridge', () => ({
@@ -833,5 +834,78 @@ describe('supportsWriteTree', () => {
   it('returns false for unset version', () => {
     setGitVersion('');
     expect(supportsWriteTree()).toBe(false);
+  });
+});
+
+describe('parseConflictMessages', () => {
+  it('parses Auto-merging lines', () => {
+    const result = parseConflictMessages('Auto-merging src/utils.ts');
+    expect(result.get('src/utils.ts')).toBe('Auto-merging src/utils.ts');
+  });
+
+  it('parses CONFLICT (content) with "Merge conflict in"', () => {
+    const result = parseConflictMessages(
+      'CONFLICT (content): Merge conflict in src/shared.ts',
+    );
+    expect(result.get('src/shared.ts')).toBe(
+      'CONFLICT (content): Merge conflict in src/shared.ts',
+    );
+  });
+
+  it('parses CONFLICT (modify/delete) — captures filename before "deleted in"', () => {
+    const result = parseConflictMessages(
+      'CONFLICT (modify/delete): config.json deleted in feat-b and modified in feat-a.',
+    );
+    expect(result.get('config.json')).toBe(
+      'CONFLICT (modify/delete): config.json deleted in feat-b and modified in feat-a.',
+    );
+  });
+
+  it('parses CONFLICT (delete/modify) variant', () => {
+    const result = parseConflictMessages(
+      'CONFLICT (delete/modify): old.ts modified in feat-a and deleted in feat-b.',
+    );
+    expect(result.get('old.ts')).toBe(
+      'CONFLICT (delete/modify): old.ts modified in feat-a and deleted in feat-b.',
+    );
+  });
+
+  it('parses CONFLICT (rename/delete)', () => {
+    const result = parseConflictMessages(
+      'CONFLICT (rename/delete): foo.ts renamed to bar.ts in feat-a, but deleted in feat-b.',
+    );
+    expect(result.get('foo.ts')).toBe(
+      'CONFLICT (rename/delete): foo.ts renamed to bar.ts in feat-a, but deleted in feat-b.',
+    );
+  });
+
+  it('accumulates multiple messages for the same file', () => {
+    const input = [
+      'Auto-merging src/shared.ts',
+      'CONFLICT (content): Merge conflict in src/shared.ts',
+    ].join('\n');
+    const result = parseConflictMessages(input);
+    expect(result.get('src/shared.ts')).toBe(
+      'Auto-merging src/shared.ts\nCONFLICT (content): Merge conflict in src/shared.ts',
+    );
+  });
+
+  it('returns empty map for empty input', () => {
+    expect(parseConflictMessages('').size).toBe(0);
+  });
+
+  it('skips lines that match no pattern', () => {
+    const result = parseConflictMessages('Some random git output');
+    expect(result.size).toBe(0);
+  });
+
+  it('handles generic CONFLICT with path-looking first token', () => {
+    const result = parseConflictMessages(
+      'CONFLICT (submodule): lib/vendor unmerged',
+    );
+    // "lib/vendor" contains "/" so it matches the generic fallback
+    expect(result.get('lib/vendor')).toBe(
+      'CONFLICT (submodule): lib/vendor unmerged',
+    );
   });
 });

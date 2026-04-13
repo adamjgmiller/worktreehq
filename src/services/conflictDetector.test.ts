@@ -167,6 +167,37 @@ describe('detectCrossWorktreeConflicts — modern merge-tree path', () => {
     expect(pair.files[0].severity).toBe('clean');
   });
 
+  it('detects rename-overlap when getChangedFiles returns both old and new paths', async () => {
+    // Simulates --no-renames: branch A renames foo.ts→bar.ts (shows as
+    // delete foo + add bar), branch B modifies foo.ts. Overlap on foo.ts
+    // means the pair reaches simulateMerge.
+    const worktrees = [wt('feat-a', 'sha-a'), wt('feat-b', 'sha-b')];
+
+    getChangedFilesMock.mockImplementation(async (_repo: string, _def: string, branch: string) => {
+      if (branch === 'feat-a') return ['foo.ts', 'bar.ts']; // rename decomposed
+      return ['foo.ts']; // modified the original
+    });
+
+    simulateMergeMock.mockResolvedValue({
+      hasConflicts: true,
+      output: '',
+      conflictedFiles: ['foo.ts'],
+      infoByFile: new Map([['foo.ts', 'CONFLICT (modify/delete): foo.ts deleted in feat-a and modified in feat-b.']]),
+    });
+
+    const result = await detectCrossWorktreeConflicts({
+      repoPath: '/repo',
+      defaultBranch: 'main',
+      worktrees,
+    });
+
+    // The pair should have been detected (not skipped as "no overlap")
+    expect(simulateMergeMock).toHaveBeenCalled();
+    expect(result.pairs).toHaveLength(1);
+    expect(result.pairs[0].severity).toBe('conflict');
+    expect(result.pairs[0].files.find((f) => f.path === 'foo.ts')?.severity).toBe('conflict');
+  });
+
   it('does not call getMergeBase on the modern path', async () => {
     const worktrees = [wt('feat-a', 'sha-a'), wt('feat-b', 'sha-b')];
 
