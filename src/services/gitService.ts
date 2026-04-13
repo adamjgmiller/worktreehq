@@ -1,5 +1,6 @@
 import { gitExec, pathExists, ensureDir } from './tauriBridge';
 import type { Worktree, Branch, MainCommit, WorktreeStatus, InProgressOp } from '../types';
+import { TTLCache } from './cacheUtils';
 
 async function run(repo: string, args: string[]): Promise<string> {
   const r = await gitExec(repo, args);
@@ -366,8 +367,7 @@ interface BranchAbCacheEntry {
   behindMain: number;
   merged: boolean;
 }
-const branchAbCache = new Map<string, BranchAbCacheEntry>();
-const BRANCH_AB_CACHE_MAX = 2000;
+const branchAbCache = new TTLCache<string, BranchAbCacheEntry>({ maxSize: 2000 });
 
 export function _clearBranchAbCacheForTests(): void {
   branchAbCache.clear();
@@ -556,16 +556,6 @@ export async function listBranches(repo: string, defaultBranch: string): Promise
       // failure means we may have a stale 0/0/false; serving that from cache
       // would lock it in until the branch sha actually moves.
       if (key && abMatch && mergeBaseSucceeded) {
-        // Cheap FIFO trim: if we cross the cap, drop the oldest 25%. Maps
-        // preserve insertion order, so slice-from-start is "oldest first".
-        if (branchAbCache.size >= BRANCH_AB_CACHE_MAX) {
-          const toDrop = Math.floor(BRANCH_AB_CACHE_MAX / 4);
-          let i = 0;
-          for (const k of branchAbCache.keys()) {
-            if (i++ >= toDrop) break;
-            branchAbCache.delete(k);
-          }
-        }
         branchAbCache.set(key, { aheadOfMain, behindMain, merged });
       }
     }),

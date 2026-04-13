@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
-import { invoke, isTauri, keychainRead, setGitAuthMethod } from '../services/tauriBridge';
+import { invoke, isTauri, keychainRead, setGitAuthMethod, updateConfig } from '../services/tauriBridge';
 import {
   hydratePrCache,
   initGithub,
@@ -134,11 +134,7 @@ async function detectAndInitAuth(
     setAuthMethod('gh-cli');
     void setGitAuthMethod('gh-cli');
     // Persist so subsequent launches skip the subprocess detection.
-    // Re-read config to avoid overwriting fields changed by concurrent
-    // writers (repoSelect, Settings, etc.) since bootstrap captured `cfg`.
-    void invoke<AppConfig>('read_config')
-      .then((fresh) => invoke('write_config', { cfg: { ...fresh, auth_method: 'gh-cli' } }))
-      .catch(() => {});
+    void updateConfig({ auth_method: 'gh-cli' }).catch(() => {});
     validateAndRefresh();
     return;
   }
@@ -151,11 +147,7 @@ async function detectAndInitAuth(
     setAuthMethod('pat');
     void setGitAuthMethod('pat', keychainToken);
     // Persist so subsequent launches skip the detection cascade.
-    // Re-read config to avoid overwriting fields changed by concurrent
-    // writers (repoSelect, Settings, etc.) since bootstrap captured `cfg`.
-    void invoke<AppConfig>('read_config')
-      .then((fresh) => invoke('write_config', { cfg: { ...fresh, auth_method: 'pat' } }))
-      .catch(() => {});
+    void updateConfig({ auth_method: 'pat' }).catch(() => {});
     validateAndRefresh();
     return;
   }

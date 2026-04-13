@@ -29,6 +29,19 @@ export async function gitExec(repoPath: string, args: string[]): Promise<GitExec
   return invoke<GitExecResult>('git_exec', { repoPath, args });
 }
 
+/**
+ * Read-modify-write the app config with a partial update.
+ *
+ * This centralizes the pattern that was duplicated across 6+ files:
+ * read the full config, spread the update fields, write back. The spread
+ * preserves fields this caller doesn't own (github_token, auth_method,
+ * zoom_level, etc.) so concurrent writers don't clobber each other's data.
+ */
+export async function updateConfig(fields: Record<string, unknown>): Promise<void> {
+  const cfg = await invoke<Record<string, unknown>>('read_config');
+  await invoke('write_config', { cfg: { ...cfg, ...fields } });
+}
+
 // ── gh CLI bridge ──────────────────────────────────────────────────────
 
 export interface GhExecResult {

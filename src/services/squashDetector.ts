@@ -1,15 +1,15 @@
 import type { Branch, MainCommit, SquashMapping, PRInfo } from '../types';
 import { batchFetchPRs } from './githubService';
 import { cherryCheck, resolveMainUpstreams } from './gitService';
+import { TTLCache } from './cacheUtils';
 
 // Cache cherry-check results by (branch head sha, main head sha). Lives for
 // the process lifetime — no TTL needed because the key is content-addressed:
 // if either sha moves, the key changes and the entry misses. Saves a
 // subprocess spawn per still-unmerged branch on every refresh when nothing
 // has changed, which dominates cost on repos with 100+ stale branches.
-const cherryCache = new Map<string, boolean>();
+const cherryCache = new TTLCache<string, boolean>();
 
-// Exported for tests only.
 export function _clearCherryCacheForTests() {
   cherryCache.clear();
 }

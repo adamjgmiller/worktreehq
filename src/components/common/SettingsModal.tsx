@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke, keychainStore, keychainRead, keychainDelete, setGitAuthMethod } from '../../services/tauriBridge';
+import { invoke, keychainStore, keychainRead, keychainDelete, setGitAuthMethod, updateConfig } from '../../services/tauriBridge';
 import {
   initGithub,
   validateToken,
@@ -7,7 +7,8 @@ import {
   type AuthMethod,
 } from '../../services/githubService';
 import { useRepoStore } from '../../store/useRepoStore';
-import { X, Terminal, Key, ShieldOff } from 'lucide-react';
+import { Terminal, Key, ShieldOff } from 'lucide-react';
+import { Dialog, DialogHeader, DialogFooter } from './Dialog';
 
 // Loose shape — we read the full config object, spread it on save, and only
 // override the fields this modal owns. The rest (recent_repo_paths, zoom_level,
@@ -110,35 +111,16 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Escape closes; focus the input on open.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-
   useEffect(() => {
     if (open && loaded && selectedMethod === 'pat' && inputRef.current) {
       inputRef.current.focus();
     }
   }, [open, loaded, selectedMethod]);
 
-  if (!open) return null;
-
   const save = async () => {
     setSaving(true);
     setError(null);
     try {
-      let base: AppConfigShape;
-      try {
-        base = await invoke<AppConfigShape>('read_config');
-      } catch {
-        base = baseCfgRef.current ?? {};
-      }
-
       // Handle keychain BEFORE persisting config — if keychain write fails,
       // the throw aborts the save so config won't be written with
       // auth_method: 'pat' pointing at a keychain entry that doesn't exist.
@@ -158,13 +140,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       }
 
       // Persist auth method preference and clear the plaintext token from config
-      await invoke('write_config', {
-        cfg: {
-          ...base,
-          github_token: '',
-          auth_method: selectedMethod,
-          post_create_commands: postCreateCommands,
-        },
+      await updateConfig({
+        github_token: '',
+        auth_method: selectedMethod,
+        post_create_commands: postCreateCommands,
       });
 
       // Initialize the transport with the new method
@@ -219,19 +198,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     }`;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="bg-wt-panel border border-wt-border rounded-xl p-6 w-[560px] max-h-[85vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Settings</h2>
-          <button onClick={onClose} aria-label="close">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+    <Dialog open={open} onClose={onClose} className="max-h-[85vh] overflow-y-auto">
+      <DialogHeader title="Settings" onClose={onClose} />
 
         {/* ── Auth method selector ── */}
         <h3 className="text-sm font-semibold mb-2">GitHub Authentication</h3>
@@ -357,22 +325,23 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             {error}
           </div>
         )}
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 text-sm text-wt-fg-2"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={save}
-            disabled={!loaded || loading || saving || (selectedMethod === 'pat' && !token)}
-            className="px-3 py-1.5 text-sm bg-wt-info/20 border border-wt-info/50 rounded hover:bg-wt-info/30 disabled:opacity-50"
-          >
-            {saving ? 'Saving...' : 'Save'}
-          </button>
+        <div className="mt-4">
+          <DialogFooter>
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 text-sm text-wt-fg-2"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={!loaded || loading || saving || (selectedMethod === 'pat' && !token)}
+              className="px-3 py-1.5 text-sm bg-wt-info/20 border border-wt-info/50 rounded hover:bg-wt-info/30 disabled:opacity-50"
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </DialogFooter>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 }

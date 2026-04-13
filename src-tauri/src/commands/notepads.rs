@@ -1,7 +1,7 @@
 use crate::error::{AppError, AppResult};
+use super::persistent_json::{config_file_path, atomic_write};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 // Single-process lock so concurrent saves from rapid keystrokes can't
@@ -49,12 +49,8 @@ impl From<RawNotepadValue> for NotepadEntry {
     }
 }
 
-fn notepads_path() -> AppResult<PathBuf> {
-    let base = dirs::config_dir()
-        .ok_or_else(|| AppError::Msg("no config dir".into()))?
-        .join("worktreehq");
-    std::fs::create_dir_all(&base).map_err(AppError::Io)?;
-    Ok(base.join("notepads.json"))
+fn notepads_path() -> AppResult<std::path::PathBuf> {
+    config_file_path("notepads.json")
 }
 
 fn load_all() -> AppResult<HashMap<String, NotepadEntry>> {
@@ -89,12 +85,9 @@ fn load_all() -> AppResult<HashMap<String, NotepadEntry>> {
 
 fn save_all(map: &HashMap<String, NotepadEntry>) -> AppResult<()> {
     let p = notepads_path()?;
-    let tmp = p.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(map)
         .map_err(|e| AppError::Msg(format!("notepads serialize: {}", e)))?;
-    std::fs::write(&tmp, text).map_err(AppError::Io)?;
-    std::fs::rename(&tmp, &p).map_err(AppError::Io)?;
-    Ok(())
+    atomic_write(&p, &text)
 }
 
 #[tauri::command]

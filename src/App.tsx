@@ -23,7 +23,7 @@ import { useRepoBootstrap } from './hooks/useRepoBootstrap';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useTheme } from './hooks/useTheme';
 import { pickAndLoadRepo } from './services/repoSelect';
-import { invoke } from './services/tauriBridge';
+import { updateConfig } from './services/tauriBridge';
 
 // Persist zoom to config.toml so it survives restarts. Best-effort: a failed
 // write doesn't roll back the in-memory zoom — the keystroke still feels
@@ -33,10 +33,7 @@ import { invoke } from './services/tauriBridge';
 // fresh write_config without merging would silently wipe the user's token.
 async function persistZoom(level: number) {
   try {
-    const cfg = await invoke<Record<string, unknown>>('read_config');
-    await invoke('write_config', {
-      cfg: { ...cfg, zoom_level: level },
-    });
+    await updateConfig({ zoom_level: level });
   } catch {
     /* zoom is a UX nicety; persistence failure shouldn't disrupt anything */
   }

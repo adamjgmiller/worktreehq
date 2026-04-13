@@ -1,17 +1,9 @@
 use crate::error::{AppError, AppResult};
-use serde::Serialize;
-use std::io::Read;
+use super::subprocess::{wait_with_timeout, SubprocessResult};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
 
-#[derive(Debug, Serialize)]
-pub struct ShellExecResult {
-    pub stdout: String,
-    pub stderr: String,
-    pub code: i32,
-}
+pub type ShellExecResult = SubprocessResult;
 
 // Default wall-clock cap. `npm install` on a cold cache easily exceeds
 // git_exec's 90s, so we start with a much larger budget. The caller can
@@ -64,71 +56,9 @@ pub fn run_shell_commands(
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");
 
-    let mut child = cmd.spawn().map_err(AppError::Io)?;
-
-    // Drain stdout/stderr on background threads. Reading them on the main
-    // thread before wait() can deadlock on scripts whose output fills the
-    // OS pipe buffer — `npm install` trivially exceeds 64KB.
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
-    let stdout_handle = thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = stdout_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-    let stderr_handle = thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = stderr_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-
-    // Wait for the child with a timeout. Same pattern as git_exec: move the
-    // Child into a worker thread so the caller can recv() with a deadline,
-    // and on timeout kill the still-running child via its PID (captured
-    // before the move) so the readers can exit cleanly.
-    let child_id = child.id();
-    let (tx, rx) = mpsc::channel::<std::io::Result<std::process::ExitStatus>>();
-    let wait_handle = thread::spawn(move || {
-        let result = child.wait();
-        let _ = tx.send(result);
-    });
-
+    let child = cmd.spawn().map_err(AppError::Io)?;
     let budget = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT.as_secs()));
-    let status = match rx.recv_timeout(budget) {
-        Ok(s) => s,
-        Err(_) => {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(child_id as libc::pid_t, libc::SIGKILL);
-            }
-            #[cfg(not(unix))]
-            let _ = child_id;
-            let _ = wait_handle.join();
-            let _ = stdout_handle.join();
-            let _ = stderr_handle.join();
-            return Err(AppError::Msg(format!(
-                "post-create commands timed out after {}s",
-                budget.as_secs()
-            )));
-        }
-    };
-    let _ = wait_handle.join();
-    let stdout = stdout_handle.join().unwrap_or_default();
-    let stderr = stderr_handle.join().unwrap_or_default();
-    let code = match status {
-        Ok(s) => s.code().unwrap_or(-1),
-        Err(e) => return Err(AppError::Io(e)),
-    };
-
-    Ok(ShellExecResult {
-        stdout: String::from_utf8_lossy(&stdout).to_string(),
-        stderr: String::from_utf8_lossy(&stderr).to_string(),
-        code,
-    })
+    wait_with_timeout(child, budget, "post-create commands")
 }
 
 #[cfg(all(test, unix))]

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
-import { invoke } from '../services/tauriBridge';
+import { updateConfig } from '../services/tauriBridge';
 
 export type ThemePreference = 'light' | 'dark' | 'system';
 
@@ -117,8 +117,7 @@ export function useTheme() {
 // App.tsx for the same merge pattern and rationale).
 export async function persistThemePreference(pref: ThemePreference) {
   try {
-    const cfg = await invoke<Record<string, unknown>>('read_config');
-    await invoke('write_config', { cfg: { ...cfg, theme: pref } });
+    await updateConfig({ theme: pref });
   } catch {
     /* theme is a UX nicety; persistence failure shouldn't disrupt the UI */
   }
