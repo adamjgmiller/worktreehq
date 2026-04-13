@@ -165,9 +165,15 @@ export async function shellOpen(path: string, action: ShellOpenAction): Promise<
 // Open a URL in the user's default browser. In Tauri, delegates to the
 // shell_open Rust command; outside Tauri (dev server, tests), uses
 // window.open() synchronously so the call stays within user activation.
+// Never rejects — callers fire-and-forget from onClick handlers where
+// there is no universal error surface.
 export async function openUrl(url: string): Promise<void> {
   if (isTauri()) {
-    await invoke<void>('shell_open', { path: url, action: 'url' });
+    try {
+      await invoke<void>('shell_open', { path: url, action: 'url' });
+    } catch (e) {
+      console.error('openUrl: failed to open', url, e);
+    }
   } else {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
