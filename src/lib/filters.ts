@@ -6,9 +6,9 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 function isEmptyAndAbandoned(b: Branch, now = Date.now()): boolean {
   if (b.mergeStatus !== 'empty') return false;
-  if (!b.lastCommitDate) return true; // no date → assume old
+  if (!b.lastCommitDate) return false; // no date → can't confirm age, don't assume
   const t = new Date(b.lastCommitDate).getTime();
-  if (Number.isNaN(t)) return true;
+  if (Number.isNaN(t)) return false; // unparseable → can't confirm age, don't assume
   return now - t >= ONE_DAY_MS;
 }
 

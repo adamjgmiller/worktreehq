@@ -23,7 +23,7 @@ vi.mock('./gitService', () => ({
   snapshotRemoteRefs: vi.fn(),
   getChangedFiles: vi.fn().mockResolvedValue([]),
   getMergeBase: vi.fn().mockResolvedValue(''),
-  simulateMerge: vi.fn().mockResolvedValue({ hasConflicts: false, output: '' }),
+  simulateMerge: vi.fn().mockResolvedValue({ hasConflicts: false, output: '', conflictedFiles: [], infoByFile: new Map() }),
 }));
 
 vi.mock('./squashDetector', () => ({

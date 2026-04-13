@@ -16,6 +16,9 @@ import {
   cherryCheck,
   createWorktree,
   _clearBranchAbCacheForTests,
+  parseGitVersion,
+  setGitVersion,
+  supportsWriteTree,
 } from './gitService';
 
 vi.mock('./tauriBridge', () => ({
@@ -784,5 +787,51 @@ describe('isAncestor', () => {
   it('returns false on git_exec rejection', async () => {
     gitExecMock.mockRejectedValue(new Error('boom'));
     await expect(isAncestor('/repo', 'feat/x', 'main')).resolves.toBe(false);
+  });
+});
+
+describe('parseGitVersion', () => {
+  it('parses standard version string', () => {
+    expect(parseGitVersion('git version 2.53.0')).toEqual([2, 53]);
+  });
+  it('parses older version', () => {
+    expect(parseGitVersion('git version 2.37.1')).toEqual([2, 37]);
+  });
+  it('parses major version 1', () => {
+    expect(parseGitVersion('git version 1.8.0')).toEqual([1, 8]);
+  });
+  it('handles Apple git variant', () => {
+    expect(parseGitVersion('git version 2.39.5 (Apple Git-154)')).toEqual([2, 39]);
+  });
+  it('returns [0, 0] for garbage', () => {
+    expect(parseGitVersion('not a version')).toEqual([0, 0]);
+  });
+  it('returns [0, 0] for empty string', () => {
+    expect(parseGitVersion('')).toEqual([0, 0]);
+  });
+});
+
+describe('supportsWriteTree', () => {
+  beforeEach(() => {
+    setGitVersion(''); // Reset to [0, 0]
+  });
+
+  it('returns true for git >= 2.38', () => {
+    setGitVersion('git version 2.38.0');
+    expect(supportsWriteTree()).toBe(true);
+    setGitVersion('git version 2.53.0');
+    expect(supportsWriteTree()).toBe(true);
+  });
+  it('returns true for git 3.x', () => {
+    setGitVersion('git version 3.0.0');
+    expect(supportsWriteTree()).toBe(true);
+  });
+  it('returns false for git < 2.38', () => {
+    setGitVersion('git version 2.37.1');
+    expect(supportsWriteTree()).toBe(false);
+  });
+  it('returns false for unset version', () => {
+    setGitVersion('');
+    expect(supportsWriteTree()).toBe(false);
   });
 });

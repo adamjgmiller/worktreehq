@@ -5,7 +5,7 @@ import type {
   OverlapSeverity,
   WorktreeConflictSummary,
 } from '../types';
-import { getChangedFiles, getMergeBase, resolveRef, simulateMerge } from './gitService';
+import { getChangedFiles, getMergeBase, resolveRef, simulateMerge, supportsWriteTree } from './gitService';
 import { TTLCache } from './cacheUtils';
 
 // ─── Caches ────────────────────────────────────────────────────────────
@@ -254,9 +254,48 @@ export async function detectCrossWorktreeConflicts(
   }
 
   // ── Phase 3: merge simulation (only overlapping pairs, capped) ─────
+  const useModernMergeTree = supportsWriteTree();
   const resolvedPairs = await withConcurrency(
     overlappingPairs.map(({ a, b, overlap }) => async (): Promise<WorktreePairOverlap> => {
-      // Cached merge-base lookup, keyed by sorted SHAs
+      if (useModernMergeTree) {
+        // Modern path (git >= 2.38): --write-tree computes the merge-base
+        // internally and reports conflicted file paths via --name-only.
+        // Exit code 1 = conflicts — catches delete/modify, binary,
+        // rename/delete, and submodule conflicts that the old form misses.
+        const sim = await simulateMerge(repoPath, '', a.branch, b.branch);
+        const conflictedSet = new Set(sim.conflictedFiles);
+        const files: ConflictFile[] = Array.from(overlap, (path) => {
+          const isConflict = conflictedSet.has(path);
+          return {
+            path,
+            severity: isConflict ? 'conflict' as const : 'clean' as const,
+            // Provide conflict description so the UI can show the expand
+            // chevron and a useful message. The modern merge-tree path
+            // doesn't produce raw <<<<<<<  markers, but the informational
+            // messages (e.g. "CONFLICT (content): Merge conflict in ...")
+            // tell the user what kind of conflict occurred.
+            conflictMarkers: isConflict
+              ? (sim.infoByFile.get(path) || `Merge conflict in ${path}`)
+              : undefined,
+          };
+        });
+        const hasConflict = sim.hasConflicts;
+        // If git says there are conflicts but none of the conflicted files
+        // are in our overlap set (e.g. a rename/delete outside the overlap),
+        // the pair-level severity should still reflect the conflict.
+        const severity: OverlapSeverity = hasConflict ? 'conflict' : 'clean';
+        return {
+          branchA: a.branch,
+          branchB: b.branch,
+          severity,
+          files: files.sort((x, y) => {
+            if (x.severity !== y.severity) return x.severity === 'conflict' ? -1 : 1;
+            return x.path.localeCompare(y.path);
+          }),
+        };
+      }
+
+      // Legacy path (git < 2.38): three-argument form, merge-base required.
       const mbKey = [a.head, b.head].sort().join(':');
       let mergeBase = mergeBaseCache.get(mbKey);
       if (!mergeBase) {
@@ -293,7 +332,6 @@ export async function detectCrossWorktreeConflicts(
         branchB: b.branch,
         severity,
         files: parsedFiles.sort((x, y) => {
-          // Conflicts first, then clean
           if (x.severity !== y.severity) return x.severity === 'conflict' ? -1 : 1;
           return x.path.localeCompare(y.path);
         }),

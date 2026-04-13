@@ -8,7 +8,7 @@ import {
   validateToken,
   type AuthMethod,
 } from '../services/githubService';
-import { checkGitAvailable, getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
+import { checkGitAvailable, setGitVersion, getDefaultBranch, getRemoteUrl, resolveWatchDirs } from '../services/gitService';
 import {
   refreshOnce,
   runFetchOnce,
@@ -272,6 +272,7 @@ export function useRepoBootstrap() {
           );
           return;
         }
+        setGitVersion(gitVersion);
         const defaultBranch = await getDefaultBranch(info.path);
         // Resolve the origin owner/name once at bootstrap and stash on the
         // repo state. This never changes for a given repo so paying the
