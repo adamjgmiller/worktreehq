@@ -230,7 +230,7 @@ async function runRefreshOnce(): Promise<void> {
     // clean worktree keeps `empty` — the branch genuinely has no work yet.
     const dirtyWtBranches = new Set<string>();
     for (const w of wts) {
-      if (w.untrackedCount > 0 || w.modifiedCount > 0 || w.stagedCount > 0) {
+      if (w.untrackedCount > 0 || w.modifiedCount > 0 || w.stagedCount > 0 || w.hasConflicts) {
         dirtyWtBranches.add(w.branch);
       }
     }

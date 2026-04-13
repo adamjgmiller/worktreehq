@@ -307,6 +307,36 @@ describe('refreshOnce worktree-attached empty branch demotion', () => {
     expect(feat.mergeStatus).toBe('unmerged');
     expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
   });
+
+  it('demotes empty branches to unmerged when worktree has conflicts', async () => {
+    asMock(git.listWorktrees).mockResolvedValueOnce([
+      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'conflict',
+        untrackedCount: 0, modifiedCount: 0, stagedCount: 0, hasConflicts: true, isBare: false },
+    ]);
+    asMock(git.listBranches).mockResolvedValueOnce([
+      {
+        name: 'feat',
+        hasLocal: true,
+        hasRemote: true,
+        lastCommitDate: new Date().toISOString(),
+        lastCommitSha: 'aaa',
+        aheadOfMain: 0,
+        behindMain: 0,
+        mergeStatus: 'empty',
+      },
+    ]);
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }) => ({
+      updatedBranches: bs,
+      mappings: [],
+    }));
+
+    await refreshOnce();
+
+    const feat = useRepoStore.getState().branches.find((b) => b.name === 'feat')!;
+    // Conflicts count as dirty even though untracked/modified/staged are 0
+    expect(feat.mergeStatus).toBe('unmerged');
+    expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
+  });
 });
 
 describe('runFetchOnce', () => {
