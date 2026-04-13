@@ -53,6 +53,9 @@ function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
     if (!old) return b;
     // SHA moved — the branch has new commits; trust the fresh detection.
     if (old.lastCommitSha !== b.lastCommitSha) return b;
+    // Worktree attachment changed — trust the fresh detection. The
+    // empty→unmerged demotion is intentional for worktree-attached branches.
+    if (Boolean(old.worktreePath) !== Boolean(b.worktreePath)) return b;
     const oldPriority = STATUS_PRIORITY[old.mergeStatus] ?? 0;
     const newPriority = STATUS_PRIORITY[b.mergeStatus] ?? 0;
     if (oldPriority > newPriority) {
