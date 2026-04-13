@@ -25,7 +25,7 @@
 -->
 <p align="center"><em>Demo video coming soon</em></p>
 
-> **[See all screenshots &rarr;](./SCREENSHOTS.md)** — light and dark themes, every tab, bulk operations, and more.
+> **[See all screenshots &rarr;](./SCREENSHOTS.md)** — light and dark themes, tabs, bulk operations, and more.
 
 ## Why this exists
 
