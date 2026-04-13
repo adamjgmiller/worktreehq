@@ -17,6 +17,7 @@ import {
 import { fetchClaudePresence } from './claudeAwarenessService';
 import { detectCrossWorktreeConflicts, type ConflictDetectResult } from './conflictDetector';
 import { classifyFetchError, formatClassifiedError } from './fetchErrorClassifier';
+import { worktreeHasActivity } from '../lib/branchDisposition';
 import {
   reconcileWorktrees,
   reconcileBranches,
@@ -224,19 +225,20 @@ async function runRefreshOnce(): Promise<void> {
     );
 
     // Post-ratchet: demote empty→unmerged for branches whose worktree has
-    // uncommitted work. This runs AFTER the ratchet so the ratchet can
+    // activity (uncommitted edits, conflicts, or an in-progress op like
+    // rebase/bisect). This runs AFTER the ratchet so the ratchet can
     // unconditionally protect `empty` against transient subprocess failures,
-    // and this step only overrides when there is actual dirty state. A
-    // clean worktree keeps `empty` — the branch genuinely has no work yet.
-    const dirtyWtBranches = new Set<string>();
+    // and this step only overrides when there is actual work. A clean
+    // worktree keeps `empty` — the branch genuinely has no work yet.
+    const activeWtBranches = new Set<string>();
     for (const w of wts) {
-      if (w.untrackedCount > 0 || w.modifiedCount > 0 || w.stagedCount > 0 || w.hasConflicts) {
-        dirtyWtBranches.add(w.branch);
+      if (worktreeHasActivity(w)) {
+        activeWtBranches.add(w.branch);
       }
     }
-    const postRatchet = dirtyWtBranches.size > 0
+    const postRatchet = activeWtBranches.size > 0
       ? ratcheted.map((b) =>
-          b.mergeStatus === 'empty' && dirtyWtBranches.has(b.name)
+          b.mergeStatus === 'empty' && activeWtBranches.has(b.name)
             ? { ...b, mergeStatus: 'unmerged' as const }
             : b,
         )

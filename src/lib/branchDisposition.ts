@@ -93,7 +93,7 @@ export function branchDisposition(
 // or in-progress op as activity. Stash count is intentionally NOT included:
 // stashes can outlive their original branch context and a stash on an
 // otherwise-pristine empty branch shouldn't make it look in-flight.
-function worktreeHasActivity(wt: Worktree): boolean {
+export function worktreeHasActivity(wt: Worktree): boolean {
   if (wt.inProgress) return true;
   if (wt.hasConflicts) return true;
   if (wt.untrackedCount > 0 || wt.modifiedCount > 0 || wt.stagedCount > 0) {

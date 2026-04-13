@@ -337,6 +337,37 @@ describe('refreshOnce worktree-attached empty branch demotion', () => {
     expect(feat.mergeStatus).toBe('unmerged');
     expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
   });
+
+  it('demotes empty branches to unmerged when worktree has an in-progress op', async () => {
+    asMock(git.listWorktrees).mockResolvedValueOnce([
+      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'clean',
+        untrackedCount: 0, modifiedCount: 0, stagedCount: 0, hasConflicts: false,
+        inProgress: 'rebase', isBare: false },
+    ]);
+    asMock(git.listBranches).mockResolvedValueOnce([
+      {
+        name: 'feat',
+        hasLocal: true,
+        hasRemote: true,
+        lastCommitDate: new Date().toISOString(),
+        lastCommitSha: 'aaa',
+        aheadOfMain: 0,
+        behindMain: 0,
+        mergeStatus: 'empty',
+      },
+    ]);
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }) => ({
+      updatedBranches: bs,
+      mappings: [],
+    }));
+
+    await refreshOnce();
+
+    const feat = useRepoStore.getState().branches.find((b) => b.name === 'feat')!;
+    // Mid-rebase with no file changes still counts as active
+    expect(feat.mergeStatus).toBe('unmerged');
+    expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
+  });
 });
 
 describe('runFetchOnce', () => {
