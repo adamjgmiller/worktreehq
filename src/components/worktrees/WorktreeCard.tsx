@@ -454,7 +454,12 @@ function WorktreeCardInner({
         <StatInline label="stashes" value={wt.stashCount} />
         <StatInline label="remote" value={aheadBehind(wt.ahead, wt.behind)} />
       </div>
-      <LastCommitFooter lastCommit={wt.lastCommit} />
+      <LastCommitFooter
+        lastCommit={wt.lastCommit}
+        aheadOfMain={wt.aheadOfMain}
+        isPrimary={wt.isPrimary}
+        defaultBranch={defaultBranch}
+      />
       <Notepad worktreePath={wt.path} />
       {presence && presence.inactiveSessions.length > 0 && (
         <PastSessionsList worktreePath={wt.path} sessions={presence.inactiveSessions} />
@@ -719,9 +724,21 @@ function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
 // author are tucked behind the disclosure for the rare moments you actually
 // want to identify the commit (detached HEAD diagnosis, post-rebase
 // orientation, "did my last commit land?").
-function LastCommitFooter({ lastCommit }: { lastCommit: LastCommit }) {
+function LastCommitFooter({
+  lastCommit,
+  aheadOfMain,
+  isPrimary,
+  defaultBranch,
+}: {
+  lastCommit: LastCommit;
+  aheadOfMain: number;
+  isPrimary: boolean;
+  defaultBranch: string;
+}) {
   const [open, setOpen] = useState(false);
   const when = relativeTime(lastCommit.date);
+  const isInherited = !isPrimary && aheadOfMain === 0;
+  const label = isInherited ? 'base commit' : 'last commit';
   return (
     <div className="border-t border-wt-border pt-2">
       <button
@@ -734,7 +751,7 @@ function LastCommitFooter({ lastCommit }: { lastCommit: LastCommit }) {
           className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`}
         />
         <GitCommit className="w-3 h-3" />
-        <span className="uppercase tracking-wide">last commit · {when}</span>
+        <span className="uppercase tracking-wide">{label} · {when}</span>
       </button>
       <AnimatePresence initial={false}>
         {open && (
@@ -755,6 +772,11 @@ function LastCommitFooter({ lastCommit }: { lastCommit: LastCommit }) {
             <div className="text-wt-muted mt-1">
               {lastCommit.author ? `${lastCommit.author} · ${when}` : when}
             </div>
+            {isInherited && (
+              <div className="text-wt-muted mt-1 italic">
+                from {defaultBranch} · no branch commits yet
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
