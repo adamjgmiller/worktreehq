@@ -162,13 +162,14 @@ export async function shellOpen(path: string, action: ShellOpenAction): Promise<
   await invoke<void>('shell_open', { path, action });
 }
 
-// Open a URL in the user's default browser via the OS launcher.
-// Falls back to window.open() outside Tauri (dev server, tests).
+// Open a URL in the user's default browser. In Tauri, delegates to the
+// shell_open Rust command; outside Tauri (dev server, tests), uses
+// window.open() synchronously so the call stays within user activation.
 export async function openUrl(url: string): Promise<void> {
-  try {
+  if (isTauri()) {
     await invoke<void>('shell_open', { path: url, action: 'url' });
-  } catch {
-    window.open(url, '_blank', 'noopener');
+  } else {
+    window.open(url, '_blank', 'noopener,noreferrer');
   }
 }
 
