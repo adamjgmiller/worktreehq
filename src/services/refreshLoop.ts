@@ -28,19 +28,37 @@ import type { Branch, MergeStatus } from '../types';
 // Statuses whose detection depends on the GitHub API or other external
 // data that can transiently fail. A single cache miss or failed re-fetch
 // would bounce these back to unmerged, so the ratchet preserves them when
-// the branch SHA hasn't moved. Locally-derived statuses (empty, stale)
-// are cheap and deterministic — they don't need protection.
+// the branch SHA hasn't moved.
 const RATCHETED_STATUSES: ReadonlySet<MergeStatus> = new Set([
   'squash-merged',
   'merged-normally',
 ]);
 
-// Apply a one-way ratchet: if the previous tick resolved a branch to an
-// API-dependent status and its SHA hasn't changed, keep the previous
-// status. This is critical for multi-commit squash merges that the
-// cherry-check can't detect — their squash-merged status depends entirely
-// on the GitHub API returning PR data, and a single failed re-fetch would
-// otherwise bounce them back to unmerged until the next successful fetch.
+// Apply a one-way ratchet: if the previous tick resolved a branch to a
+// non-trivial status and its SHA hasn't changed, keep the previous status
+// rather than trusting a potentially degraded fresh detection.
+//
+// Three layers of protection:
+//
+// 1. API-dependent statuses (squash-merged, merged-normally): always
+//    ratcheted. These depend on the GitHub API or git merge-base, and a
+//    single failed fetch would otherwise bounce them back to unmerged.
+//
+// 2. `empty` status: ratcheted UNLESS the branch gained a worktree on
+//    this tick. `empty` depends on a successful `git rev-list` subprocess
+//    (the result must have a parseable `abMatch`); when the subprocess
+//    transiently fails, `abMatch` is null and the status falls through
+//    to `unmerged` even though `aheadOfMain` defaults to 0. Since failed
+//    results are deliberately not cached (to allow retry), the next tick
+//    may succeed → `empty` again, causing the "Safe to delete" filter to
+//    bounce. The worktree carve-out preserves the intentional
+//    `empty→unmerged` demotion for branches checked out in a worktree
+//    (see the enrichment step in runRefreshOnce).
+//
+// 3. `stale`: NOT ratcheted. Stale is derived from `unmerged` + age, and
+//    the age check is pure arithmetic on the commit date — no subprocess
+//    can fail. Transitions like `stale→empty` (main fast-forwards past
+//    the branch) are legitimate and should not be blocked.
 function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
   if (prev.length === 0) return next;
   const prevByName = new Map(prev.map((b) => [b.name, b]));
@@ -50,12 +68,17 @@ function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
     if (!old) return b;
     // SHA moved — the branch has new commits; trust the fresh detection.
     if (old.lastCommitSha !== b.lastCommitSha) return b;
-    // Only protect statuses that depend on external APIs. Locally-derived
-    // statuses (empty, stale) can legitimately change without a SHA move
-    // (e.g. worktree attachment, main fast-forwarding past the branch).
+    // API-dependent statuses: always ratchet against regression.
     if (RATCHETED_STATUSES.has(old.mergeStatus) && !RATCHETED_STATUSES.has(b.mergeStatus)) {
       changed = true;
       return { ...b, mergeStatus: old.mergeStatus };
+    }
+    // Empty: ratchet against regression to unmerged, but allow the
+    // intentional empty→unmerged demotion when a worktree is attached
+    // (worktreePath is set by the enrichment step before the detector).
+    if (old.mergeStatus === 'empty' && b.mergeStatus === 'unmerged' && !b.worktreePath) {
+      changed = true;
+      return { ...b, mergeStatus: 'empty' as const };
     }
     return b;
   });
@@ -194,10 +217,27 @@ async function runRefreshOnce(): Promise<void> {
     // the conflict-detection filter, or a branch that was squash-merged on
     // the last tick but transiently unmerged on this tick would wrongly
     // enter the conflict-candidate set.
+    const prevBranches = useRepoStore.getState().branches;
     const ratcheted = ratchetBranchStatuses(
-      useRepoStore.getState().branches,
+      prevBranches,
       detect.updatedBranches,
     );
+
+    // Diagnostic: log merge-status changes between ticks so bouncing is
+    // visible in the dev console. Only fires when something actually changed.
+    if (prevBranches.length > 0) {
+      const prevByName = new Map(prevBranches.map((b) => [b.name, b]));
+      const diffs: string[] = [];
+      for (const b of ratcheted) {
+        const old = prevByName.get(b.name);
+        if (old && old.mergeStatus !== b.mergeStatus) {
+          diffs.push(`  ${b.name}: ${old.mergeStatus} → ${b.mergeStatus}`);
+        }
+      }
+      if (diffs.length > 0) {
+        console.log(`[refreshLoop] merge-status changes:\n${diffs.join('\n')}`);
+      }
+    }
 
     // Exclude worktrees whose branch is already merged (squash-merged or
     // merged-normally) from conflict detection — conflicts between them are
