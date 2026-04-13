@@ -97,10 +97,11 @@ fn git_exec_blocking(
     // When the user chose gh-cli auth, inject `credential.helper` so git
     // fetch/push authenticate via `gh auth git-credential` instead of
     // triggering the macOS `git-credential-osxkeychain` keychain prompt.
-    // The `-c` level has the highest priority, so this helper is tried
-    // first; if it succeeds, lower-level helpers (osxkeychain, etc.) are
-    // never consulted.
+    // An empty `credential.helper=` first resets the multi-valued helper
+    // list so system-level helpers (osxkeychain, etc.) are removed; then
+    // the gh helper is the only one git will consult.
     if auth_method == "gh-cli" {
+        cmd.arg("-c").arg("credential.helper=");
         cmd.arg("-c")
             .arg("credential.helper=!gh auth git-credential");
 
@@ -119,10 +120,13 @@ fn git_exec_blocking(
         if let Some(ref token) = auth_token {
             if !token.is_empty() {
                 // Pass the PAT via a private env var so it never shows in
-                // `ps` output. The shell function credential helper reads
-                // it on stdin's "get" operation and echoes it back to git.
-                // Scoped to github.com so the token is never accidentally
-                // sent to a non-GitHub remote.
+                // `ps` output. The shell credential helper receives "get"
+                // as $1 (argv) and echoes the token back to git. Scoped
+                // to github.com so the token is never accidentally sent to
+                // a non-GitHub remote. Reset the global helper list first
+                // so system-level helpers (osxkeychain, etc.) can't
+                // trigger prompts if the scoped helper fails.
+                cmd.arg("-c").arg("credential.helper=");
                 cmd.env("__WORKTREEHQ_PAT", token);
                 cmd.arg("-c").arg(concat!(
                     "credential.https://github.com.helper=",
