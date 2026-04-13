@@ -23,6 +23,44 @@ import {
   reconcileClaudePresence,
   reconcileConflictSummary,
 } from '../lib/structuralShare';
+import type { Branch, MergeStatus } from '../types';
+
+// Statuses whose detection depends on the GitHub API or other external
+// data that can transiently fail. A single cache miss or failed re-fetch
+// would bounce these back to unmerged, so the ratchet preserves them when
+// the branch SHA hasn't moved. Locally-derived statuses (empty, stale)
+// are cheap and deterministic — they don't need protection.
+const RATCHETED_STATUSES: ReadonlySet<MergeStatus> = new Set([
+  'squash-merged',
+  'merged-normally',
+]);
+
+// Apply a one-way ratchet: if the previous tick resolved a branch to an
+// API-dependent status and its SHA hasn't changed, keep the previous
+// status. This is critical for multi-commit squash merges that the
+// cherry-check can't detect — their squash-merged status depends entirely
+// on the GitHub API returning PR data, and a single failed re-fetch would
+// otherwise bounce them back to unmerged until the next successful fetch.
+function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
+  if (prev.length === 0) return next;
+  const prevByName = new Map(prev.map((b) => [b.name, b]));
+  let changed = false;
+  const out = next.map((b) => {
+    const old = prevByName.get(b.name);
+    if (!old) return b;
+    // SHA moved — the branch has new commits; trust the fresh detection.
+    if (old.lastCommitSha !== b.lastCommitSha) return b;
+    // Only protect statuses that depend on external APIs. Locally-derived
+    // statuses (empty, stale) can legitimately change without a SHA move
+    // (e.g. worktree attachment, main fast-forwarding past the branch).
+    if (RATCHETED_STATUSES.has(old.mergeStatus) && !RATCHETED_STATUSES.has(b.mergeStatus)) {
+      changed = true;
+      return { ...b, mergeStatus: old.mergeStatus };
+    }
+    return b;
+  });
+  return changed ? out : next;
+}
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -149,11 +187,23 @@ async function runRefreshOnce(): Promise<void> {
       name: remote.name,
     });
 
+    // Ratchet: prevent transient detection failures (API blip, subprocess
+    // error, cache miss) from bouncing resolved branches back to unmerged.
+    // Read the previous store snapshot here rather than relying on the one
+    // captured later for structural sharing — the ratchet must run before
+    // the conflict-detection filter, or a branch that was squash-merged on
+    // the last tick but transiently unmerged on this tick would wrongly
+    // enter the conflict-candidate set.
+    const ratcheted = ratchetBranchStatuses(
+      useRepoStore.getState().branches,
+      detect.updatedBranches,
+    );
+
     // Exclude worktrees whose branch is already merged (squash-merged or
     // merged-normally) from conflict detection — conflicts between them are
     // not actionable because the changes are already on main.
     const mergedBranches = new Set(
-      detect.updatedBranches
+      ratcheted
         .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged')
         .map((b) => b.name),
     );
@@ -187,7 +237,7 @@ async function runRefreshOnce(): Promise<void> {
     const reconciledWts = reconcileWorktrees(before.worktrees, wts);
     const reconciledBranches = reconcileBranches(
       before.branches,
-      detect.updatedBranches,
+      ratcheted,
     );
     const reconciledPresence = reconcileClaudePresence(
       before.claudePresence,

@@ -506,3 +506,160 @@ describe('fetch loop interval 0 (disabled)', () => {
     stopFetchLoop();
   });
 });
+
+describe('merge-status ratchet', () => {
+  function makeBranch(name: string, mergeStatus: string, sha = 'abc123') {
+    return {
+      name,
+      hasLocal: true,
+      hasRemote: true,
+      lastCommitDate: '2025-01-01T00:00:00+00:00',
+      lastCommitSha: sha,
+      aheadOfMain: mergeStatus === 'empty' ? 0 : 1,
+      behindMain: 0,
+      mergeStatus,
+    };
+  }
+
+  it('preserves squash-merged status when detection transiently regresses to unmerged', async () => {
+    // Tick 1: branch detected as squash-merged.
+    const squashBranch = makeBranch('feat/foo', 'squash-merged');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [squashBranch],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([squashBranch]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('squash-merged');
+
+    // Tick 2: same branch SHA, but detection fails to re-detect → unmerged.
+    const regressed = makeBranch('feat/foo', 'unmerged');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [regressed],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([regressed]);
+    await refreshOnce();
+
+    // Ratchet should preserve squash-merged.
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('squash-merged');
+  });
+
+  it('allows status upgrade from unmerged to squash-merged', async () => {
+    const unmerged = makeBranch('feat/bar', 'unmerged');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [unmerged],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([unmerged]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('unmerged');
+
+    const upgraded = makeBranch('feat/bar', 'squash-merged');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [upgraded],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([upgraded]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('squash-merged');
+  });
+
+  it('trusts fresh detection when the branch SHA changes', async () => {
+    const squashBranch = makeBranch('feat/baz', 'squash-merged', 'sha-old');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [squashBranch],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([squashBranch]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('squash-merged');
+
+    // Branch SHA moved — user pushed new work. Detection says unmerged; trust it.
+    const newWork = makeBranch('feat/baz', 'unmerged', 'sha-new');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [newWork],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([newWork]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('unmerged');
+  });
+
+  it('allows empty→unmerged demotion when worktree attachment changes', async () => {
+    // Tick 1: branch has no worktree, status is empty.
+    const emptyBranch = makeBranch('feat', 'empty');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [emptyBranch],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([emptyBranch]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
+
+    // Tick 2: user created a worktree for this branch (same SHA).
+    // The enrichment stage demotes empty→unmerged, and detectSquashMerges
+    // passes it through unchanged. The ratchet must NOT override back to
+    // empty because the worktree attachment changed.
+    asMock(git.listWorktrees).mockResolvedValueOnce([
+      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'clean', isBare: false },
+    ]);
+    const stillEmpty = makeBranch('feat', 'empty');
+    asMock(git.listBranches).mockResolvedValueOnce([stillEmpty]);
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }) => ({
+      updatedBranches: bs,
+      mappings: [],
+    }));
+    await refreshOnce();
+
+    const feat = useRepoStore.getState().branches.find((b) => b.name === 'feat')!;
+    expect(feat.mergeStatus).toBe('unmerged');
+    expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
+  });
+
+  it('does not ratchet locally-derived statuses (empty, stale)', async () => {
+    // empty and stale are derived from local git state, not external APIs,
+    // so the ratchet should not protect them from legitimate transitions.
+    const emptyBranch = makeBranch('feat/empty', 'empty');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [emptyBranch],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([emptyBranch]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
+
+    const regressed = makeBranch('feat/empty', 'unmerged');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [regressed],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([regressed]);
+    await refreshOnce();
+    // empty is not ratcheted — fresh detection is trusted.
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('unmerged');
+  });
+
+  it('allows stale→empty transition when main fast-forwards past the branch', async () => {
+    const staleBranch = makeBranch('feat/old', 'stale');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [staleBranch],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([staleBranch]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('stale');
+
+    // Main advanced to include this branch's commits — same branch SHA,
+    // but aheadOfMain drops to 0 so detection returns empty.
+    const nowEmpty = makeBranch('feat/old', 'empty');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [nowEmpty],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([nowEmpty]);
+    await refreshOnce();
+    // stale is not ratcheted — the transition to empty is allowed.
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
+  });
+});
