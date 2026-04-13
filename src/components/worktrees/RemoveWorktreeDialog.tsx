@@ -37,11 +37,15 @@ export function RemoveWorktreeDialog({
     !!worktree.inProgress;
   const requiresForce = dirty;
   // Tier the typed confirmation to actual blast radius. Worktree removal on a
-  // clean tree is reversible (`git worktree add` recreates it), and the opt-in
-  // local branch checkbox doesn't warrant typing on its own. Force-removing a
-  // dirty worktree discards uncommitted work; deleting the remote branch is
-  // team-visible. Either of those keeps the typing gate.
-  const requiresTyping = dirty || deleteRemote;
+  // clean tree with no branch cleanup is reversible (`git worktree add`
+  // recreates it). Each of the other paths is unrecoverable in some way:
+  // force-removing a dirty worktree discards uncommitted work; deleting the
+  // remote branch is team-visible; deleting the local branch here uses
+  // `git branch -D` (force=true at WorktreesView handleConfirmRemove) so it
+  // can silently drop unmerged commits — unlike the ConfirmDeleteDialog local
+  // path which uses `git -d` and is refused by git for unmerged branches.
+  // Any of those three keeps the typing gate.
+  const requiresTyping = dirty || deleteRemote || deleteLocal;
   const typedOk = !requiresTyping || typed === 'delete';
 
   useEffect(() => {
