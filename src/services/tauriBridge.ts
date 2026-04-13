@@ -41,6 +41,19 @@ export async function ghExec(args: string[]): Promise<GhExecResult> {
   return invoke<GhExecResult>('gh_exec', { args });
 }
 
+// ── git auth method bridge ─────────────────────────────────────────────
+// Tells the Rust git_exec command which auth method is active so it can
+// inject the right credential.helper for git fetch/push. Must be called
+// whenever the auth method changes (bootstrap + Settings save).
+
+export async function setGitAuthMethod(method: string, token?: string): Promise<void> {
+  try {
+    await invoke<void>('set_git_auth_method', { method, token: token ?? null });
+  } catch {
+    /* best-effort: non-Tauri env or bridge unavailable */
+  }
+}
+
 // ── OS keychain bridge ─────────────────────────────────────────────────
 
 export async function keychainStore(key: string, value: string): Promise<void> {
