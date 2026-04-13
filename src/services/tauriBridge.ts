@@ -162,6 +162,16 @@ export async function shellOpen(path: string, action: ShellOpenAction): Promise<
   await invoke<void>('shell_open', { path, action });
 }
 
+// Open a URL in the user's default browser via the OS launcher.
+// Falls back to window.open() outside Tauri (dev server, tests).
+export async function openUrl(url: string): Promise<void> {
+  try {
+    await invoke<void>('shell_open', { path: url, action: 'url' });
+  } catch {
+    window.open(url, '_blank', 'noopener');
+  }
+}
+
 export async function readPrCacheFile(): Promise<string> {
   try {
     return await invoke<string>('read_pr_cache');
