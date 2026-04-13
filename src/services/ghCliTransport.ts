@@ -56,8 +56,11 @@ export class GhCliTransport implements GithubTransport {
       // than falsely marking auth as broken.
       console.warn('[GhCliTransport] validateAuth inconclusive (unknown):', result.stderr);
       return 'valid';
-    } catch {
-      // ghExec throws when Tauri bridge is unavailable (tests, plain dev).
+    } catch (e: any) {
+      // ghExec throws when Tauri bridge is unavailable (tests, plain dev)
+      // or when the Rust command returns an error (e.g. "gh CLI not found"
+      // on PATH). Log so auth failures aren't silently invisible.
+      console.warn('[GhCliTransport] validateAuth error:', e?.message ?? e);
       return 'missing';
     }
   }

@@ -34,6 +34,20 @@ fn gh_exec_blocking(args: Vec<String>) -> AppResult<GhExecResult> {
     cmd.args(&args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    // On macOS, GUI apps launched from Finder/Dock inherit a minimal PATH
+    // (/usr/bin:/bin:/usr/sbin:/sbin). Homebrew tools like `gh` live in
+    // /opt/homebrew/bin (Apple Silicon) or /usr/local/bin (Intel), neither
+    // of which is on this default PATH. Extend it so `gh` is findable
+    // regardless of how the app was launched. `git` doesn't need this
+    // because Apple ships it at /usr/bin/git.
+    #[cfg(target_os = "macos")]
+    {
+        let path = std::env::var("PATH").unwrap_or_default();
+        if !path.contains("/opt/homebrew/bin") || !path.contains("/usr/local/bin") {
+            cmd.env("PATH", format!("{path}:/opt/homebrew/bin:/usr/local/bin"));
+        }
+    }
+
     // GH_PROMPT_DISABLED=1 prevents gh from ever trying to prompt for auth
     // interactively — same rationale as GIT_TERMINAL_PROMPT=0 in git_exec.
     // NO_COLOR=1 strips ANSI codes from output so JSON parsing is clean.
