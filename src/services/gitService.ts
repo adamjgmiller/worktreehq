@@ -33,6 +33,33 @@ export async function checkGitAvailable(repo: string): Promise<string | null> {
   return out.startsWith('git version') ? out.trim() : null;
 }
 
+// ─── Git version detection ───────────────────────────────────────────────
+// Parsed once at bootstrap via setGitVersion(). Used by simulateMerge() to
+// decide between the old three-argument `merge-tree` form and the modern
+// `--write-tree` form (git 2.38+), which properly detects delete/modify,
+// binary, rename/delete, and submodule conflicts via exit code.
+
+let gitMajorMinor: [number, number] = [0, 0];
+
+/** Parse "git version X.Y.Z" into [major, minor]. Returns [0, 0] on failure. */
+export function parseGitVersion(versionString: string): [number, number] {
+  const m = versionString.match(/(\d+)\.(\d+)/);
+  if (!m) return [0, 0];
+  return [parseInt(m[1], 10), parseInt(m[2], 10)];
+}
+
+/** Store the parsed git version for the lifetime of the process. Called once
+ *  at bootstrap by useRepoBootstrap after checkGitAvailable(). */
+export function setGitVersion(versionString: string): void {
+  gitMajorMinor = parseGitVersion(versionString);
+}
+
+/** True when the installed git supports `merge-tree --write-tree` (>= 2.38). */
+export function supportsWriteTree(): boolean {
+  const [major, minor] = gitMajorMinor;
+  return major > 2 || (major === 2 && minor >= 38);
+}
+
 export async function getDefaultBranch(repo: string): Promise<string> {
   const head = await tryRun(repo, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   const m = head.trim().match(/^origin\/(.+)$/);
@@ -899,7 +926,12 @@ export async function getChangedFiles(
 ): Promise<string[]> {
   // Three-dot diff: files changed on branch since it diverged from defaultBranch.
   // tryRun so a transient failure degrades to "no files" for one tick.
-  const out = await tryRun(repo, ['diff', '--name-only', `origin/${defaultBranch}...${branch}`]);
+  // --no-renames decomposes renames into delete+add so both the old and new
+  // paths appear in the file set. Without this, git's rename detection shows
+  // only the new name, and a rename/modify conflict (branch A renames foo→bar,
+  // branch B modifies foo) would have no file overlap — the pair would be
+  // skipped by Phase 2's prefilter before simulateMerge could detect it.
+  const out = await tryRun(repo, ['diff', '--no-renames', '--name-only', `origin/${defaultBranch}...${branch}`]);
   return out.split('\n').filter(Boolean);
 }
 
@@ -921,31 +953,153 @@ export async function getMergeBase(
   return (await tryRun(repo, ['merge-base', refA, refB])).trim();
 }
 
+export interface MergeSimResult {
+  hasConflicts: boolean;
+  /** Raw stdout — populated on the legacy path for `parseMergeTreeOutput`;
+   *  empty on the modern `--write-tree` path (not needed). */
+  output: string;
+  /** File paths git reports as conflicted. Populated only on the modern
+   *  `--write-tree --name-only` path; empty on the legacy path (callers
+   *  fall back to `parseMergeTreeOutput` + `<<<<<<<` marker parsing). */
+  conflictedFiles: string[];
+  /** Per-file informational messages from git merge-tree (modern path only).
+   *  Contains lines like "CONFLICT (content): Merge conflict in file.txt"
+   *  that the UI can show as conflict descriptions. Keyed by file path. */
+  infoByFile: Map<string, string>;
+}
+
+/**
+ * Best-effort parser for git merge-tree informational messages. Extracts file
+ * paths from known message formats and maps them to their full message text.
+ *
+ * Git explicitly states these messages are "not designed to be machine
+ * parseable", so this is inherently best-effort. The `conflictedFiles` list
+ * from `--name-only` is the authoritative source; `infoByFile` is decoration
+ * for the ConflictPairDetail UI. Files that don't match any pattern get the
+ * generic fallback in the conflict detector.
+ */
+export function parseConflictMessages(messageSection: string): Map<string, string> {
+  const infoByFile = new Map<string, string>();
+  if (!messageSection) return infoByFile;
+
+  for (const line of messageSection.split('\n').filter((l) => l.trim())) {
+    let filePath: string | undefined;
+
+    // 1. Auto-merging: "Auto-merging path/to/file.txt"
+    const autoMatch = line.match(/^Auto-merging\s+(.+)$/);
+    if (autoMatch) {
+      filePath = autoMatch[1].trim();
+    }
+
+    // 2. modify/delete: "CONFLICT (modify/delete): <file> deleted in <ref> ..."
+    //    The filename comes FIRST, before "deleted in" / "modified in".
+    //    Use (.+?) (not \S+) so paths with spaces are captured fully.
+    if (!filePath) {
+      const modDelMatch = line.match(
+        /^CONFLICT\s+\((?:modify\/delete|delete\/modify)\):\s+(.+?)\s+(?:deleted|modified)\s+in\s+/,
+      );
+      if (modDelMatch) filePath = modDelMatch[1];
+    }
+
+    // 3. rename/delete and rename/rename: "CONFLICT (rename/delete): <old> renamed ..."
+    //    Use (.+?) anchored on " renamed" so spaced paths work.
+    if (!filePath) {
+      const renameMatch = line.match(/^CONFLICT\s+\(rename\/\w+\):\s+(.+?)\s+renamed\s+/);
+      if (renameMatch) filePath = renameMatch[1];
+    }
+
+    // 4. content, binary, submodule: "CONFLICT (<type>): Merge conflict in <file>"
+    if (!filePath) {
+      const contentMatch = line.match(
+        /^CONFLICT\s+\([^)]+\):.*\bMerge conflict in\s+(.+?)\.?\s*$/,
+      );
+      if (contentMatch) filePath = contentMatch[1].trim();
+    }
+
+    // 5. Generic fallback: first path-looking token (contains / or .)
+    if (!filePath) {
+      const genericMatch = line.match(/^CONFLICT\s+\([^)]+\):\s+(\S+)/);
+      if (genericMatch && (genericMatch[1].includes('/') || genericMatch[1].includes('.'))) {
+        filePath = genericMatch[1];
+      }
+    }
+
+    if (filePath) {
+      // Accumulate all messages for a given file (there can be multiple,
+      // e.g. Auto-merging + CONFLICT for the same file).
+      const existing = infoByFile.get(filePath);
+      infoByFile.set(filePath, existing ? existing + '\n' + line : line);
+    }
+  }
+  return infoByFile;
+}
+
 /**
  * Simulate a three-way merge without touching the worktree or index.
- * Uses the three-argument form of `git merge-tree` for broad git version
- * compatibility (works on all versions; the newer `--write-tree` form
- * requires git 2.38+).
  *
- * NOTE: The three-argument (old) form of `git merge-tree` always exits 0
- * regardless of conflicts. The `hasConflicts` field is set based on exit
- * code, so it may always be `false` with this form. Callers that need
- * reliable conflict detection should parse the output for `<<<<<<<`
- * markers instead of relying on `hasConflicts`.
+ * Two paths depending on installed git version (set at bootstrap via
+ * `setGitVersion`):
+ *
+ * **Modern (git >= 2.38):** `merge-tree --write-tree --name-only`
+ *   - Exit 0 = clean, exit 1 = conflicts
+ *   - `conflictedFiles` contains the list of conflicted paths
+ *   - `infoByFile` maps file paths to their informational messages
+ *     (e.g. "CONFLICT (content): Merge conflict in file.txt")
+ *   - Detects ALL conflict types (delete/modify, binary, rename/delete,
+ *     submodule, file-mode) — not just textual `<<<<<<<` conflicts
+ *   - Computes merge-base internally; `mergeBase` param is ignored
+ *
+ * **Legacy (git < 2.38):** three-argument `merge-tree <base> <A> <B>`
+ *   - Always exits 0 regardless of conflicts
+ *   - Callers must parse `output` for `<<<<<<<` markers
+ *   - `conflictedFiles` is empty; `mergeBase` param is required
  */
 export async function simulateMerge(
   repo: string,
   mergeBase: string,
   refA: string,
   refB: string,
-): Promise<{ hasConflicts: boolean; output: string }> {
-  // Raw gitExec: we need both exit code and stdout.
-  // The old three-argument form always exits 0, so conflict detection
-  // relies on parsing `<<<<<<<` markers in the output, not the exit code.
+): Promise<MergeSimResult> {
   try {
+    if (supportsWriteTree()) {
+      // --name-only gives us file names; we omit --no-messages so that
+      // informational lines (CONFLICT, Auto-merging) are included after
+      // the file list. These messages let the UI show conflict details
+      // without needing a second merge-tree invocation.
+      const r = await gitExec(repo, [
+        'merge-tree', '--write-tree', '--name-only',
+        refA, refB,
+      ]);
+      // Exit 0 = clean, exit 1 = conflicts. Anything else is an error
+      // (e.g. unrelated histories, missing ref) — treat as no-conflict
+      // and let the caller degrade gracefully.
+      //
+      // Output format (with --name-only, without --no-messages):
+      //   <tree-sha>\n
+      //   <conflicted-file-1>\n     ← only when exit 1
+      //   <conflicted-file-2>\n
+      //   \n                        ← blank line separator
+      //   Auto-merging file.txt\n   ← informational messages
+      //   CONFLICT (content): Merge conflict in file.txt\n
+      const raw = r.stdout;
+      const sectionSplit = raw.indexOf('\n\n');
+      const fileSection = sectionSplit !== -1 ? raw.slice(0, sectionSplit) : raw;
+      const messageSection = sectionSplit !== -1 ? raw.slice(sectionSplit + 2) : '';
+
+      const fileLines = fileSection.split('\n');
+      // First line is always the tree SHA; remaining lines are conflicted
+      // file paths (only present when exit code is 1).
+      const conflictedFiles = fileLines.slice(1).map((l) => l.trim()).filter(Boolean);
+
+      const infoByFile = parseConflictMessages(messageSection);
+
+      return { hasConflicts: r.code === 1, output: '', conflictedFiles, infoByFile };
+    }
+    // Legacy path: three-argument form always exits 0, so hasConflicts is
+    // always false here. Callers must parse `output` for `<<<<<<<` markers.
     const r = await gitExec(repo, ['merge-tree', mergeBase, refA, refB]);
-    return { hasConflicts: r.code !== 0, output: r.stdout };
+    return { hasConflicts: false, output: r.stdout, conflictedFiles: [], infoByFile: new Map() };
   } catch {
-    return { hasConflicts: false, output: '' };
+    return { hasConflicts: false, output: '', conflictedFiles: [], infoByFile: new Map() };
   }
 }

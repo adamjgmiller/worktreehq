@@ -40,6 +40,20 @@ describe('applyPreset', () => {
     ).map((x) => x.name);
     expect(out).toContain('old-empty');
   });
+  it('safe-to-delete excludes empty branches with missing date (safe direction)', () => {
+    const out = applyPreset(
+      [...branches, b({ name: 'no-date', mergeStatus: 'empty', lastCommitDate: '' })],
+      'safe-to-delete',
+    ).map((x) => x.name);
+    expect(out).not.toContain('no-date');
+  });
+  it('safe-to-delete excludes empty branches with unparseable date (safe direction)', () => {
+    const out = applyPreset(
+      [...branches, b({ name: 'bad-date', mergeStatus: 'empty', lastCommitDate: 'not-a-date' })],
+      'safe-to-delete',
+    ).map((x) => x.name);
+    expect(out).not.toContain('bad-date');
+  });
   it('safe-to-delete excludes empty branches created today', () => {
     const out = applyPreset(
       [...branches, b({ name: 'fresh', mergeStatus: 'empty', lastCommitDate: new Date().toISOString() })],

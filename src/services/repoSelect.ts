@@ -7,7 +7,7 @@
 
 import { useRepoStore } from '../store/useRepoStore';
 import { invoke, updateConfig } from './tauriBridge';
-import { getDefaultBranch, getRemoteUrl } from './gitService';
+import { checkGitAvailable, setGitVersion, getDefaultBranch, getRemoteUrl } from './gitService';
 import { refreshOnce } from './refreshLoop';
 import { readWorktreeOrder } from './worktreeOrderService';
 
@@ -73,6 +73,19 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
       setError(`Not a git repository: ${info.path}`);
       return false;
     }
+    // Ensure the git version is detected so supportsWriteTree() works.
+    // On the normal bootstrap path useRepoBootstrap handles this, but when
+    // the user picks a repo on first launch (no last_repo_path) or switches
+    // repos at runtime, bootstrap may have exited early before calling
+    // setGitVersion — leaving gitMajorMinor at [0,0].
+    const gitVersion = await checkGitAvailable(info.path);
+    if (!gitVersion) {
+      setError(
+        'git is not installed or not on your PATH. WorktreeHQ requires git — install it and restart the app.',
+      );
+      return false;
+    }
+    setGitVersion(gitVersion);
     const defaultBranch = await getDefaultBranch(info.path);
     const remote = await getRemoteUrl(info.path);
     // Drop the previous repo's collections BEFORE flipping `repo`. App.tsx
