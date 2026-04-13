@@ -78,10 +78,9 @@ npm run tauri build    # produces a platform installer in src-tauri/target/relea
 ### First run
 
 1. Launch the app inside any git repository, or click the folder icon in the top bar to pick one. Recently-used repos are remembered in a dropdown.
-2. (Optional but recommended) Add a GitHub Personal Access Token in **Settings** to enable squash-merge detection and PR enrichment.
-   - **Scopes needed**: `public_repo` for open-source repos, or `repo` for private repositories
-   - The token is stored locally in `~/.config/worktreehq/config.toml` and is only sent to `api.github.com`
-   - You can also set `GITHUB_TOKEN` as an environment variable; the app will use it as a fallback if no token is configured in Settings
+2. (Optional but recommended) Set up GitHub auth in **Settings** to enable squash-merge detection and PR enrichment. Two options:
+   - **GitHub CLI** (recommended) — install [`gh`](https://cli.github.com/), run `gh auth login`, and the app auto-detects it. No token stored by this app.
+   - **Personal access token** — fine-grained PAT with Pull requests (read) scope. Stored in your OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service), not on disk.
 
 ## Architecture
 

@@ -11,14 +11,13 @@ import type {
   WorktreeSortMode,
 } from '../types';
 import { initialThemePreference, type ThemePreference } from '../hooks/useTheme';
+import type { AuthMethod } from '../services/githubService';
 
-// GitHub token auth state. Distinguishes "no token configured" from "token
-// configured but rejected by GitHub" so the UI can surface an expired/revoked
-// PAT as loudly as a missing one — previously both showed as green "auth" if
-// the string was non-empty, and a stale token silently stopped enriching PR
-// data with no visible explanation. 'checking' is the transient bootstrap
-// state before validateToken() resolves; displayed as the 'missing' yellow
-// pill color to avoid a fourth visible state.
+// GitHub auth state. Distinguishes "no auth configured" from "auth configured
+// but rejected by GitHub" so the UI can surface an expired/revoked credential
+// as loudly as a missing one. 'checking' is the transient bootstrap state
+// before validateToken() resolves; displayed as the 'missing' yellow pill
+// color to avoid a fourth visible state.
 export type GithubAuthStatus = 'missing' | 'checking' | 'valid' | 'invalid';
 
 // Zoom is clamped to [ZOOM_MIN, ZOOM_MAX] in the setter. Range matches the
@@ -54,6 +53,9 @@ interface StoreState {
   error: string | null;
   lastRefresh: number;
   githubAuthStatus: GithubAuthStatus;
+  // Which auth transport is active: 'gh-cli' (preferred), 'pat' (fallback), or
+  // 'none'. Drives the Settings modal radio selection and the RepoBar pill icon.
+  authMethod: AuthMethod;
   // The repo path the current `worktrees`/`branches`/`mainCommits`/`squashMappings`
   // collections correspond to. Set inside `runRefreshOnce` only on success.
   // App.tsx gates the content region on `dataRepoPath === repo.path` so:
@@ -112,6 +114,7 @@ interface StoreState {
   setLastFetchError: (e: string | null) => void;
   setError: (e: string | null) => void;
   setGithubAuthStatus: (s: GithubAuthStatus) => void;
+  setAuthMethod: (m: AuthMethod) => void;
   setDataRepoPath: (p: string | null) => void;
   setRefreshInterval: (ms: number) => void;
   setFetchInterval: (ms: number) => void;
@@ -165,6 +168,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   // never runs (non-Tauri test env, early error), the pill is hidden behind
   // the error banner anyway, so the initial value is irrelevant in that path.
   githubAuthStatus: 'checking',
+  authMethod: 'none' as AuthMethod,
   dataRepoPath: null,
   // 15s default. The watcher (scoped to .git/) covers the immediacy case
   // for actual git changes, so the poll loop just needs to be a safety net.
@@ -212,6 +216,7 @@ export const useRepoStore = create<StoreState>((set) => ({
   setLastFetchError: (lastFetchError) => set({ lastFetchError }),
   setError: (error) => set({ error }),
   setGithubAuthStatus: (githubAuthStatus) => set({ githubAuthStatus }),
+  setAuthMethod: (authMethod) => set({ authMethod }),
   setDataRepoPath: (dataRepoPath) => set({ dataRepoPath }),
   setRefreshInterval: (refreshIntervalMs) => set({ refreshIntervalMs }),
   setFetchInterval: (fetchIntervalMs) => set({ fetchIntervalMs }),

@@ -11,6 +11,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::git_exec::git_exec,
+            commands::gh_exec::gh_exec,
+            commands::keychain::keychain_store,
+            commands::keychain::keychain_read,
+            commands::keychain::keychain_delete,
             commands::repo::resolve_repo,
             commands::config::read_config,
             commands::config::write_config,

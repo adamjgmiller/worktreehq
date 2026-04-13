@@ -47,6 +47,7 @@ vi.mock('./conflictDetector', () => ({
 
 import * as git from './gitService';
 import * as github from './githubService';
+import type { AuthMethod } from './githubService';
 import * as squash from './squashDetector';
 import * as claude from './claudeAwarenessService';
 import * as conflicts from './conflictDetector';
@@ -71,6 +72,7 @@ function resetStore() {
     error: null,
     lastRefresh: 0,
     githubAuthStatus: 'checking',
+    authMethod: 'none' as AuthMethod,
   });
 }
 
