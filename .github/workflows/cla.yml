@@ -14,6 +14,10 @@ permissions:
 jobs:
   cla:
     runs-on: ubuntu-latest
+    # Skip CLA entirely for repo owner; only enforce for external contributors
+    if: >-
+      github.event_name == 'issue_comment' ||
+      github.event.pull_request.user.login != 'adamjgmiller'
     steps:
       - name: CLA Assistant
         if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
