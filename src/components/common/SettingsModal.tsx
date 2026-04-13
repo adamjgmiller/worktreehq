@@ -260,7 +260,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 {ghChecking
                   ? 'Checking for gh CLI...'
                   : ghDetected
-                    ? 'Detected and authenticated. No token stored by this app.'
+                    ? 'Detected and authenticated. Credentials stay in gh — never exposed to git subprocesses.'
                     : 'Not detected. Install from cli.github.com, then run gh auth login.'}
               </p>
             </div>
