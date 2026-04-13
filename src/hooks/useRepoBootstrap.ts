@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
-import { invoke, isTauri, keychainRead } from '../services/tauriBridge';
+import { invoke, isTauri, keychainRead, setGitAuthMethod } from '../services/tauriBridge';
 import {
   hydratePrCache,
   initGithub,
@@ -93,6 +93,7 @@ async function detectAndInitAuth(
   if (cfg.auth_method === 'gh-cli') {
     initGithub('gh-cli');
     setAuthMethod('gh-cli');
+    void setGitAuthMethod('gh-cli');
     validateAndRefresh();
     return;
   }
@@ -104,6 +105,7 @@ async function detectAndInitAuth(
     if (token) {
       initGithub('pat', token);
       setAuthMethod('pat');
+      void setGitAuthMethod('pat', token);
       validateAndRefresh();
       return;
     }
@@ -111,6 +113,7 @@ async function detectAndInitAuth(
     // rather than auto-detect, so the user's explicit choice is respected.
     initGithub('none');
     setAuthMethod('none');
+    void setGitAuthMethod('none');
     setGithubAuthStatus('missing');
     return;
   }
@@ -118,6 +121,7 @@ async function detectAndInitAuth(
   if (cfg.auth_method === 'none') {
     initGithub('none');
     setAuthMethod('none');
+    void setGitAuthMethod('none');
     setGithubAuthStatus('missing');
     return;
   }
@@ -128,6 +132,7 @@ async function detectAndInitAuth(
   if (ghAvailable) {
     initGithub('gh-cli');
     setAuthMethod('gh-cli');
+    void setGitAuthMethod('gh-cli');
     // Persist so subsequent launches skip the subprocess detection.
     // Re-read config to avoid overwriting fields changed by concurrent
     // writers (repoSelect, Settings, etc.) since bootstrap captured `cfg`.
@@ -144,6 +149,7 @@ async function detectAndInitAuth(
   if (keychainToken) {
     initGithub('pat', keychainToken);
     setAuthMethod('pat');
+    void setGitAuthMethod('pat', keychainToken);
     // Persist so subsequent launches skip the detection cascade.
     // Re-read config to avoid overwriting fields changed by concurrent
     // writers (repoSelect, Settings, etc.) since bootstrap captured `cfg`.
@@ -157,6 +163,7 @@ async function detectAndInitAuth(
   // No auth available
   initGithub('none');
   setAuthMethod('none');
+  void setGitAuthMethod('none');
   setGithubAuthStatus('missing');
 }
 
