@@ -993,16 +993,18 @@ export function parseConflictMessages(messageSection: string): Map<string, strin
 
     // 2. modify/delete: "CONFLICT (modify/delete): <file> deleted in <ref> ..."
     //    The filename comes FIRST, before "deleted in" / "modified in".
+    //    Use (.+?) (not \S+) so paths with spaces are captured fully.
     if (!filePath) {
       const modDelMatch = line.match(
-        /^CONFLICT\s+\((?:modify\/delete|delete\/modify)\):\s+(\S+)\s+(?:deleted|modified)\s+in\s+/,
+        /^CONFLICT\s+\((?:modify\/delete|delete\/modify)\):\s+(.+?)\s+(?:deleted|modified)\s+in\s+/,
       );
       if (modDelMatch) filePath = modDelMatch[1];
     }
 
     // 3. rename/delete and rename/rename: "CONFLICT (rename/delete): <old> renamed ..."
+    //    Use (.+?) anchored on " renamed" so spaced paths work.
     if (!filePath) {
-      const renameMatch = line.match(/^CONFLICT\s+\(rename\/\w+\):\s+(\S+)\s+/);
+      const renameMatch = line.match(/^CONFLICT\s+\(rename\/\w+\):\s+(.+?)\s+renamed\s+/);
       if (renameMatch) filePath = renameMatch[1];
     }
 

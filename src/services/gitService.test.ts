@@ -879,6 +879,24 @@ describe('parseConflictMessages', () => {
     );
   });
 
+  it('handles modify/delete with spaces in path', () => {
+    const result = parseConflictMessages(
+      'CONFLICT (modify/delete): docs/Release Notes.md deleted in feat-b and modified in feat-a.',
+    );
+    expect(result.get('docs/Release Notes.md')).toBe(
+      'CONFLICT (modify/delete): docs/Release Notes.md deleted in feat-b and modified in feat-a.',
+    );
+  });
+
+  it('handles rename/delete with spaces in path', () => {
+    const result = parseConflictMessages(
+      'CONFLICT (rename/delete): my folder/old name.ts renamed to my folder/new name.ts in feat-a, but deleted in feat-b.',
+    );
+    expect(result.get('my folder/old name.ts')).toBe(
+      'CONFLICT (rename/delete): my folder/old name.ts renamed to my folder/new name.ts in feat-a, but deleted in feat-b.',
+    );
+  });
+
   it('accumulates multiple messages for the same file', () => {
     const input = [
       'Auto-merging src/shared.ts',
