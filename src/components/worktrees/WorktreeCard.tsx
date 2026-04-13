@@ -36,7 +36,7 @@ import { relativeTime, shortSha, aheadBehind, basename } from '../../lib/format'
 import { resumeCommand } from '../../services/claudeAwarenessService';
 import { pullFastForward } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
-import { readClaudeSessionFirstPrompt, shellOpen } from '../../services/tauriBridge';
+import { readClaudeSessionFirstPrompt, shellOpen, openUrl } from '../../services/tauriBridge';
 import { fileManagerLabel } from '../../lib/platform';
 import { useRepoStore } from '../../store/useRepoStore';
 import { Tooltip } from '../common/Tooltip';
@@ -417,16 +417,14 @@ function WorktreeCardInner({
             </Tooltip>
           )}
           {branchInfo?.pr ? (
-            <a
-              href={branchInfo.pr.url}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              onClick={() => openUrl(branchInfo.pr!.url)}
               className="inline-flex items-center gap-0.5 text-[0.625rem] font-mono text-wt-info hover:underline"
               title={branchInfo.pr.title}
             >
               #{branchInfo.pr.number}
               <ExternalLink className="w-2.5 h-2.5" />
-            </a>
+            </button>
           ) : !isOnDefaultBranch && branchInfo && authStatus !== 'valid' && authStatus !== 'checking' ? (
             <Tooltip label="PR status requires GitHub auth">
               <button

@@ -11,6 +11,10 @@ pub fn shell_open(path: String, action: String) -> AppResult<()> {
     if path.is_empty() {
         return Err(AppError::Msg("shell_open: path is empty".into()));
     }
+    // URL action has its own validation — skip the filesystem existence check.
+    if action == "url" {
+        return open_url(&path);
+    }
     if !std::path::Path::new(&path).exists() {
         return Err(AppError::Msg(format!("path does not exist: {path}")));
     }
@@ -96,4 +100,35 @@ fn open_terminal(path: &str) -> AppResult<()> {
             "No terminal emulator found. Install one of: gnome-terminal, konsole, alacritty, kitty, xterm.".into(),
         )),
     }
+}
+
+// ── Open URL in default browser ───────────────────────────────────────
+// Accepts only https:// URLs. Uses the same OS launcher as open_file_manager
+// — `open`, `xdg-open`, and `start` all handle URLs natively.
+
+fn open_url(url: &str) -> AppResult<()> {
+    if !url.starts_with("https://") {
+        return Err(AppError::Msg(format!(
+            "shell_open url: only https:// URLs are allowed, got: {url}"
+        )));
+    }
+    open_url_platform(url)
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_platform(url: &str) -> AppResult<()> {
+    Command::new("open").arg(url).spawn()?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn open_url_platform(url: &str) -> AppResult<()> {
+    Command::new("cmd").args(["/c", "start", "", url]).spawn()?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn open_url_platform(url: &str) -> AppResult<()> {
+    Command::new("xdg-open").arg(url).spawn()?;
+    Ok(())
 }

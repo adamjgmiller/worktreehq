@@ -3,6 +3,7 @@ import type { Branch, ChecksStatus, ReviewDecision } from '../../types';
 import type { GithubAuthStatus } from '../../store/useRepoStore';
 import { mergeStatusClass, mergeStatusLabel, mergeStatusTooltip } from '../../lib/colors';
 import { relativeTime, aheadBehind, shortSha } from '../../lib/format';
+import { openUrl } from '../../services/tauriBridge';
 import {
   HardDrive,
   Cloud,
@@ -159,15 +160,13 @@ export function BranchRow({
       <td className="px-3 py-3 text-xs">
         {branch.pr ? (
           <div className="flex items-center gap-2">
-            <a
-              href={branch.pr.url}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              onClick={() => openUrl(branch.pr!.url)}
               className="text-wt-info hover:underline inline-flex items-center gap-1"
             >
               #{branch.pr.number}
               <ExternalLink className="w-3 h-3" />
-            </a>
+            </button>
             {branch.pr.isDraft && (
               <Tooltip label="Draft PR — not yet ready for review">
                 <span className="px-1.5 py-0.5 text-[0.5625rem] font-mono border border-wt-border text-wt-fg-2 rounded uppercase">
