@@ -128,8 +128,12 @@ async function detectAndInitAuth(
   if (ghAvailable) {
     initGithub('gh-cli');
     setAuthMethod('gh-cli');
-    // Persist so subsequent launches skip the subprocess detection
-    void invoke('write_config', { cfg: { ...cfg, auth_method: 'gh-cli' } });
+    // Persist so subsequent launches skip the subprocess detection.
+    // Re-read config to avoid overwriting fields changed by concurrent
+    // writers (repoSelect, Settings, etc.) since bootstrap captured `cfg`.
+    void invoke<AppConfig>('read_config')
+      .then((fresh) => invoke('write_config', { cfg: { ...fresh, auth_method: 'gh-cli' } }))
+      .catch(() => {});
     validateAndRefresh();
     return;
   }
@@ -140,8 +144,12 @@ async function detectAndInitAuth(
   if (keychainToken) {
     initGithub('pat', keychainToken);
     setAuthMethod('pat');
-    // Persist so subsequent launches skip the detection cascade
-    void invoke('write_config', { cfg: { ...cfg, auth_method: 'pat' } });
+    // Persist so subsequent launches skip the detection cascade.
+    // Re-read config to avoid overwriting fields changed by concurrent
+    // writers (repoSelect, Settings, etc.) since bootstrap captured `cfg`.
+    void invoke<AppConfig>('read_config')
+      .then((fresh) => invoke('write_config', { cfg: { ...fresh, auth_method: 'pat' } }))
+      .catch(() => {});
     validateAndRefresh();
     return;
   }
