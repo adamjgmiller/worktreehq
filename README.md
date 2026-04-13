@@ -1,10 +1,31 @@
 # WorktreeHQ
 
+[![License: PolyForm Shield 1.0.0](https://img.shields.io/badge/License-PolyForm%20Shield%201.0.0-blue.svg)](https://polyformproject.org/licenses/shield/1.0.0/)
+![macOS](https://img.shields.io/badge/macOS-supported-success)
+![Linux](https://img.shields.io/badge/Linux-supported-success)
+![Windows](https://img.shields.io/badge/Windows-experimental-yellow)
+
 **A squash-merge-aware git worktree dashboard for developers running parallel AI coding sessions.**
 
 > v0.x — early, actively developed. Currently builds from source; pre-built binaries are not yet provided.
 
-<img width="1533" height="1219" alt="WorktreeHQ-Screenshot-4" src="https://github.com/user-attachments/assets/7df7fe57-4018-488b-9299-56c0cbbc57d4" />
+<!-- 
+  DEMO VIDEO — replace this placeholder after uploading your .mp4:
+  1. Open any GitHub issue comment box on this repo
+  2. Drag-and-drop your video file to upload it
+  3. Copy the resulting https://github.com/user-attachments/assets/... URL
+  4. Replace this entire comment block and the paragraph below with:
+  
+  <video src="YOUR_VIDEO_URL" width="100%" autoplay loop muted playsinline></video>
+
+  For a non-GitHub fallback (npm, crates.io, etc.), wrap it in a link with a thumbnail:
+  <a href="YOUR_VIDEO_URL">
+    <img src="YOUR_THUMBNAIL_URL" alt="WorktreeHQ demo" width="100%">
+  </a>
+-->
+<p align="center"><em>Demo video coming soon</em></p>
+
+> **[See all screenshots &rarr;](./SCREENSHOTS.md)** — light and dark themes, every tab, bulk operations, and more.
 
 ## Why this exists
 
@@ -75,6 +96,8 @@ npm run tauri dev      # development build with hot reload
 npm run tauri build    # produces a platform installer in src-tauri/target/release/bundle/
 ```
 
+> **macOS note:** The build output is unsigned. macOS Gatekeeper will block the first launch — right-click the app and choose **Open** to bypass it.
+
 ### First run
 
 1. Launch the app inside any git repository, or click the folder icon in the top bar to pick one. Recently-used repos are remembered in a dropdown.
@@ -94,7 +117,7 @@ For full architecture details, the squash-detection algorithm, persistence locat
 
 This project is **v0.x** — actively developed, breaking changes possible. Known limitations:
 
-- **Build from source only.** No pre-built installers yet. macOS Gatekeeper will require you to right-click → Open the first launch of any locally-built binary (the bundles are unsigned).
+- **Build from source only.** No pre-built installers yet.
 - **One repo at a time.** Multi-repo support is not in scope; the recent-repos dropdown lets you switch between recently-used repos quickly instead.
 - **Read-only except for branch deletion and worktree create/remove.** No commit, push, pull (other than the explicit "pull main" action), diff viewer, or merge-conflict tooling. WorktreeHQ is designed to *complement* your existing git workflow, not replace it.
 - **Claude session detection is macOS + Linux only.** On Windows, the "idle vs. closed" distinction degrades gracefully — the rest of the Claude awareness features still work. PRs to add a Windows scanner welcome.
@@ -103,8 +126,21 @@ This project is **v0.x** — actively developed, breaking changes possible. Know
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the dev loop, conventions, and how to file issues. Contributors should also read [`CLAUDE.md`](./CLAUDE.md) for the load-bearing architecture decisions before adding new features.
 
+All contributions require signing a one-time [Contributor License Agreement](./CLA.md) — a bot will prompt you on your first pull request.
+
 Security issues: please use the private reporting process in [`SECURITY.md`](./SECURITY.md), not the public issue tracker.
 
 ## License
 
-[MIT](./LICENSE) © 2026 Adam Miller
+This project is licensed under the [PolyForm Shield License 1.0.0](https://polyformproject.org/licenses/shield/1.0.0/).
+
+**What this means in practice:**
+
+- You can use this software for any purpose — personal, internal, commercial — as long as you're not competing with this project or products offered using it.
+- You can modify the code and distribute your modifications.
+- You can use it inside your company, in your product, for your clients.
+- You cannot take this software (or a fork of it) and offer it as a competing product or service.
+
+For the vast majority of users, this license works exactly like a permissive open source license. The only restriction is on direct competition.
+
+If you have questions about whether your use case is permitted, [open an issue](https://github.com/adamjgmiller/worktreehq/issues) and ask.

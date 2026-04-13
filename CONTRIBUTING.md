@@ -2,6 +2,21 @@
 
 Thanks for your interest! WorktreeHQ is a small, opinionated project. The bar for PRs is "the tests pass, the change is focused, and [`CLAUDE.md`](./CLAUDE.md) still describes reality after your change."
 
+## Contributor License Agreement (CLA)
+
+Before your first contribution can be merged, you'll need to sign our
+[Contributor License Agreement](CLA.md). This is a one-time process —
+a bot will prompt you on your first pull request.
+
+**Why do we have a CLA?** This project is licensed under PolyForm Shield, and
+the CLA ensures that we retain the flexibility to adjust the license in the
+future — for example, to make it more permissive. Without a CLA, every
+contributor would need to individually consent to any license change, which
+becomes impractical as the project grows.
+
+You retain copyright over your contributions. The CLA grants a broad license
+to the project maintainer, but does not transfer ownership.
+
 ## Dev loop
 
 ```bash
@@ -72,4 +87,4 @@ This project follows the [Contributor Covenant 2.1](./CODE_OF_CONDUCT.md). Be ki
 
 ## License
 
-By contributing, you agree your contributions will be licensed under the [MIT License](./LICENSE).
+This project is licensed under the [PolyForm Shield License 1.0.0](./LICENSE.md). By contributing, you agree to the terms of the [CLA](./CLA.md).
