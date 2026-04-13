@@ -230,9 +230,10 @@ describe('refreshOnce userInitiated flag', () => {
 });
 
 describe('refreshOnce worktree-attached empty branch demotion', () => {
-  it('demotes empty branches to unmerged when they have a worktree', async () => {
+  it('keeps empty status for branches with a clean worktree', async () => {
     asMock(git.listWorktrees).mockResolvedValueOnce([
-      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'clean', isBare: false },
+      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'clean',
+        untrackedCount: 0, modifiedCount: 0, stagedCount: 0, isBare: false },
     ]);
     asMock(git.listBranches).mockResolvedValueOnce([
       {
@@ -256,8 +257,6 @@ describe('refreshOnce worktree-attached empty branch demotion', () => {
         mergeStatus: 'empty',
       },
     ]);
-    // detectSquashMerges passes branches through unchanged by default —
-    // mirror that so the enrichment-stage demotion is visible in the store.
     asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }) => ({
       updatedBranches: bs,
       mappings: [],
@@ -269,12 +268,44 @@ describe('refreshOnce worktree-attached empty branch demotion', () => {
     const feat = branches.find((b) => b.name === 'feat')!;
     const orphan = branches.find((b) => b.name === 'orphan')!;
 
-    // feat has a worktree → demoted to unmerged
-    expect(feat.mergeStatus).toBe('unmerged');
+    // feat has a clean worktree → stays empty (no work in progress)
+    expect(feat.mergeStatus).toBe('empty');
     expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
-    // orphan has no worktree → stays empty
+    // orphan has no worktree → also stays empty
     expect(orphan.mergeStatus).toBe('empty');
     expect(orphan.worktreePath).toBeUndefined();
+  });
+
+  it('demotes empty branches to unmerged when worktree is dirty', async () => {
+    asMock(git.listWorktrees).mockResolvedValueOnce([
+      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'dirty',
+        untrackedCount: 1, modifiedCount: 0, stagedCount: 0, isBare: false },
+    ]);
+    asMock(git.listBranches).mockResolvedValueOnce([
+      {
+        name: 'feat',
+        hasLocal: true,
+        hasRemote: true,
+        lastCommitDate: new Date().toISOString(),
+        lastCommitSha: 'aaa',
+        aheadOfMain: 0,
+        behindMain: 0,
+        mergeStatus: 'empty',
+      },
+    ]);
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }) => ({
+      updatedBranches: bs,
+      mappings: [],
+    }));
+
+    await refreshOnce();
+
+    const branches = useRepoStore.getState().branches;
+    const feat = branches.find((b) => b.name === 'feat')!;
+
+    // feat has a dirty worktree → demoted to unmerged
+    expect(feat.mergeStatus).toBe('unmerged');
+    expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
   });
 });
 
@@ -586,7 +617,7 @@ describe('merge-status ratchet', () => {
     expect(useRepoStore.getState().branches[0].mergeStatus).toBe('unmerged');
   });
 
-  it('allows empty→unmerged demotion when worktree attachment changes', async () => {
+  it('keeps empty when a clean worktree is attached', async () => {
     // Tick 1: branch has no worktree, status is empty.
     const emptyBranch = makeBranch('feat', 'empty');
     asMock(squash.detectSquashMerges).mockResolvedValueOnce({
@@ -597,12 +628,42 @@ describe('merge-status ratchet', () => {
     await refreshOnce();
     expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
 
-    // Tick 2: user created a worktree for this branch (same SHA).
-    // The enrichment stage demotes empty→unmerged, and detectSquashMerges
-    // passes it through unchanged. The ratchet must NOT override back to
-    // empty because the worktree attachment changed.
+    // Tick 2: user created a clean worktree for this branch (same SHA).
+    // The worktree has no uncommitted changes, so the branch should stay
+    // empty — there is genuinely no work in progress.
     asMock(git.listWorktrees).mockResolvedValueOnce([
-      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'clean', isBare: false },
+      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'clean',
+        untrackedCount: 0, modifiedCount: 0, stagedCount: 0, isBare: false },
+    ]);
+    const stillEmpty = makeBranch('feat', 'empty');
+    asMock(git.listBranches).mockResolvedValueOnce([stillEmpty]);
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }) => ({
+      updatedBranches: bs,
+      mappings: [],
+    }));
+    await refreshOnce();
+
+    const feat = useRepoStore.getState().branches.find((b) => b.name === 'feat')!;
+    expect(feat.mergeStatus).toBe('empty');
+    expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
+  });
+
+  it('demotes empty→unmerged when a dirty worktree is attached', async () => {
+    // Tick 1: branch has no worktree, status is empty.
+    const emptyBranch = makeBranch('feat', 'empty');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [emptyBranch],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([emptyBranch]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
+
+    // Tick 2: user created a worktree and started editing (dirty state).
+    // The post-ratchet demotion fires because the worktree has changes.
+    asMock(git.listWorktrees).mockResolvedValueOnce([
+      { path: '/tmp/repo/wt-feat', branch: 'feat', status: 'dirty',
+        untrackedCount: 2, modifiedCount: 0, stagedCount: 0, isBare: false },
     ]);
     const stillEmpty = makeBranch('feat', 'empty');
     asMock(git.listBranches).mockResolvedValueOnce([stillEmpty]);
@@ -617,11 +678,12 @@ describe('merge-status ratchet', () => {
     expect(feat.worktreePath).toBe('/tmp/repo/wt-feat');
   });
 
-  it('ratchets empty→unmerged regression when branch has no worktree', async () => {
+  it('ratchets empty→unmerged regression from transient subprocess failure', async () => {
     // empty depends on a successful git rev-list subprocess (abMatch must
     // be truthy). When the subprocess transiently fails, abMatch is null
     // and the status falls through to unmerged. The ratchet preserves
-    // empty so the "Safe to delete" filter doesn't bounce.
+    // empty so the "Safe to delete" filter doesn't bounce — regardless of
+    // whether the branch has a worktree or not.
     const emptyBranch = makeBranch('feat/empty', 'empty');
     asMock(squash.detectSquashMerges).mockResolvedValueOnce({
       updatedBranches: [emptyBranch],
@@ -639,7 +701,42 @@ describe('merge-status ratchet', () => {
     });
     asMock(git.listBranches).mockResolvedValueOnce([regressed]);
     await refreshOnce();
-    // Ratchet preserves empty — no worktree, same SHA.
+    // Ratchet preserves empty — same SHA, transient failure.
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
+  });
+
+  it('ratchets empty→unmerged regression even with a clean worktree attached', async () => {
+    // Same scenario as above but with a worktree. Previously the ratchet
+    // had a carve-out that allowed the regression when a worktree was
+    // attached. Now the ratchet always protects empty, and the
+    // dirty-worktree demotion is a separate post-ratchet step.
+    const emptyBranch = makeBranch('feat/wt', 'empty');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [emptyBranch],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([emptyBranch]);
+    asMock(git.listWorktrees).mockResolvedValueOnce([
+      { path: '/tmp/repo/wt-feat', branch: 'feat/wt', status: 'clean',
+        untrackedCount: 0, modifiedCount: 0, stagedCount: 0, isBare: false },
+    ]);
+    await refreshOnce();
+    expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
+
+    // Tick 2: subprocess failure → detection returns unmerged, worktree
+    // still clean.
+    const regressed = makeBranch('feat/wt', 'unmerged');
+    asMock(squash.detectSquashMerges).mockResolvedValueOnce({
+      updatedBranches: [regressed],
+      mappings: [],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([regressed]);
+    asMock(git.listWorktrees).mockResolvedValueOnce([
+      { path: '/tmp/repo/wt-feat', branch: 'feat/wt', status: 'clean',
+        untrackedCount: 0, modifiedCount: 0, stagedCount: 0, isBare: false },
+    ]);
+    await refreshOnce();
+    // Ratchet preserves empty — clean worktree, same SHA.
     expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
   });
 

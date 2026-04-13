@@ -53,7 +53,7 @@ export function mergeStatusLabel(s: MergeStatus): string {
 
 export function mergeStatusTooltip(s: MergeStatus): string | null {
   if (s === 'empty') {
-    return 'No commits ahead of main and not checked out in any worktree — likely abandoned.';
+    return 'No commits ahead of main — nothing to merge.';
   }
   if (s === 'stale') return 'Unmerged branch with no commits in the last 30 days.';
   return null;

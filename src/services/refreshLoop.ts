@@ -44,16 +44,14 @@ const RATCHETED_STATUSES: ReadonlySet<MergeStatus> = new Set([
 //    ratcheted. These depend on the GitHub API or git merge-base, and a
 //    single failed fetch would otherwise bounce them back to unmerged.
 //
-// 2. `empty` status: ratcheted UNLESS the branch gained a worktree on
-//    this tick. `empty` depends on a successful `git rev-list` subprocess
-//    (the result must have a parseable `abMatch`); when the subprocess
-//    transiently fails, `abMatch` is null and the status falls through
-//    to `unmerged` even though `aheadOfMain` defaults to 0. Since failed
-//    results are deliberately not cached (to allow retry), the next tick
-//    may succeed → `empty` again, causing the "Safe to delete" filter to
-//    bounce. The worktree carve-out preserves the intentional
-//    `empty→unmerged` demotion for branches checked out in a worktree
-//    (see the enrichment step in runRefreshOnce).
+// 2. `empty` status: always ratcheted against regression to unmerged.
+//    `empty` depends on a successful `git rev-list` subprocess (the result
+//    must have a parseable `abMatch`); when the subprocess transiently
+//    fails, `abMatch` is null and the status falls through to `unmerged`
+//    even though `aheadOfMain` defaults to 0. The dirty-worktree demotion
+//    (empty→unmerged for branches with uncommitted work) is applied in a
+//    separate post-ratchet step so the ratchet can protect empty
+//    unconditionally.
 //
 // 3. `stale`: NOT ratcheted. Stale is derived from `unmerged` + age, and
 //    the age check is pure arithmetic on the commit date — no subprocess
@@ -73,10 +71,10 @@ function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
       changed = true;
       return { ...b, mergeStatus: old.mergeStatus };
     }
-    // Empty: ratchet against regression to unmerged, but allow the
-    // intentional empty→unmerged demotion when a worktree is attached
-    // (worktreePath is set by the enrichment step before the detector).
-    if (old.mergeStatus === 'empty' && b.mergeStatus === 'unmerged' && !b.worktreePath) {
+    // Empty: always ratchet against regression to unmerged. The
+    // dirty-worktree demotion runs after ratcheting (post-ratchet step in
+    // runRefreshOnce) so it can override when warranted.
+    if (old.mergeStatus === 'empty' && b.mergeStatus === 'unmerged') {
       changed = true;
       return { ...b, mergeStatus: 'empty' as const };
     }
@@ -162,15 +160,17 @@ async function runRefreshOnce(): Promise<void> {
     // mutating the entries returned by listBranches so that any future
     // caching inside gitService can't accidentally leak attached fields
     // across repos or ticks.
+    //
+    // Note: empty→unmerged demotion for dirty worktrees is applied AFTER
+    // the ratchet (see the post-ratchet step below). Keeping it here would
+    // force the ratchet to carve out worktree-attached branches, which
+    // breaks ratchet protection when a rev-list subprocess transiently
+    // fails on a worktree-attached branch.
     const wtByBranch = new Map(wts.map((w) => [w.branch, w.path]));
     let enrichedBranches = branches.map((b) => {
       const wp = wtByBranch.get(b.name);
       if (!wp) return b;
-      // A branch checked out in a worktree may have uncommitted work even
-      // when its tip sits at main — calling it "empty" is misleading. Revert
-      // to "unmerged" so the UI treats it as in-progress work.
-      const mergeStatus = b.mergeStatus === 'empty' ? 'unmerged' : b.mergeStatus;
-      return { ...b, worktreePath: wp, mergeStatus };
+      return { ...b, worktreePath: wp };
     });
 
     // Attach open PRs to branches. The REST list only populates isDraft; we
@@ -223,12 +223,31 @@ async function runRefreshOnce(): Promise<void> {
       detect.updatedBranches,
     );
 
+    // Post-ratchet: demote empty→unmerged for branches whose worktree has
+    // uncommitted work. This runs AFTER the ratchet so the ratchet can
+    // unconditionally protect `empty` against transient subprocess failures,
+    // and this step only overrides when there is actual dirty state. A
+    // clean worktree keeps `empty` — the branch genuinely has no work yet.
+    const dirtyWtBranches = new Set<string>();
+    for (const w of wts) {
+      if (w.untrackedCount > 0 || w.modifiedCount > 0 || w.stagedCount > 0) {
+        dirtyWtBranches.add(w.branch);
+      }
+    }
+    const postRatchet = dirtyWtBranches.size > 0
+      ? ratcheted.map((b) =>
+          b.mergeStatus === 'empty' && dirtyWtBranches.has(b.name)
+            ? { ...b, mergeStatus: 'unmerged' as const }
+            : b,
+        )
+      : ratcheted;
+
     // Diagnostic: log merge-status changes between ticks so bouncing is
     // visible in the dev console. Only fires when something actually changed.
     if (import.meta.env.DEV && prevBranches.length > 0) {
       const prevByName = new Map(prevBranches.map((b) => [b.name, b]));
       const diffs: string[] = [];
-      for (const b of ratcheted) {
+      for (const b of postRatchet) {
         const old = prevByName.get(b.name);
         if (old && old.mergeStatus !== b.mergeStatus) {
           diffs.push(`  ${b.name}: ${old.mergeStatus} → ${b.mergeStatus}`);
@@ -243,7 +262,7 @@ async function runRefreshOnce(): Promise<void> {
     // merged-normally) from conflict detection — conflicts between them are
     // not actionable because the changes are already on main.
     const mergedBranches = new Set(
-      ratcheted
+      postRatchet
         .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged')
         .map((b) => b.name),
     );
@@ -277,7 +296,7 @@ async function runRefreshOnce(): Promise<void> {
     const reconciledWts = reconcileWorktrees(before.worktrees, wts);
     const reconciledBranches = reconcileBranches(
       before.branches,
-      ratcheted,
+      postRatchet,
     );
     const reconciledPresence = reconcileClaudePresence(
       before.claudePresence,
