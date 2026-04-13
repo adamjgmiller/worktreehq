@@ -23,6 +23,46 @@ import {
   reconcileClaudePresence,
   reconcileConflictSummary,
 } from '../lib/structuralShare';
+import type { Branch, MergeStatus } from '../types';
+
+// Merge-status priority — higher index = more "resolved". When a branch's
+// SHA hasn't moved between ticks but this tick's detection produced a
+// lower-priority status, the previous (better) status is preserved. This
+// prevents transient failures (subprocess error, GitHub API blip, cache
+// miss) from flickering resolved branches back to unmerged/empty.
+const STATUS_PRIORITY: Record<MergeStatus, number> = {
+  unmerged: 0,
+  empty: 1,
+  stale: 2,
+  'squash-merged': 3,
+  'merged-normally': 4,
+};
+
+// Apply a one-way ratchet: if the previous tick resolved a branch to a
+// "better" status and its SHA hasn't changed, keep the previous status.
+// This is critical for multi-commit squash merges that the cherry-check
+// can't detect — their squash-merged status depends entirely on the GitHub
+// API returning PR data, and a single failed re-fetch would otherwise
+// bounce them back to unmerged until the next successful fetch.
+function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
+  if (prev.length === 0) return next;
+  const prevByName = new Map(prev.map((b) => [b.name, b]));
+  let changed = false;
+  const out = next.map((b) => {
+    const old = prevByName.get(b.name);
+    if (!old) return b;
+    // SHA moved — the branch has new commits; trust the fresh detection.
+    if (old.lastCommitSha !== b.lastCommitSha) return b;
+    const oldPriority = STATUS_PRIORITY[old.mergeStatus] ?? 0;
+    const newPriority = STATUS_PRIORITY[b.mergeStatus] ?? 0;
+    if (oldPriority > newPriority) {
+      changed = true;
+      return { ...b, mergeStatus: old.mergeStatus };
+    }
+    return b;
+  });
+  return changed ? out : next;
+}
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -149,11 +189,23 @@ async function runRefreshOnce(): Promise<void> {
       name: remote.name,
     });
 
+    // Ratchet: prevent transient detection failures (API blip, subprocess
+    // error, cache miss) from bouncing resolved branches back to unmerged.
+    // Read the previous store snapshot here rather than relying on the one
+    // captured later for structural sharing — the ratchet must run before
+    // the conflict-detection filter, or a branch that was squash-merged on
+    // the last tick but transiently unmerged on this tick would wrongly
+    // enter the conflict-candidate set.
+    const ratcheted = ratchetBranchStatuses(
+      useRepoStore.getState().branches,
+      detect.updatedBranches,
+    );
+
     // Exclude worktrees whose branch is already merged (squash-merged or
     // merged-normally) from conflict detection — conflicts between them are
     // not actionable because the changes are already on main.
     const mergedBranches = new Set(
-      detect.updatedBranches
+      ratcheted
         .filter((b) => b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged')
         .map((b) => b.name),
     );
@@ -187,7 +239,7 @@ async function runRefreshOnce(): Promise<void> {
     const reconciledWts = reconcileWorktrees(before.worktrees, wts);
     const reconciledBranches = reconcileBranches(
       before.branches,
-      detect.updatedBranches,
+      ratcheted,
     );
     const reconciledPresence = reconcileClaudePresence(
       before.claudePresence,
