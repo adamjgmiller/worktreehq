@@ -11,6 +11,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::git_exec::git_exec,
+            commands::git_exec::set_git_auth_method,
             commands::gh_exec::gh_exec,
             commands::keychain::keychain_store,
             commands::keychain::keychain_read,

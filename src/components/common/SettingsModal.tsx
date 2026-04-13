@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke, keychainStore, keychainRead, keychainDelete } from '../../services/tauriBridge';
+import { invoke, keychainStore, keychainRead, keychainDelete, setGitAuthMethod } from '../../services/tauriBridge';
 import {
   initGithub,
   validateToken,
@@ -56,12 +56,19 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         setGhChecking(false);
         setPostCreateCommands((cfg.post_create_commands as string | undefined) ?? '');
 
-        // Load the PAT from keychain (preferred) or config (legacy)
+        // Load the PAT from keychain (preferred) or config (legacy), but
+        // only when the persisted auth method is 'pat' (or not yet set, for
+        // the auto-detect / migration path). When the user chose gh-cli or
+        // none, touching the keychain is unnecessary and on macOS can trigger
+        // a system password prompt for the worktreehq keychain entry.
+        const cfgMethod = cfg.auth_method as AuthMethod | undefined;
         let keychainToken: string | null = null;
-        try {
-          keychainToken = await keychainRead('github_token');
-        } catch {
-          /* keychain may not be available */
+        if (!cfgMethod || cfgMethod === 'pat') {
+          try {
+            keychainToken = await keychainRead('github_token');
+          } catch {
+            /* keychain may not be available */
+          }
         }
         if (cancelled) return;
         const loadedToken = keychainToken || (cfg.github_token as string | undefined) || '';
@@ -173,6 +180,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           break;
       }
       setAuthMethod(selectedMethod);
+      void setGitAuthMethod(
+        selectedMethod,
+        selectedMethod === 'pat' && token ? token : undefined,
+      );
 
       // Re-validate against GitHub
       if (selectedMethod !== 'none') {

@@ -2,9 +2,32 @@ use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+/// Auth state for git subprocess credential injection. Updated from the
+/// frontend via `set_git_auth_method` whenever auth method changes (bootstrap
+/// + Settings save). When `method` is `"gh-cli"`, `git_exec` injects
+/// `credential.helper=!gh auth git-credential`. When `"pat"`, it injects a
+/// shell helper that echoes the stored token via an env var (so it never
+/// appears in `ps` output).
+struct GitAuthState {
+    method: String,
+    token: Option<String>,
+}
+
+static AUTH_STATE: Mutex<GitAuthState> = Mutex::new(GitAuthState {
+    method: String::new(),
+    token: None,
+});
+
+#[tauri::command]
+pub fn set_git_auth_method(method: String, token: Option<String>) {
+    let mut state = AUTH_STATE.lock().unwrap_or_else(|p| p.into_inner());
+    state.method = method;
+    state.token = token;
+}
 
 #[derive(Serialize)]
 pub struct GitExecResult {
@@ -44,12 +67,23 @@ pub async fn git_exec(repo_path: String, args: Vec<String>) -> AppResult<GitExec
     // `spawn_blocking` puts the subprocess on a thread dedicated to
     // blocking I/O, so parallel `Promise.all` git calls from JS actually
     // run in parallel instead of serializing through one blocked worker.
-    tauri::async_runtime::spawn_blocking(move || git_exec_blocking(repo_path, args))
-        .await
-        .map_err(|e| AppError::Msg(format!("git_exec join error: {e}")))?
+    let (method, token) = {
+        let state = AUTH_STATE.lock().unwrap_or_else(|p| p.into_inner());
+        (state.method.clone(), state.token.clone())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        git_exec_blocking(repo_path, args, method, token)
+    })
+    .await
+    .map_err(|e| AppError::Msg(format!("git_exec join error: {e}")))?
 }
 
-fn git_exec_blocking(repo_path: String, args: Vec<String>) -> AppResult<GitExecResult> {
+fn git_exec_blocking(
+    repo_path: String,
+    args: Vec<String>,
+    auth_method: String,
+    auth_token: Option<String>,
+) -> AppResult<GitExecResult> {
     if repo_path.is_empty() {
         return Err(AppError::Msg("git_exec: repo_path is empty".into()));
     }
@@ -58,7 +92,47 @@ fn git_exec_blocking(repo_path: String, args: Vec<String>) -> AppResult<GitExecR
     // is no shell interpolation, so this is the safe equivalent of running a
     // named binary with an args array.
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(&repo_path).args(&args);
+    cmd.arg("-C").arg(&repo_path);
+
+    // When the user chose gh-cli auth, inject `credential.helper` so git
+    // fetch/push authenticate via `gh auth git-credential` instead of
+    // triggering the macOS `git-credential-osxkeychain` keychain prompt.
+    // The `-c` level has the highest priority, so this helper is tried
+    // first; if it succeeds, lower-level helpers (osxkeychain, etc.) are
+    // never consulted.
+    if auth_method == "gh-cli" {
+        cmd.arg("-c")
+            .arg("credential.helper=!gh auth git-credential");
+
+        // On macOS, GUI-launched apps inherit a minimal PATH that doesn't
+        // include Homebrew dirs. Git spawns a shell to run `!`-prefixed
+        // credential helpers, so `gh` must be findable on PATH. Same
+        // extension as gh_exec.rs.
+        #[cfg(target_os = "macos")]
+        {
+            let path = std::env::var("PATH").unwrap_or_default();
+            if !path.contains("/opt/homebrew/bin") || !path.contains("/usr/local/bin") {
+                cmd.env("PATH", format!("{path}:/opt/homebrew/bin:/usr/local/bin"));
+            }
+        }
+    } else if auth_method == "pat" {
+        if let Some(ref token) = auth_token {
+            if !token.is_empty() {
+                // Pass the PAT via a private env var so it never shows in
+                // `ps` output. The shell function credential helper reads
+                // it on stdin's "get" operation and echoes it back to git.
+                // Scoped to github.com so the token is never accidentally
+                // sent to a non-GitHub remote.
+                cmd.env("__WORKTREEHQ_PAT", token);
+                cmd.arg("-c").arg(concat!(
+                    "credential.https://github.com.helper=",
+                    r#"!f() { test "$1" = get && printf 'username=x-access-token\npassword=%s\n' "$__WORKTREEHQ_PAT"; }; f"#,
+                ));
+            }
+        }
+    }
+
+    cmd.args(&args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     // Sanitize the environment so subprocesses behave deterministically and
