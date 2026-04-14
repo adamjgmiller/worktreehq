@@ -506,12 +506,12 @@ describe('runFetchOnce skip-when-unchanged', () => {
     // state can change without refs moving (closed-without-merge, draft
     // toggle, checks).
     expect(asMock(github.listOpenPRsForBranches)).toHaveBeenCalledTimes(2);
-    // Cache invalidation policy unchanged from commit 1: list is
-    // invalidated to catch PR-state-only changes; per-PR detail cache
-    // is preserved so the second listOpenPRs call can serve from the
-    // optimistic's recently-populated per-PR entries.
+    // Both caches are invalidated on user-initiated fetches regardless of
+    // refsChanged. batchFetchPRs returns cached entries blindly — it can't
+    // tell "fresh enough" from "stale," so the narrow pass needs a cold
+    // cache to actually surface the PR-metadata changes the click is for.
     expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
-    expect(asMock(github.invalidatePrCacheForRepo)).not.toHaveBeenCalled();
+    expect(asMock(github.invalidatePrCacheForRepo)).toHaveBeenCalledWith('o', 'r');
   });
 
   it('user-initiated fetch + refs moved → full post-fetch pipeline', async () => {
@@ -645,6 +645,25 @@ describe('runFetchOnce skip-when-unchanged', () => {
     // the narrow pass.
     expect(asMock(github.listOpenPRsForBranches)).toHaveBeenCalledTimes(1);
     expect(useRepoStore.getState().error).toMatch(/transient failure/);
+  });
+
+  it('narrow pass surfaces failures via setError instead of silently swallowing', async () => {
+    // GitHub API hiccup after a successful git fetch (rate limit, 500,
+    // revoked token, etc.) shouldn't make the refresh button look like
+    // it worked. The narrow pass mirrors runRefreshOnce's setError policy
+    // so the user knows PR pills may be stale.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+    // Optimistic's listOpenPRs succeeds; narrow pass's fails.
+    asMock(github.listOpenPRsForBranches)
+      .mockResolvedValueOnce(new Map())
+      .mockRejectedValueOnce(new Error('GitHub API hiccup'));
+
+    await runFetchOnce({ userInitiated: true });
+
+    expect(useRepoStore.getState().error).toMatch(/GitHub API hiccup/);
   });
 
   it('narrow pass is a no-op when the repo has no GitHub owner/name', async () => {

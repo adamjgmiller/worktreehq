@@ -583,23 +583,17 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
       return;
     }
     if (repo.owner && repo.name) {
-      if (refsChanged) {
-        invalidateOpenPrListCache(repo.owner, repo.name);
-        // Refs moved — remote PR state could legitimately be stale (e.g. a
-        // freshly-merged PR). Drop the per-PR detail cache for user-initiated
-        // fetches so squashDetector pass 1 doesn't serve `state: 'open'` for
-        // a PR that just merged.
-        if (userInitiated) invalidatePrCacheForRepo(repo.owner, repo.name);
-      } else if (userInitiated) {
-        // Refs didn't move, but PR metadata (closed-without-merge, draft
-        // toggle, checks, reviews) can change independently of ref moves.
-        // Refresh the open-PR list so those surface on the click; preserve
-        // the per-PR detail cache so the post-fetch pass serves the
-        // optimistic's ~2s-old entries instead of making a duplicate
-        // GraphQL round-trip. The per-PR cache's 5-min TTL makes the
-        // preservation safe — actually-stale entries expire naturally.
-        invalidateOpenPrListCache(repo.owner, repo.name);
-      }
+      invalidateOpenPrListCache(repo.owner, repo.name);
+      // On user-initiated fetches, ALSO drop the per-PR detail cache. PR
+      // metadata (isDraft, checksStatus, reviewDecision, mergeable, title)
+      // can change independently of ref moves, and `batchFetchPRs` returns
+      // cached entries blindly — it can't distinguish "fresh enough" from
+      // "actually stale." Preserving the cache would serve the optimistic's
+      // just-populated entries to the post-fetch pass and defeat the whole
+      // point of the refresh button (surfacing PR-state changes on click).
+      // Background ticks skip this — the 5min TTL is fine for unattended
+      // polling.
+      if (userInitiated) invalidatePrCacheForRepo(repo.owner, repo.name);
     }
     // Post-fetch re-derive. Two shapes:
     //
@@ -681,10 +675,13 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
 //   - Ratchet is untouched because merge-status classifications aren't
 //     re-derived here.
 //
-// Error policy: on failure, log and leave the optimistic's commit as the
-// final state. The UI is still fresh on local-derived axes; a transient
-// GitHub hiccup shouldn't surface as an ErrorBanner after the user already
-// saw the optimistic update land.
+// Error policy: surface failures via the store error banner, mirroring
+// `runRefreshOnce`'s catch. The narrow pass is a *supplemental* update —
+// the optimistic pass already committed fresh local state — but it's still
+// the path responsible for surfacing fresh PR metadata on the click. If
+// GitHub calls fail here (500, rate limit, token revoked), the user needs
+// to know PR pills may be stale; silent swallow would make the refresh
+// button look like it worked when it didn't.
 async function runNarrowPrRefresh(
   repo: RepoState,
   opts?: RefreshOptions,
@@ -732,7 +729,11 @@ async function runNarrowPrRefresh(
     });
     useRepoStore.getState().setBranches(reconcileBranches(current, next));
   } catch (e) {
-    console.warn('[refreshLoop] narrow PR refresh failed:', e);
+    // Surface the failure the same way runRefreshOnce does — users clicked
+    // refresh to see fresh PR data and deserve to know if that failed.
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[refreshLoop] narrow PR refresh failed:', msg);
+    useRepoStore.getState().setError(msg);
   } finally {
     if (userInitiated) releaseSpinner();
   }
