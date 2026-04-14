@@ -33,6 +33,22 @@ export function BulkRemoveWorktreesDialog({
   onCancel: () => void;
   onConfirm: (opts: BulkRemoveOptions) => Promise<void>;
 }) {
+  // Freeze the data inputs at confirm time. The parent passes `removable`
+  // and `branchByName` live-bound to the store, so a refresh tick that
+  // fires mid-delete (the fs watcher triggers one after every
+  // `git worktree remove` — that subcommand writes to `.git/worktrees/`)
+  // would otherwise flash a newly-detected dirty worktree into the
+  // conflict-colored warning for a frame or two just before the dialog
+  // unmounts. That read as "the app tried to warn me and failed to." By
+  // snapshotting at submit, the dialog shows the state the user actually
+  // confirmed against for its entire closing animation.
+  const [frozenInputs, setFrozenInputs] = useState<{
+    worktrees: Worktree[];
+    branchByName: Map<string, Branch>;
+  } | null>(null);
+  const effectiveWorktrees = frozenInputs?.worktrees ?? worktrees;
+  const effectiveBranchByName = frozenInputs?.branchByName ?? branchByName;
+
   // Default the branch-cleanup checkboxes ON only when at least one worktree
   // in the batch actually has the corresponding branch state to clean up
   // AND the branch isn't the default. This matches the per-worktree dialog's
@@ -40,19 +56,19 @@ export function BulkRemoveWorktreesDialog({
   // the same defaults whether they remove one or many.
   const hasAnyLocal = useMemo(
     () =>
-      worktrees.some((w) => {
+      effectiveWorktrees.some((w) => {
         if (w.branch === defaultBranch) return false;
-        return branchByName.get(w.branch)?.hasLocal === true;
+        return effectiveBranchByName.get(w.branch)?.hasLocal === true;
       }),
-    [worktrees, branchByName, defaultBranch],
+    [effectiveWorktrees, effectiveBranchByName, defaultBranch],
   );
   const hasAnyRemote = useMemo(
     () =>
-      worktrees.some((w) => {
+      effectiveWorktrees.some((w) => {
         if (w.branch === defaultBranch) return false;
-        return branchByName.get(w.branch)?.hasRemote === true;
+        return effectiveBranchByName.get(w.branch)?.hasRemote === true;
       }),
-    [worktrees, branchByName, defaultBranch],
+    [effectiveWorktrees, effectiveBranchByName, defaultBranch],
   );
   const [deleteLocal, setDeleteLocal] = useState(hasAnyLocal);
   const [deleteRemote, setDeleteRemote] = useState(hasAnyRemote);
@@ -64,7 +80,7 @@ export function BulkRemoveWorktreesDialog({
 
   const dirtyOnes = useMemo(
     () =>
-      worktrees.filter(
+      effectiveWorktrees.filter(
         (w) =>
           w.untrackedCount > 0 ||
           w.modifiedCount > 0 ||
@@ -72,7 +88,7 @@ export function BulkRemoveWorktreesDialog({
           w.hasConflicts ||
           !!w.inProgress,
       ),
-    [worktrees],
+    [effectiveWorktrees],
   );
   const requiresForce = dirtyOnes.length > 0;
   // Mirror the per-worktree dialog's tiering rule (added in #102) at the
@@ -90,8 +106,8 @@ export function BulkRemoveWorktreesDialog({
   // to require typing for the whole confirmation.
   const allLocalDeletesAreSafe = useMemo(
     () =>
-      worktrees.every((w) => {
-        const m = branchByName.get(w.branch)?.mergeStatus;
+      effectiveWorktrees.every((w) => {
+        const m = effectiveBranchByName.get(w.branch)?.mergeStatus;
         return (
           m === 'merged-normally' ||
           m === 'squash-merged' ||
@@ -99,7 +115,7 @@ export function BulkRemoveWorktreesDialog({
           m === 'empty'
         );
       }),
-    [worktrees, branchByName],
+    [effectiveWorktrees, effectiveBranchByName],
   );
   const requiresTyping =
     requiresForce || deleteRemote || (deleteLocal && !allLocalDeletesAreSafe);
@@ -107,6 +123,13 @@ export function BulkRemoveWorktreesDialog({
 
   const handleConfirm = async () => {
     if (submitting || !typedOk) return;
+    // Snapshot the current props into frozen state synchronously, before
+    // the `await` below yields control. The freeze is load-bearing because
+    // every memo reads via `frozenInputs?.worktrees ?? worktrees`, so once
+    // this setter runs any subsequent prop changes are ignored for the rest
+    // of the remove loop. Do NOT move this call after an await — the props
+    // can change while the loop is in flight and the snapshot would lose.
+    setFrozenInputs({ worktrees, branchByName });
     await onConfirm({
       force: requiresForce,
       deleteLocalBranch: deleteLocal,
@@ -117,20 +140,20 @@ export function BulkRemoveWorktreesDialog({
   return (
     <Dialog onClose={onCancel} disabled={submitting} width="w-[640px]">
       <DialogHeader
-        title={`Remove ${worktrees.length} worktree${worktrees.length === 1 ? '' : 's'}`}
+        title={`Remove ${effectiveWorktrees.length} worktree${effectiveWorktrees.length === 1 ? '' : 's'}`}
         icon={<AlertTriangle className="w-5 h-5" />}
         titleClassName="text-wt-conflict"
         onClose={onCancel}
         disabled={submitting}
       />
-      {worktrees.length === 0 ? (
+      {effectiveWorktrees.length === 0 ? (
         <p className="text-sm text-wt-muted mb-3">No removable worktrees in selection.</p>
       ) : (
         <>
           <p className="text-sm text-wt-fg-2 mb-2">Removing:</p>
           <div className="mb-3 max-h-48 overflow-auto rounded border border-wt-border bg-wt-bg/40">
             <ul className="text-xs font-mono divide-y divide-wt-border">
-              {worktrees.map((w) => (
+              {effectiveWorktrees.map((w) => (
                 <li key={w.path} className="px-2 py-1.5 flex items-center gap-2">
                   <span className="text-wt-fg flex-shrink-0">{basename(w.path)}</span>
                   <span className="text-wt-muted">·</span>
@@ -241,7 +264,7 @@ export function BulkRemoveWorktreesDialog({
         </button>
         <button
           onClick={handleConfirm}
-          disabled={submitting || worktrees.length === 0 || !typedOk}
+          disabled={submitting || effectiveWorktrees.length === 0 || !typedOk}
           className="px-3 py-1.5 text-sm bg-wt-conflict/20 border border-wt-conflict/60 text-wt-conflict rounded hover:bg-wt-conflict/30 disabled:opacity-40"
         >
           {submitting ? 'Removing…' : requiresForce ? 'Force remove' : 'Remove'}
