@@ -115,11 +115,16 @@ export function WorktreesView() {
   // `deleting` flag so a double-click of the dialog's primary button can't
   // fire two parallel remove loops against the same selection.
   const [bulkRemoving, setBulkRemoving] = useState(false);
-  // Local error pile for bulk operations. Lives outside the store error
-  // because refreshOnce calls setError(null) at the start of each tick,
-  // which would clear bulk failures right after they're surfaced. Same
-  // pattern as BranchesView.tsx:29-30.
-  const [bulkErrors, setBulkErrors] = useState<string[]>([]);
+  // Result of the most recent bulk operation. Holds both success count and
+  // per-entry errors so we can render a single post-action banner ("Removed
+  // N", "Removed N — K failed", or "All K failed"). Lives outside the store
+  // error because the refresh loop owns store.error and would clobber bulk
+  // results on the next tick — same constraint BranchesView documents at
+  // BranchesView.tsx:29-30. Persistent (no auto-dismiss) so the user has
+  // time to read what happened; replaced wholesale on the next bulk op.
+  const [bulkResult, setBulkResult] = useState<
+    { succeeded: number; errors: string[] } | null
+  >(null);
   // Saved default for post-create commands. Re-read from config each time
   // the Create dialog opens so edits made in Settings between creations
   // are reflected. The dialog seeds its own editable state from this.
@@ -572,7 +577,9 @@ export function WorktreesView() {
     async (opts: BulkRemoveOptions) => {
       if (!repo || bulkRemoving) return;
       setBulkRemoving(true);
-      setBulkErrors([]);
+      // Don't pre-clear bulkResult — leaving the previous result up while the
+      // new run is in flight is harmless (the dialog covers it visually) and
+      // avoids a brief blank moment if the new run finishes instantly.
       const errors: string[] = [];
       // Track paths whose `removeWorktree` call failed so we can keep them
       // selected after the loop. Without this, a partial-failure run would
@@ -625,7 +632,13 @@ export function WorktreesView() {
           return next;
         });
         setConfirmBulkRemove(false);
-        setBulkErrors(errors);
+        // Surface the result. `succeeded` is derived as removable.length minus
+        // failures so the count reflects what the user actually attempted (not
+        // all-selected — orphans and primary were filtered out earlier).
+        setBulkResult({
+          succeeded: removable.length - failedPaths.size,
+          errors,
+        });
         await refreshOnce({ userInitiated: true });
       } finally {
         setBulkRemoving(false);
@@ -636,32 +649,54 @@ export function WorktreesView() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-6 pt-4 pb-3">
-        <button
-          onClick={() => {
-            void openCreate();
-          }}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-info/20 border border-wt-info/50 text-wt-info rounded hover:bg-wt-info/30"
-        >
-          <Plus className="w-3.5 h-3.5" /> New worktree <kbd className="ml-1 text-[10px] opacity-60">N</kbd>
-        </button>
-        <WorktreeSortMenu
-          mode={worktreeSortMode}
-          onChange={handleSortModeChange}
-        />
-        {!dragEnabled && (
-          <span className="text-[0.625rem] text-wt-muted ml-2">
-            drag-to-reorder paused while filtered
-          </span>
-        )}
-      </div>
-      {worktrees.length > 0 && (
+      {worktrees.length > 0 ? (
+        // One consolidated toolbar: New worktree + Sort live on the same
+        // row as the filter chips and search. Replaces the prior two-bar
+        // stack, which read as two separate sections rather than a single
+        // toolbar. The drag-paused hint moves under the chips so it
+        // doesn't crowd the action buttons.
         <WorktreeFilterBar
           value={preset}
           onChange={setPreset}
           search={search}
           onSearch={setSearch}
+          leftActions={
+            <>
+              <button
+                onClick={() => {
+                  void openCreate();
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-info/20 border border-wt-info/50 text-wt-info rounded hover:bg-wt-info/30"
+              >
+                <Plus className="w-3.5 h-3.5" /> New worktree{' '}
+                <kbd className="ml-1 text-[10px] opacity-60">N</kbd>
+              </button>
+              <WorktreeSortMenu
+                mode={worktreeSortMode}
+                onChange={handleSortModeChange}
+              />
+            </>
+          }
+          belowDescriptionExtra={
+            !dragEnabled ? 'Drag-to-reorder is paused while a filter or search is active.' : undefined
+          }
         />
+      ) : (
+        // Zero-worktree case: the filter bar would be meaningless (nothing
+        // to filter), but we still want the New worktree button reachable
+        // in case the user lands here on a fresh repo where listWorktrees
+        // raced the first render. Render a minimal action row instead.
+        <div className="flex items-center gap-2 px-6 pt-4 pb-3">
+          <button
+            onClick={() => {
+              void openCreate();
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-info/20 border border-wt-info/50 text-wt-info rounded hover:bg-wt-info/30"
+          >
+            <Plus className="w-3.5 h-3.5" /> New worktree{' '}
+            <kbd className="ml-1 text-[10px] opacity-60">N</kbd>
+          </button>
+        </div>
       )}
       {worktrees.length === 0 ? (
         // A valid git repo always has at least the primary worktree, so an
@@ -738,18 +773,56 @@ export function WorktreesView() {
           </DndContext>
         </div>
       )}
-      {bulkErrors.length > 0 && (
-        <div className="px-4 py-2 bg-wt-conflict/10 border-t border-wt-conflict/40 text-xs text-wt-conflict font-mono flex items-start gap-3">
-          <div className="flex-1 whitespace-pre-wrap">{bulkErrors.join('\n')}</div>
-          <button
-            onClick={() => setBulkErrors([])}
-            className="text-wt-fg-2 hover:text-wt-fg"
-            aria-label="dismiss errors"
+      {bulkResult && (bulkResult.succeeded > 0 || bulkResult.errors.length > 0) && (() => {
+        // Three visual modes derived from one state shape:
+        //   all-succeeded → clean/green: positive ack ("Removed N").
+        //   partial       → dirty/amber: "Removed N, K failed" + error list.
+        //   all-failed    → conflict/red: "All K failed" + error list.
+        // Persistent (no auto-dismiss) so users have time to read the result
+        // — the dismissing-too-fast feedback we got on the v1 of this flow
+        // came from the dialog dismount swallowing all confirmation.
+        const allOk = bulkResult.errors.length === 0;
+        const allFailed = bulkResult.succeeded === 0;
+        const tone = allOk ? 'clean' : allFailed ? 'conflict' : 'dirty';
+        const summary = allOk
+          ? `Removed ${bulkResult.succeeded} worktree${bulkResult.succeeded === 1 ? '' : 's'}.`
+          : allFailed
+            ? `All ${bulkResult.errors.length} removal${bulkResult.errors.length === 1 ? '' : 's'} failed.`
+            : `Removed ${bulkResult.succeeded} of ${bulkResult.succeeded + bulkResult.errors.length} — ${bulkResult.errors.length} failed.`;
+        return (
+          <div
+            // role=status + aria-live=polite so screen readers announce the
+            // result. Errors get aria-live=assertive on the inner block.
+            role="status"
+            aria-live="polite"
+            className={clsx(
+              'px-4 py-2 border-t text-xs font-mono flex items-start gap-3',
+              tone === 'clean' && 'bg-wt-clean/10 border-wt-clean/40 text-wt-clean',
+              tone === 'dirty' && 'bg-wt-dirty/10 border-wt-dirty/40 text-wt-dirty',
+              tone === 'conflict' && 'bg-wt-conflict/10 border-wt-conflict/40 text-wt-conflict',
+            )}
           >
-            ×
-          </button>
-        </div>
-      )}
+            <div className="flex-1 min-w-0">
+              <div>{summary}</div>
+              {bulkResult.errors.length > 0 && (
+                <pre
+                  aria-live="assertive"
+                  className="mt-1 whitespace-pre-wrap text-wt-fg-2"
+                >
+                  {bulkResult.errors.join('\n')}
+                </pre>
+              )}
+            </div>
+            <button
+              onClick={() => setBulkResult(null)}
+              className="text-wt-fg-2 hover:text-wt-fg flex-shrink-0"
+              aria-label="dismiss"
+            >
+              ×
+            </button>
+          </div>
+        );
+      })()}
       <WorktreeBulkActionBar
         totalSelected={selectedActionable.length}
         removableCount={removable.length}
