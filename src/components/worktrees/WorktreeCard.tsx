@@ -111,11 +111,20 @@ function CopyableTitle({ path }: { path: string }) {
 // selection grid looks identical to before.
 //
 // Click handling: `onClick` captures the MouseEvent (we need `shiftKey` for
-// range select); `onChange` is a no-op to keep React's controlled-input
-// contract happy without firing the toggle twice. The browser's default
-// click action would also flip the visual checked state for one paint
-// before React's re-render reverts it — `e.preventDefault()` suppresses
-// that flicker so the source of truth stays React state.
+// range select). We deliberately DO NOT call `e.preventDefault()` — the
+// browser's default toggle produces an optimistic visual flip right on
+// click, and `onToggle` schedules the matching React state update so the
+// next commit re-affirms the same state. Preventing the default makes the
+// visual wait on React's commit, which on a grid of ~20 cards lags
+// perceptibly because `selectionActive` flipping triggers a broad
+// re-render. (There's a minor flicker if the user shift-clicks an
+// already-selected card — browser flips off, React's additive range-add
+// flips it back on — but that path is rare and the flicker is
+// sub-perceptual compared to the first-click lag.)
+//
+// `onChange` is a no-op purely to satisfy React's controlled-input
+// contract. The actual toggle routes through `onClick → onToggle` so the
+// parent owns state.
 function SelectionCheckbox({
   selected,
   selectionActive,
@@ -134,7 +143,6 @@ function SelectionCheckbox({
       }}
       onClick={(e) => {
         e.stopPropagation();
-        e.preventDefault();
         onToggle(e);
       }}
       aria-label={selected ? 'Deselect worktree' : 'Select worktree'}
