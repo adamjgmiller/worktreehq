@@ -88,6 +88,11 @@ function ratchetBranchStatuses(prev: Branch[], next: Branch[]): Branch[] {
 
 let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
+// Monotonically incremented on every stopRefreshLoop() call. Each tick closure
+// captures the generation at creation time; after its await, it bails out if
+// the generation has advanced — preventing a stop/start cycle from leaving a
+// stale tick chain armed in parallel with the new one. See PR #116 for context.
+let generation = 0;
 
 let fetchRunning = false;
 let fetchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -440,13 +445,17 @@ export function refreshOnce(opts?: RefreshOptions): Promise<void> {
 export function startRefreshLoop(): void {
   if (running) return;
   running = true;
+  const myGen = generation;
   const tick = async () => {
-    if (!running) return;
+    if (!running || generation !== myGen) return;
     await refreshOnce();
     // Re-check after the await: stopRefreshLoop() may have fired while
     // refreshOnce was in flight. Without this guard we'd schedule a stray
-    // timer past shutdown.
-    if (!running) return;
+    // timer past shutdown. The generation check also catches a stop/start
+    // cycle that flipped `running` back to true while this tick was
+    // suspended — otherwise both the stale and fresh tick chains would
+    // schedule in parallel, doubling the poll rate permanently.
+    if (!running || generation !== myGen) return;
     const { refreshIntervalMs } = useRepoStore.getState();
     timer = setTimeout(tick, refreshIntervalMs);
   };
@@ -454,6 +463,7 @@ export function startRefreshLoop(): void {
 }
 
 export function stopRefreshLoop(): void {
+  generation++;
   running = false;
   if (timer) clearTimeout(timer);
   timer = null;
@@ -828,6 +838,7 @@ export function _resetRefreshLoopForTests(): void {
   running = false;
   if (timer) clearTimeout(timer);
   timer = null;
+  generation = 0;
   fetchRunning = false;
   if (fetchTimer) clearTimeout(fetchTimer);
   fetchTimer = null;
