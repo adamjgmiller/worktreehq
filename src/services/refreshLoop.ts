@@ -660,8 +660,8 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
 // detection, Claude presence); the only thing that can have changed remotely
 // without moving refs is PR metadata — closed-without-merge, draft toggle,
 // checks, reviews. So we re-fetch just the open-PR list + per-PR details
-// (the latter usually a cache hit because `runFetchOnce` preserves the
-// per-PR cache when refs are unchanged) and patch `.pr` on affected
+// (both cold-cache after `runFetchOnce`'s unconditional invalidation, so
+// the data is guaranteed fresh from GitHub) and patch `.pr` on affected
 // branches via the existing `setBranches` setter + `reconcileBranches`
 // structural-sharing helper.
 //
@@ -675,13 +675,17 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
 //   - Ratchet is untouched because merge-status classifications aren't
 //     re-derived here.
 //
-// Error policy: surface failures via the store error banner, mirroring
-// `runRefreshOnce`'s catch. The narrow pass is a *supplemental* update —
-// the optimistic pass already committed fresh local state — but it's still
-// the path responsible for surfacing fresh PR metadata on the click. If
-// GitHub calls fail here (500, rate limit, token revoked), the user needs
-// to know PR pills may be stale; silent swallow would make the refresh
-// button look like it worked when it didn't.
+// Error policy: the catch below is defensive. In practice
+// `listOpenPRsForBranches` (githubService.ts:282-285) and `batchFetchPRs`
+// (githubService.ts:241-243) swallow their own errors — returning empty-or-
+// stale maps rather than rejecting — so common GitHub API failures (rate
+// limit, 500, revoked token) do NOT trip this catch. The catch exists so
+// that (a) unexpected throws from store reads, helper code, or future
+// service-layer changes that start rethrowing surface via the error banner
+// instead of becoming silent, and (b) the code path is symmetric with
+// runRefreshOnce's own catch. A principled fix for "service layer swallows
+// API failures" belongs in githubService.ts, not here — tracked as a
+// follow-up.
 async function runNarrowPrRefresh(
   repo: RepoState,
   opts?: RefreshOptions,
@@ -729,8 +733,8 @@ async function runNarrowPrRefresh(
     });
     useRepoStore.getState().setBranches(reconcileBranches(current, next));
   } catch (e) {
-    // Surface the failure the same way runRefreshOnce does — users clicked
-    // refresh to see fresh PR data and deserve to know if that failed.
+    // Defensive — see the error-policy comment above. Not reached for
+    // typical GitHub API failures (service layer swallows those).
     const msg = e instanceof Error ? e.message : String(e);
     console.warn('[refreshLoop] narrow PR refresh failed:', msg);
     useRepoStore.getState().setError(msg);
