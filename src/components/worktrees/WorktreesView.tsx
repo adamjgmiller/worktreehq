@@ -115,16 +115,27 @@ export function WorktreesView() {
   // `deleting` flag so a double-click of the dialog's primary button can't
   // fire two parallel remove loops against the same selection.
   const [bulkRemoving, setBulkRemoving] = useState(false);
-  // Result of the most recent bulk operation. Holds both success count and
-  // per-entry errors so we can render a single post-action banner ("Removed
-  // N", "Removed N — K failed", or "All K failed"). Lives outside the store
-  // error because the refresh loop owns store.error and would clobber bulk
-  // results on the next tick — same constraint BranchesView documents at
-  // BranchesView.tsx:29-30. Persistent (no auto-dismiss) so the user has
-  // time to read what happened; replaced wholesale on the next bulk op.
-  const [bulkResult, setBulkResult] = useState<
-    { succeeded: number; errors: string[] } | null
-  >(null);
+  // Result of the most recent bulk operation. Two error categories tracked
+  // separately so the banner can distinguish primary-action failures
+  // (worktree didn't come down) from opt-in side-effect failures (worktree
+  // removed, but branch cleanup hit an error). Conflating them — as the v1
+  // of this banner did — produced misleading totals like "Removed 1 of 2 —
+  // 1 failed" when a single worktree was removed successfully but its
+  // local-branch delete failed.
+  //   attempted     = removable.length at confirm time
+  //   succeeded     = attempted minus removalErrors.length
+  //   removalErrors = removeWorktree() throws (red/amber tone)
+  //   cleanupErrors = deleteLocalBranch / deleteRemoteBranch throws (warning tone)
+  // Lives outside the store error for the same reason BranchesView documents
+  // at BranchesView.tsx:29-30 (refresh loop clobbers store.error). Persistent
+  // (no auto-dismiss) so the user has time to read; replaced wholesale on
+  // the next bulk op.
+  const [bulkResult, setBulkResult] = useState<{
+    attempted: number;
+    succeeded: number;
+    removalErrors: string[];
+    cleanupErrors: string[];
+  } | null>(null);
   // Saved default for post-create commands. Re-read from config each time
   // the Create dialog opens so edits made in Settings between creations
   // are reflected. The dialog seeds its own editable state from this.
@@ -580,7 +591,8 @@ export function WorktreesView() {
       // Don't pre-clear bulkResult — leaving the previous result up while the
       // new run is in flight is harmless (the dialog covers it visually) and
       // avoids a brief blank moment if the new run finishes instantly.
-      const errors: string[] = [];
+      const removalErrors: string[] = [];
+      const cleanupErrors: string[] = [];
       // Track paths whose `removeWorktree` call failed so we can keep them
       // selected after the loop. Without this, a partial-failure run would
       // clear the entire selection and the user would have to re-identify
@@ -591,7 +603,7 @@ export function WorktreesView() {
           try {
             await removeWorktree(repo.path, w.path, opts.force);
           } catch (e: any) {
-            errors.push(`${basename(w.path)}: ${e?.message ?? String(e)}`);
+            removalErrors.push(`${basename(w.path)}: ${e?.message ?? String(e)}`);
             failedPaths.add(w.path);
             // If the worktree itself didn't come down, skip the branch
             // cleanup for this entry — deleting the branch would orphan the
@@ -604,7 +616,7 @@ export function WorktreesView() {
             try {
               await deleteLocalBranch(repo.path, branch.name, true);
             } catch (e: any) {
-              errors.push(`${branch.name} (local): ${e?.message ?? String(e)}`);
+              cleanupErrors.push(`${branch.name} (local): ${e?.message ?? String(e)}`);
             }
           }
           if (opts.deleteRemoteBranch && branch.hasRemote) {
@@ -614,9 +626,9 @@ export function WorktreesView() {
               const msg = e?.message ?? String(e);
               // Idempotent: if the remote ref is already gone (race with
               // someone else, or we deleted it earlier in this loop somehow),
-              // don't surface it as a bulk failure.
+              // don't surface it as a bulk warning.
               if (!/remote ref does not exist|unable to delete.*remote ref/i.test(msg)) {
-                errors.push(`${branch.name} (remote): ${msg}`);
+                cleanupErrors.push(`${branch.name} (remote): ${msg}`);
               }
             }
           }
@@ -632,12 +644,15 @@ export function WorktreesView() {
           return next;
         });
         setConfirmBulkRemove(false);
-        // Surface the result. `succeeded` is derived as removable.length minus
-        // failures so the count reflects what the user actually attempted (not
-        // all-selected — orphans and primary were filtered out earlier).
+        // Surface the result. The two error categories stay separate so the
+        // banner can show "Removed N. K branch-cleanup warnings:" — a single
+        // worktree successfully removed with a branch-delete failure no
+        // longer reports as "Removed 1 of 2 — 1 failed".
         setBulkResult({
+          attempted: removable.length,
           succeeded: removable.length - failedPaths.size,
-          errors,
+          removalErrors,
+          cleanupErrors,
         });
         await refreshOnce({ userInitiated: true });
       } finally {
@@ -773,22 +788,26 @@ export function WorktreesView() {
           </DndContext>
         </div>
       )}
-      {bulkResult && (bulkResult.succeeded > 0 || bulkResult.errors.length > 0) && (() => {
-        // Three visual modes derived from one state shape:
-        //   all-succeeded → clean/green: positive ack ("Removed N").
-        //   partial       → dirty/amber: "Removed N, K failed" + error list.
-        //   all-failed    → conflict/red: "All K failed" + error list.
-        // Persistent (no auto-dismiss) so users have time to read the result
-        // — the dismissing-too-fast feedback we got on the v1 of this flow
-        // came from the dialog dismount swallowing all confirmation.
-        const allOk = bulkResult.errors.length === 0;
-        const allFailed = bulkResult.succeeded === 0;
-        const tone = allOk ? 'clean' : allFailed ? 'conflict' : 'dirty';
-        const summary = allOk
-          ? `Removed ${bulkResult.succeeded} worktree${bulkResult.succeeded === 1 ? '' : 's'}.`
-          : allFailed
-            ? `All ${bulkResult.errors.length} removal${bulkResult.errors.length === 1 ? '' : 's'} failed.`
-            : `Removed ${bulkResult.succeeded} of ${bulkResult.succeeded + bulkResult.errors.length} — ${bulkResult.errors.length} failed.`;
+      {bulkResult && bulkResult.attempted > 0 && (() => {
+        // Tone tiers: removal failure dominates (red/amber), then cleanup-
+        // only warnings (amber), then clean success (green). The summary
+        // line speaks ONLY to the primary action (worktree removal); the
+        // optional cleanup-warnings block below speaks to the opt-in side
+        // effect (branch deletion) so the two outcomes never get conflated.
+        // v1 of this banner mixed them and produced impossible totals when
+        // a worktree removed but its branch delete failed.
+        const { attempted, succeeded, removalErrors, cleanupErrors } = bulkResult;
+        const removalFailed = attempted - succeeded;
+        const tone = succeeded === 0
+          ? 'conflict'
+          : removalFailed > 0 || cleanupErrors.length > 0
+            ? 'dirty'
+            : 'clean';
+        const summary = succeeded === 0
+          ? `All ${attempted} removal${attempted === 1 ? '' : 's'} failed.`
+          : removalFailed > 0
+            ? `Removed ${succeeded} of ${attempted} — ${removalFailed} failed.`
+            : `Removed ${succeeded} worktree${succeeded === 1 ? '' : 's'}.`;
         return (
           <div
             // role=status + aria-live=polite so screen readers announce the
@@ -804,13 +823,26 @@ export function WorktreesView() {
           >
             <div className="flex-1 min-w-0">
               <div>{summary}</div>
-              {bulkResult.errors.length > 0 && (
+              {removalErrors.length > 0 && (
                 <pre
                   aria-live="assertive"
                   className="mt-1 whitespace-pre-wrap text-wt-fg-2"
                 >
-                  {bulkResult.errors.join('\n')}
+                  {removalErrors.join('\n')}
                 </pre>
+              )}
+              {cleanupErrors.length > 0 && (
+                <>
+                  <div className="mt-2">
+                    {cleanupErrors.length} branch-cleanup warning{cleanupErrors.length === 1 ? '' : 's'}:
+                  </div>
+                  <pre
+                    aria-live="assertive"
+                    className="mt-1 whitespace-pre-wrap text-wt-fg-2"
+                  >
+                    {cleanupErrors.join('\n')}
+                  </pre>
+                </>
               )}
             </div>
             <button
