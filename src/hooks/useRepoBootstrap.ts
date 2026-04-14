@@ -27,7 +27,16 @@ import {
 // continuous write stream (hot reload, `npm install`) would otherwise fire
 // a refresh every 250ms forever. With the watcher scoped to `.git/` this
 // rarely matters in practice, but the floor is cheap insurance.
-const WATCHER_MIN_INTERVAL_MS = 2000;
+//
+// Raised from 2s to 5s as part of #72 cadence cleanup. 2s was aggressive
+// enough that the watcher-driven refresh cadence felt more like a glitch
+// than a feature — the "updated X ago" label would reset at unpredictable
+// sub-poll intervals whenever anything inside `.git/` wrote (including
+// our own `git fetch`'s FETCH_HEAD write; see the linked follow-up issue).
+// 5s preserves the "I just committed" immediacy case (the debounce still
+// fires within 250ms if nothing else has refreshed lately) but prevents
+// the label from resetting 3-4 times per minute on a routinely-busy repo.
+const WATCHER_MIN_INTERVAL_MS = 5000;
 
 interface AppConfig {
   github_token: string;

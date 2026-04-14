@@ -1,9 +1,13 @@
 import type { SquashMapping } from '../../types';
 import { shortSha, relativeTime } from '../../lib/format';
+import { useLiveTick } from '../../hooks/useLiveRelativeTime';
 import { GitCommit, GitBranch, Archive, ArrowRight } from 'lucide-react';
 import { Tooltip } from '../common/Tooltip';
 
 export function SquashDetail({ mapping }: { mapping: SquashMapping }) {
+  // Single tick drives both the top-level squashDate label and the
+  // per-row `relativeTime(c.date)` in the original-commits list.
+  useLiveTick();
   return (
     <div className="p-6">
       <div className="text-xs text-wt-muted uppercase tracking-wide mb-2">Squash archaeology</div>

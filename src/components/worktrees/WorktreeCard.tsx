@@ -33,6 +33,7 @@ import type {
 import { worktreeStatusClass } from '../../lib/colors';
 import { branchDisposition, type BranchDispositionAction } from '../../lib/branchDisposition';
 import { relativeTime, shortSha, aheadBehind, basename } from '../../lib/format';
+import { useLiveRelativeTime, useLiveTick } from '../../hooks/useLiveRelativeTime';
 import { resumeCommand } from '../../services/claudeAwarenessService';
 import { pullFastForward } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
@@ -762,6 +763,8 @@ function DispositionActionButton({
 // presence display.
 function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
   const isMultiLive = presence.liveSessionCount > 1;
+  // Drives the live-ago label in the tooltip string below.
+  const lastActivityAgo = useLiveRelativeTime(presence.lastActivity ?? '');
 
   const colorClass = isMultiLive
     ? 'text-wt-claude-conflict'
@@ -792,7 +795,7 @@ function ClaudeBadge({ presence }: { presence: ClaudePresence }) {
         </span>
       );
     }
-    const when = presence.lastActivity ? relativeTime(presence.lastActivity) : 'unknown';
+    const when = presence.lastActivity ? lastActivityAgo : 'unknown';
     if (presence.status === 'live-ide') {
       return `Claude live in ${presence.ideName ?? 'IDE'} · ${when}`;
     }
@@ -840,7 +843,7 @@ function LastCommitFooter({
   defaultBranch: string;
 }) {
   const [open, setOpen] = useState(false);
-  const when = relativeTime(lastCommit.date);
+  const when = useLiveRelativeTime(lastCommit.date);
   const isInherited = !isPrimary && aheadOfMain === 0;
   const label = isInherited ? 'base commit' : 'last commit';
   return (
@@ -920,6 +923,10 @@ function PastSessionsList({
 }) {
   const [open, setOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // Shared tick so the per-session `relativeTime(s.lastActivity)` calls
+  // below (inside the map) age across unit boundaries without needing
+  // one hook call per list item.
+  useLiveTick();
   // undefined = not yet fetched, null = fetched but no qualifying prompt,
   // string = the fetched prompt. Keeping all three states in one map lets
   // the render decide whether to show a skeleton, a fallback, or the text

@@ -1,5 +1,6 @@
 import { useRepoStore } from '../../store/useRepoStore';
 import { shortSha, relativeTime } from '../../lib/format';
+import { useLiveTick } from '../../hooks/useLiveRelativeTime';
 import { EmptyState } from '../common/EmptyState';
 import type { Branch } from '../../types';
 
@@ -28,6 +29,10 @@ export function GraphView() {
   const total = useRepoStore((s) => s.mainCommitsTotal);
   const mappings = useRepoStore((s) => s.squashMappings);
   const branches = useRepoStore((s) => s.branches);
+  // Subscribe to the shared 1-second tick so the inline `relativeTime()`
+  // calls in the commit row map below re-evaluate with fresh `Date.now()`
+  // and age visibly across minute boundaries between data refreshes.
+  useLiveTick();
   const bySha = new Map(mappings.map((m) => [m.squashCommitSha, m]));
   const branchByName = new Map(branches.map((b) => [b.name, b]));
 
