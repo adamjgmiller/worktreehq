@@ -309,6 +309,19 @@ export function WorktreesView() {
     [selectedActionable],
   );
 
+  // Reset selection + bulk-result banner when the user switches repos.
+  // WorktreesView isn't unmounted on repo change (tabs are local state in
+  // App.tsx), so without this a stale "Removed N worktrees" banner from the
+  // previous repo would sit over the new repo's grid until the user
+  // dismissed it manually. Selection is masked at action time by the
+  // filtered ∩ selection intersection (see selectedActionable above), but
+  // the banner has no such guard and would mislead.
+  const repoPath = repo?.path;
+  useEffect(() => {
+    setBulkResult(null);
+    setSelection(new Set());
+  }, [repoPath]);
+
   // Listen for global keyboard shortcuts (Cmd+A, Esc) dispatched by
   // useKeyboardShortcuts. Mirrors the Branches tab pattern.
   useEffect(() => {
@@ -824,10 +837,7 @@ export function WorktreesView() {
             <div className="flex-1 min-w-0">
               <div>{summary}</div>
               {removalErrors.length > 0 && (
-                <pre
-                  aria-live="assertive"
-                  className="mt-1 whitespace-pre-wrap text-wt-fg-2"
-                >
+                <pre className="mt-1 whitespace-pre-wrap text-wt-fg-2">
                   {removalErrors.join('\n')}
                 </pre>
               )}
@@ -836,10 +846,7 @@ export function WorktreesView() {
                   <div className="mt-2">
                     {cleanupErrors.length} branch-cleanup warning{cleanupErrors.length === 1 ? '' : 's'}:
                   </div>
-                  <pre
-                    aria-live="assertive"
-                    className="mt-1 whitespace-pre-wrap text-wt-fg-2"
-                  >
+                  <pre className="mt-1 whitespace-pre-wrap text-wt-fg-2">
                     {cleanupErrors.join('\n')}
                   </pre>
                 </>
