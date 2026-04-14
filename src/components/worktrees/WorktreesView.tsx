@@ -339,7 +339,7 @@ export function WorktreesView() {
       window.removeEventListener('wthq:toggle-all-worktrees', onToggleAll);
       window.removeEventListener('wthq:worktrees-escape', onEscape);
     };
-  });
+  }, [toggleAll, search, selection.size]);
   const activeWorktree = activeId
     ? orderedWorktrees.find((w) => w.path === activeId) ?? null
     : null;
@@ -604,20 +604,21 @@ export function WorktreesView() {
       // Don't pre-clear bulkResult — leaving the previous result up while the
       // new run is in flight is harmless (the dialog covers it visually) and
       // avoids a brief blank moment if the new run finishes instantly.
-      const removalErrors: string[] = [];
+      // Single source of truth for per-worktree removal failures. Two
+      // parallel structures (failedPaths: Set + removalErrors: string[]) used
+      // to live here; a future edit pushing to one but not the other would
+      // silently miscount `succeeded` and mis-clear the selection. See #107.
+      const removalFailures: { path: string; message: string }[] = [];
       const cleanupErrors: string[] = [];
-      // Track paths whose `removeWorktree` call failed so we can keep them
-      // selected after the loop. Without this, a partial-failure run would
-      // clear the entire selection and the user would have to re-identify
-      // and re-select every failed entry to retry.
-      const failedPaths = new Set<string>();
       try {
         for (const w of removable) {
           try {
             await removeWorktree(repo.path, w.path, opts.force);
           } catch (e: any) {
-            removalErrors.push(`${basename(w.path)}: ${e?.message ?? String(e)}`);
-            failedPaths.add(w.path);
+            removalFailures.push({
+              path: w.path,
+              message: `${basename(w.path)}: ${e?.message ?? String(e)}`,
+            });
             // If the worktree itself didn't come down, skip the branch
             // cleanup for this entry — deleting the branch would orphan the
             // remaining worktree directory.
@@ -649,6 +650,7 @@ export function WorktreesView() {
         // Clear only the paths that successfully removed, plus paths that
         // were never in `removable` (orphans, primary). Failed paths stay
         // selected so the user can act on them again without re-selecting.
+        const failedPaths = new Set(removalFailures.map((f) => f.path));
         setSelection((prev) => {
           const next = new Set(prev);
           for (const w of removable) {
@@ -663,8 +665,8 @@ export function WorktreesView() {
         // longer reports as "Removed 1 of 2 — 1 failed".
         setBulkResult({
           attempted: removable.length,
-          succeeded: removable.length - failedPaths.size,
-          removalErrors,
+          succeeded: removable.length - removalFailures.length,
+          removalErrors: removalFailures.map((f) => f.message),
           cleanupErrors,
         });
         await refreshOnce({ userInitiated: true });

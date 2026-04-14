@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRepoStore } from '../../store/useRepoStore';
 import { FilterBar } from './FilterBar';
 import { BranchTable } from './BranchTable';
@@ -48,6 +48,27 @@ export function BranchesView() {
     };
   }, [repo]);
 
+  const filtered = useMemo(() => {
+    let result = applyPreset(branches, preset, { defaultBranch: repo?.defaultBranch });
+    if (mine) result = filterMine(result, userEmail);
+    return searchBranches(result, search);
+  }, [branches, preset, mine, search, userEmail, repo?.defaultBranch]);
+  const selectedBranches = filtered.filter((b) => selection.has(b.name));
+
+  const toggle = (name: string) =>
+    setSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  const toggleAll = useCallback(() => {
+    setSelection((prev) => {
+      if (filtered.every((b) => prev.has(b.name))) return new Set();
+      return new Set(filtered.map((b) => b.name));
+    });
+  }, [filtered]);
+
   // Listen for global keyboard shortcuts dispatched by useKeyboardShortcuts.
   useEffect(() => {
     const onToggleAll = () => toggleAll();
@@ -64,27 +85,7 @@ export function BranchesView() {
       window.removeEventListener('wthq:toggle-all-branches', onToggleAll);
       window.removeEventListener('wthq:branches-escape', onEscape);
     };
-  });
-
-  const filtered = useMemo(() => {
-    let result = applyPreset(branches, preset, { defaultBranch: repo?.defaultBranch });
-    if (mine) result = filterMine(result, userEmail);
-    return searchBranches(result, search);
-  }, [branches, preset, mine, search, userEmail, repo?.defaultBranch]);
-  const selectedBranches = filtered.filter((b) => selection.has(b.name));
-
-  const toggle = (name: string) =>
-    setSelection((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
-  const toggleAll = () =>
-    setSelection((prev) => {
-      if (filtered.every((b) => prev.has(b.name))) return new Set();
-      return new Set(filtered.map((b) => b.name));
-    });
+  }, [toggleAll, search, selection.size]);
 
   async function performDelete(mode: DeleteMode) {
     if (!repo || deleting) return;
