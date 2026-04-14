@@ -18,6 +18,17 @@ import { WorktreeCard } from './WorktreeCard';
 import { EmptyState } from '../common/EmptyState';
 import { CreateWorktreeDialog, type CreateWorktreeValue } from './CreateWorktreeDialog';
 import { RemoveWorktreeDialog } from './RemoveWorktreeDialog';
+import { WorktreeFilterBar } from './WorktreeFilterBar';
+import { WorktreeBulkActionBar } from './WorktreeBulkActionBar';
+import {
+  BulkRemoveWorktreesDialog,
+  type BulkRemoveOptions,
+} from './BulkRemoveWorktreesDialog';
+import {
+  applyWorktreePreset,
+  searchWorktrees,
+  type WorktreePreset,
+} from '../../lib/worktreeFilters';
 import {
   createWorktree,
   pushNewBranch,
@@ -35,6 +46,7 @@ import {
   writeWorktreeSortMode,
 } from '../../services/worktreeOrderService';
 import { sortWorktrees } from '../../lib/worktreeOrder';
+import { basename } from '../../lib/format';
 import { WorktreeSortMenu } from './WorktreeSortMenu';
 import type { Branch, Worktree, WorktreeSortMode } from '../../types';
 
@@ -87,6 +99,27 @@ export function WorktreesView() {
   const [createOpen, setCreateOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Worktree | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [preset, setPreset] = useState<WorktreePreset>('all');
+  const [search, setSearch] = useState('');
+  // Selection by worktree path. Stays as a Set across refresh ticks; stale
+  // entries (worktree removed externally) are harmless because every read
+  // path goes through `selectedActionable` below, which intersects with the
+  // current filtered list before producing counts or action lists.
+  const [selection, setSelection] = useState<Set<string>>(new Set());
+  // Anchor for shift-click range selection. Updated on every plain click so
+  // the next shift-click selects from the last clicked card to the new one,
+  // matching Finder/Gmail behavior.
+  const selectionAnchorRef = useRef<string | null>(null);
+  const [confirmBulkRemove, setConfirmBulkRemove] = useState(false);
+  // In-flight guard for the bulk-remove loop. Mirrors BranchesView's
+  // `deleting` flag so a double-click of the dialog's primary button can't
+  // fire two parallel remove loops against the same selection.
+  const [bulkRemoving, setBulkRemoving] = useState(false);
+  // Local error pile for bulk operations. Lives outside the store error
+  // because refreshOnce calls setError(null) at the start of each tick,
+  // which would clear bulk failures right after they're surfaced. Same
+  // pattern as BranchesView.tsx:29-30.
+  const [bulkErrors, setBulkErrors] = useState<string[]>([]);
   // Saved default for post-create commands. Re-read from config each time
   // the Create dialog opens so edits made in Settings between creations
   // are reflected. The dialog seeds its own editable state from this.
@@ -109,6 +142,13 @@ export function WorktreesView() {
   const sensors = useSensors(
     useSensor(CardPointerSensor, { activationConstraint: { distance: 8 } }),
   );
+  // No-op sensor set used when the grid is filtered or searched. Swapping the
+  // sensors prop on DndContext is how we surgically disable drag without
+  // unmounting the context — preserves any in-flight reconciliation state and
+  // keeps useSortable hooks on the rendered cards alive. Drag literally never
+  // activates so handleDragEnd can't fire with a partial newOrder that would
+  // corrupt the saved manual arrangement (see plan bug-hazard #1).
+  const noSensors = useSensors();
 
   // Ref-stable useMemo: if the recomputed order has the same elements in
   // the same positions as last render (by Worktree object reference — which
@@ -158,6 +198,119 @@ export function WorktreesView() {
     return m;
   }, [branches]);
   const defaultBranch = repo?.defaultBranch ?? 'main';
+  // Filter pipeline: preset narrows by category, then free-text search trims
+  // further. Both stages are pure and operate on the already-sorted list, so
+  // the visible card order matches what the sort menu produced — minus
+  // anything the filter excluded. A non-default preset or non-empty search
+  // also disables drag-to-reorder so the user can't accidentally rewrite the
+  // manual order from a partial visible set.
+  const filtered = useMemo(() => {
+    const stage1 = applyWorktreePreset(orderedWorktrees, branchByName, preset, {
+      defaultBranch: repo?.defaultBranch,
+    });
+    return searchWorktrees(stage1, branchByName, search);
+  }, [orderedWorktrees, branchByName, preset, search, repo?.defaultBranch]);
+  const dragEnabled = preset === 'all' && search.trim() === '';
+  // Selection helpers. `toggle` flips one path and updates the shift-anchor.
+  // `toggleRange` selects every card between the anchor and the clicked
+  // path within the FILTERED order (so a shift-click range only spans
+  // visible cards, matching what the user can actually see). `toggleAll`
+  // adds/clears the entire filtered subset; if all visible cards are
+  // already selected, it clears (Branches uses the same rule).
+  const toggle = useCallback((path: string) => {
+    setSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    selectionAnchorRef.current = path;
+  }, []);
+  const toggleRange = useCallback(
+    (path: string) => {
+      const anchor = selectionAnchorRef.current;
+      const order = filtered.map((w) => w.path);
+      const endIdx = order.indexOf(path);
+      if (endIdx === -1) return;
+      const startIdx = anchor ? order.indexOf(anchor) : -1;
+      // No prior anchor (or anchor not in current filter): treat as plain toggle.
+      if (startIdx === -1) {
+        toggle(path);
+        return;
+      }
+      const [lo, hi] = startIdx <= endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+      setSelection((prev) => {
+        const next = new Set(prev);
+        for (let i = lo; i <= hi; i++) next.add(order[i]);
+        return next;
+      });
+      // Don't move the anchor on shift-click — repeated shift-clicks should
+      // re-anchor from the original click, which is the standard pattern.
+    },
+    [filtered, toggle],
+  );
+  const toggleAll = useCallback(() => {
+    setSelection((prev) => {
+      if (filtered.length > 0 && filtered.every((w) => prev.has(w.path))) {
+        return new Set();
+      }
+      return new Set(filtered.map((w) => w.path));
+    });
+  }, [filtered]);
+  // Single stable handler shared by all cards — each card knows its own
+  // wt.path and passes it in. A per-card factory would create a new function
+  // per render, defeating WorktreeCard's React.memo shallow compare and
+  // forcing every card to re-render on every refresh tick.
+  const handleToggleSelected = useCallback(
+    (path: string, e: React.MouseEvent) => {
+      if (e.shiftKey) {
+        toggleRange(path);
+      } else {
+        toggle(path);
+      }
+    },
+    [toggle, toggleRange],
+  );
+  const selectionActive = selection.size > 0;
+  // Derive everything from `filtered ∩ selection` so phantom selections (a
+  // worktree the user selected and then had removed externally before the
+  // refresh tick caught up) never reach the action loop. See plan
+  // bug-hazard #3 for why this matters.
+  const selectedActionable = useMemo(
+    () => filtered.filter((w) => selection.has(w.path)),
+    [filtered, selection],
+  );
+  const removable = useMemo(
+    () => selectedActionable.filter((w) => !w.isPrimary && !w.prunable),
+    [selectedActionable],
+  );
+  const pruneable = useMemo(
+    () => selectedActionable.filter((w) => !!w.prunable),
+    [selectedActionable],
+  );
+  const skippedPrimary = useMemo(
+    () => selectedActionable.filter((w) => w.isPrimary).length,
+    [selectedActionable],
+  );
+
+  // Listen for global keyboard shortcuts (Cmd+A, Esc) dispatched by
+  // useKeyboardShortcuts. Mirrors the Branches tab pattern.
+  useEffect(() => {
+    const onToggleAll = () => toggleAll();
+    const onEscape = () => {
+      if (search) {
+        setSearch('');
+      } else if (selection.size > 0) {
+        setSelection(new Set());
+      }
+    };
+    window.addEventListener('wthq:toggle-all-worktrees', onToggleAll);
+    window.addEventListener('wthq:worktrees-escape', onEscape);
+    return () => {
+      window.removeEventListener('wthq:toggle-all-worktrees', onToggleAll);
+      window.removeEventListener('wthq:worktrees-escape', onEscape);
+    };
+  });
   const activeWorktree = activeId
     ? orderedWorktrees.find((w) => w.path === activeId) ?? null
     : null;
@@ -391,9 +544,99 @@ export function WorktreesView() {
     }
   }, [repo, setError]);
 
+  // Bulk prune handler. Same call as the per-card variant — git's prune is
+  // repo-wide, not path-targeted. Selecting orphans and clicking Prune
+  // therefore prunes every orphan git would prune, which matches the
+  // semantic the user's already getting from the per-card button. Clearing
+  // the selection on success keeps the bar from sticking around with stale
+  // counts after the orphans vanish on refresh.
+  const handleBulkPruneOrphans = useCallback(async () => {
+    if (!repo) return;
+    try {
+      await pruneWorktrees(repo.path, { expire: 'now' });
+      setSelection(new Set());
+      await refreshOnce({ userInitiated: true });
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    }
+  }, [repo, setError]);
+
+  // Bulk-remove handler. Loops over `removable` (orphans and primary already
+  // filtered out), collecting per-worktree failures into a local error pile
+  // surfaced via `setBulkErrors` after the loop completes. The store error
+  // can't be used here because refreshOnce clears it at the start of every
+  // tick (see BranchesView.tsx:29-30 for the same constraint). The
+  // `bulkRemoving` guard mirrors BranchesView's `deleting` flag so a
+  // double-click can't fire two parallel loops against the same selection.
+  const handleBulkRemove = useCallback(
+    async (opts: BulkRemoveOptions) => {
+      if (!repo || bulkRemoving) return;
+      setBulkRemoving(true);
+      setBulkErrors([]);
+      const errors: string[] = [];
+      // Track paths whose `removeWorktree` call failed so we can keep them
+      // selected after the loop. Without this, a partial-failure run would
+      // clear the entire selection and the user would have to re-identify
+      // and re-select every failed entry to retry.
+      const failedPaths = new Set<string>();
+      try {
+        for (const w of removable) {
+          try {
+            await removeWorktree(repo.path, w.path, opts.force);
+          } catch (e: any) {
+            errors.push(`${basename(w.path)}: ${e?.message ?? String(e)}`);
+            failedPaths.add(w.path);
+            // If the worktree itself didn't come down, skip the branch
+            // cleanup for this entry — deleting the branch would orphan the
+            // remaining worktree directory.
+            continue;
+          }
+          const branch = branchByName.get(w.branch);
+          if (!branch || branch.name === repo.defaultBranch) continue;
+          if (opts.deleteLocalBranch && branch.hasLocal) {
+            try {
+              await deleteLocalBranch(repo.path, branch.name, true);
+            } catch (e: any) {
+              errors.push(`${branch.name} (local): ${e?.message ?? String(e)}`);
+            }
+          }
+          if (opts.deleteRemoteBranch && branch.hasRemote) {
+            try {
+              await deleteRemoteBranch(repo.path, 'origin', branch.name);
+            } catch (e: any) {
+              const msg = e?.message ?? String(e);
+              // Idempotent: if the remote ref is already gone (race with
+              // someone else, or we deleted it earlier in this loop somehow),
+              // don't surface it as a bulk failure.
+              if (!/remote ref does not exist|unable to delete.*remote ref/i.test(msg)) {
+                errors.push(`${branch.name} (remote): ${msg}`);
+              }
+            }
+          }
+        }
+        // Clear only the paths that successfully removed, plus paths that
+        // were never in `removable` (orphans, primary). Failed paths stay
+        // selected so the user can act on them again without re-selecting.
+        setSelection((prev) => {
+          const next = new Set(prev);
+          for (const w of removable) {
+            if (!failedPaths.has(w.path)) next.delete(w.path);
+          }
+          return next;
+        });
+        setConfirmBulkRemove(false);
+        setBulkErrors(errors);
+        await refreshOnce({ userInitiated: true });
+      } finally {
+        setBulkRemoving(false);
+      }
+    },
+    [repo, removable, branchByName, bulkRemoving],
+  );
+
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-6 pt-4">
+      <div className="flex items-center gap-2 px-6 pt-4 pb-3">
         <button
           onClick={() => {
             void openCreate();
@@ -406,7 +649,20 @@ export function WorktreesView() {
           mode={worktreeSortMode}
           onChange={handleSortModeChange}
         />
+        {!dragEnabled && (
+          <span className="text-[0.625rem] text-wt-muted ml-2">
+            drag-to-reorder paused while filtered
+          </span>
+        )}
       </div>
+      {worktrees.length > 0 && (
+        <WorktreeFilterBar
+          value={preset}
+          onChange={setPreset}
+          search={search}
+          onSearch={setSearch}
+        />
+      )}
       {worktrees.length === 0 ? (
         // A valid git repo always has at least the primary worktree, so an
         // empty list here means listWorktrees failed (or hasn't completed
@@ -415,6 +671,11 @@ export function WorktreesView() {
         <EmptyState
           title="No worktrees loaded"
           hint="Either the repo isn't readable yet or `git worktree list` failed. Check the error banner above."
+        />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          title="No worktrees match"
+          hint="Try a different filter or clear the search."
         />
       ) : (
         // Wrap the grid in a flex-1 scroll container so cards below the
@@ -434,7 +695,7 @@ export function WorktreesView() {
           )}
         >
           <DndContext
-            sensors={sensors}
+            sensors={dragEnabled ? sensors : noSensors}
             collisionDetection={closestCenter}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
@@ -442,7 +703,7 @@ export function WorktreesView() {
           >
             <SortableContext items={sortableIds} strategy={rectSortingStrategy}>
               <div className="p-6 grid grid-cols-[repeat(auto-fit,minmax(20rem,1fr))] gap-5">
-                {orderedWorktrees.map((w) => (
+                {filtered.map((w) => (
                   <WorktreeCard
                     key={w.prunable ? `orphan:${w.path}` : w.path}
                     wt={w}
@@ -455,6 +716,9 @@ export function WorktreesView() {
                     onPruneOrphan={handlePruneOrphan}
                     isDragging={activeId === w.path}
                     animateLayout={animateLayout && activeId === null}
+                    selected={selection.has(w.path)}
+                    selectionActive={selectionActive}
+                    onToggleSelected={handleToggleSelected}
                   />
                 ))}
               </div>
@@ -473,6 +737,37 @@ export function WorktreesView() {
             </DragOverlay>
           </DndContext>
         </div>
+      )}
+      {bulkErrors.length > 0 && (
+        <div className="px-4 py-2 bg-wt-conflict/10 border-t border-wt-conflict/40 text-xs text-wt-conflict font-mono flex items-start gap-3">
+          <div className="flex-1 whitespace-pre-wrap">{bulkErrors.join('\n')}</div>
+          <button
+            onClick={() => setBulkErrors([])}
+            className="text-wt-fg-2 hover:text-wt-fg"
+            aria-label="dismiss errors"
+          >
+            ×
+          </button>
+        </div>
+      )}
+      <WorktreeBulkActionBar
+        totalSelected={selectedActionable.length}
+        removableCount={removable.length}
+        pruneableCount={pruneable.length}
+        skippedPrimary={skippedPrimary}
+        onRemove={() => setConfirmBulkRemove(true)}
+        onPruneOrphans={() => void handleBulkPruneOrphans()}
+      />
+      {confirmBulkRemove && repo && (
+        <BulkRemoveWorktreesDialog
+          worktrees={removable}
+          branchByName={branchByName}
+          defaultBranch={repo.defaultBranch}
+          skippedPrimary={skippedPrimary}
+          submitting={bulkRemoving}
+          onCancel={() => setConfirmBulkRemove(false)}
+          onConfirm={handleBulkRemove}
+        />
       )}
       {createOpen && repo && (
         <CreateWorktreeDialog

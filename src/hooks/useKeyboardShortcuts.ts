@@ -60,6 +60,18 @@ export function useKeyboardShortcuts({
           window.dispatchEvent(new CustomEvent('wthq:branches-escape'));
           return;
         }
+        // Worktrees tab: same shape — search clears first, then selection.
+        // Skip when any modal dialog is open: the shared Dialog wrapper
+        // handles its own Escape, and dispatching here on top of that would
+        // close the modal AND clear search/selection behind it on a single
+        // keypress. We detect via the ARIA selector the shared Dialog sets
+        // (`role="dialog" aria-modal="true"`); only actual modal dialogs
+        // match, so this won't suppress the escape on tooltips/menus.
+        if (tab === 'worktrees') {
+          if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+          window.dispatchEvent(new CustomEvent('wthq:worktrees-escape'));
+          return;
+        }
         return;
       }
 
@@ -82,10 +94,15 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // Cmd/Ctrl+A — select all branches (only on Branches tab)
+      // Cmd/Ctrl+A — select all (Branches and Worktrees tabs only)
       if (mod && e.key === 'a' && !e.shiftKey && !e.altKey && tab === 'branches') {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('wthq:toggle-all-branches'));
+        return;
+      }
+      if (mod && e.key === 'a' && !e.shiftKey && !e.altKey && tab === 'worktrees') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('wthq:toggle-all-worktrees'));
         return;
       }
 
@@ -141,15 +158,21 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // / — focus branch search (switch to Branches tab if needed)
+      // / — focus the search input. Stays on the current tab when it has
+      // its own search (Worktrees); otherwise jumps to Branches as the
+      // historical default.
       if (e.key === '/' && !mod && !e.altKey) {
         e.preventDefault();
-        setTab('branches');
-        requestAnimationFrame(() => {
-          document
-            .getElementById('branch-search-input')
-            ?.focus();
-        });
+        if (tab === 'worktrees') {
+          requestAnimationFrame(() => {
+            document.getElementById('worktree-search-input')?.focus();
+          });
+        } else {
+          setTab('branches');
+          requestAnimationFrame(() => {
+            document.getElementById('branch-search-input')?.focus();
+          });
+        }
         return;
       }
     };
