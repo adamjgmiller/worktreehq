@@ -482,7 +482,7 @@ describe('runFetchOnce skip-when-unchanged', () => {
     expect(asMock(github.invalidateOpenPrListCache)).not.toHaveBeenCalled();
   });
 
-  it('user-initiated fetch always chains a refresh, even on unchanged refs', async () => {
+  it('user-initiated fetch + refs unchanged → narrow PR-only post-fetch pass', async () => {
     useRepoStore.setState({
       repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
     });
@@ -490,30 +490,38 @@ describe('runFetchOnce skip-when-unchanged', () => {
 
     await runFetchOnce({ userInitiated: true });
 
-    // User-initiated fetches run refreshOnce TWICE: once optimistically
-    // (immediate local re-derive, fires before fetchAllPrune) and once
-    // post-fetch (fresh-remote re-derive). Each pipeline calls
-    // listWorktrees as the first element of its Promise.all, so the mock
-    // records two invocations. The skip path for unchanged refs is also
-    // bypassed for user-initiated because the user may be surfacing
-    // PR-state-only changes that don't move refs.
-    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(2);
-    // Open-PR list cache IS invalidated so PR state changes that don't move
-    // refs (closed-without-merge, draft toggle) still surface on the click.
+    // Optimistic pass runs the full pipeline once. The narrow PR-only pass
+    // does NOT re-run listWorktrees / listBranches / listMainCommits /
+    // listTags / detectSquashMerges / detectCrossWorktreeConflicts — those
+    // all have bit-identical inputs when refs didn't move, so re-running
+    // them is provably redundant work. This is the core #113 fix.
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(1);
+    expect(asMock(git.listBranches)).toHaveBeenCalledTimes(1);
+    expect(asMock(git.listMainCommits)).toHaveBeenCalledTimes(1);
+    expect(asMock(git.listTags)).toHaveBeenCalledTimes(1);
+    expect(asMock(squash.detectSquashMerges)).toHaveBeenCalledTimes(1);
+    expect(asMock(conflicts.detectCrossWorktreeConflicts)).toHaveBeenCalledTimes(1);
+    // listOpenPRsForBranches IS called twice — once by the optimistic
+    // (via runRefreshOnce) and once by the narrow pass — because PR
+    // state can change without refs moving (closed-without-merge, draft
+    // toggle, checks).
+    expect(asMock(github.listOpenPRsForBranches)).toHaveBeenCalledTimes(2);
+    // Cache invalidation policy unchanged from commit 1: list is
+    // invalidated to catch PR-state-only changes; per-PR detail cache
+    // is preserved so the second listOpenPRs call can serve from the
+    // optimistic's recently-populated per-PR entries.
     expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
-    // Per-PR detail cache is NOT invalidated when refs didn't move — the
-    // optimistic pass populated it ~2s ago, and the 5-min TTL makes serving
-    // those entries to the post-fetch pass safe. This is the #113 fix: avoid
-    // making a duplicate GraphQL round-trip for PR data that can't have
-    // changed without a ref move (merge_commit_sha, state → merged, etc.).
     expect(asMock(github.invalidatePrCacheForRepo)).not.toHaveBeenCalled();
   });
 
-  it('user-initiated fetch + refs moved → both invalidations fire', async () => {
-    // Confirms the gate flips back to the full invalidation when refs
-    // actually moved — a freshly-merged PR upstream may have changed its
-    // state from 'open' to 'merged' and the cached 'open' entry would
-    // mis-classify squash-merged branches on the post-fetch pass.
+  it('user-initiated fetch + refs moved → full post-fetch pipeline', async () => {
+    // Confirms the full pipeline still runs when refs actually moved —
+    // new remote commits could have changed squash classifications,
+    // added branches, or fast-forwarded main, and we need a fresh
+    // listBranches / listMainCommits / detectSquashMerges pass to
+    // surface those. Both cache invalidations fire so squashDetector
+    // pass 1 doesn't serve a stale 'open' state for a PR that just
+    // merged upstream.
     useRepoStore.setState({
       repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
     });
@@ -523,8 +531,138 @@ describe('runFetchOnce skip-when-unchanged', () => {
 
     await runFetchOnce({ userInitiated: true });
 
+    expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(2);
     expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
     expect(asMock(github.invalidatePrCacheForRepo)).toHaveBeenCalledWith('o', 'r');
+  });
+
+  it('narrow pass clears .pr when the open PR disappeared from the list', async () => {
+    // Simulates a PR being closed without merge between the optimistic
+    // commit and the narrow pass. The open-PR list no longer returns
+    // it, so the narrow pass drops the stale attachment.
+    const branchWithOpenPR = {
+      name: 'feat/x',
+      hasLocal: true,
+      hasRemote: true,
+      lastCommitDate: '2025-01-01T00:00:00Z',
+      lastCommitSha: 'abc',
+      aheadOfMain: 1,
+      behindMain: 0,
+      mergeStatus: 'unmerged' as const,
+      pr: {
+        number: 42,
+        title: 'Test PR',
+        state: 'open' as const,
+        headRef: 'feat/x',
+        url: 'https://github.com/o/r/pull/42',
+      },
+    };
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+    // Seed the optimistic pipeline so it commits a branch carrying
+    // an open PR attachment.
+    asMock(git.listBranches).mockResolvedValue([branchWithOpenPR]);
+    asMock(squash.detectSquashMerges).mockResolvedValue({
+      updatedBranches: [branchWithOpenPR],
+      mappings: [],
+    });
+    // Optimistic listOpenPRs sees the PR as open; narrow pass sees empty
+    // (PR was closed between the two calls).
+    asMock(github.listOpenPRsForBranches)
+      .mockResolvedValueOnce(new Map([['feat/x', branchWithOpenPR.pr]]))
+      .mockResolvedValueOnce(new Map());
+
+    await runFetchOnce({ userInitiated: true });
+
+    const branch = useRepoStore.getState().branches.find((b) => b.name === 'feat/x');
+    expect(branch?.pr).toBeUndefined();
+  });
+
+  it('narrow pass preserves a squash-merged PR attached to a branch', async () => {
+    // squashDetector attaches merged PRs (state: 'merged') that are NOT
+    // in the open-PR list by design. The narrow pass must not clobber
+    // those — only stale OPEN-state attachments are dropped.
+    const branchWithMergedPR = {
+      name: 'feat/y',
+      hasLocal: true,
+      hasRemote: true,
+      lastCommitDate: '2025-01-01T00:00:00Z',
+      lastCommitSha: 'def',
+      aheadOfMain: 0,
+      behindMain: 3,
+      mergeStatus: 'squash-merged' as const,
+      pr: {
+        number: 7,
+        title: 'Merged earlier',
+        state: 'merged' as const,
+        headRef: 'feat/y',
+        url: 'https://github.com/o/r/pull/7',
+        mergeCommitSha: 'deadbeef',
+      },
+    };
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+    asMock(git.listBranches).mockResolvedValue([branchWithMergedPR]);
+    asMock(squash.detectSquashMerges).mockResolvedValue({
+      updatedBranches: [branchWithMergedPR],
+      mappings: [],
+    });
+    // Open-PR list is empty in BOTH optimistic and narrow passes — a
+    // merged PR is never in the open list.
+    asMock(github.listOpenPRsForBranches).mockResolvedValue(new Map());
+
+    await runFetchOnce({ userInitiated: true });
+
+    const branch = useRepoStore.getState().branches.find((b) => b.name === 'feat/y');
+    expect(branch?.pr).toBeDefined();
+    expect(branch?.pr?.state).toBe('merged');
+    expect(branch?.pr?.number).toBe(7);
+  });
+
+  it('narrow pass still runs when the optimistic pipeline errors internally', async () => {
+    // runRefreshOnce swallows pipeline errors (sets store error banner and
+    // returns). The narrow pass still runs on whatever branches existed
+    // before the click — a PR-only refresh is still useful output after a
+    // transient listBranches failure, and the error banner communicates
+    // the underlying problem to the user.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+    asMock(git.listBranches).mockRejectedValueOnce(new Error('transient failure'));
+
+    await runFetchOnce({ userInitiated: true });
+
+    // The narrow pass's listOpenPRs runs even though the optimistic failed.
+    // The optimistic also called listOpenPRs once (before listBranches
+    // threw — they're in a Promise.all, but listOpenPRs sits AFTER the
+    // listBranches await in runRefreshOnce, so the rejection short-circuits
+    // before the optimistic's listOpenPRs would fire). Net: 1 call, from
+    // the narrow pass.
+    expect(asMock(github.listOpenPRsForBranches)).toHaveBeenCalledTimes(1);
+    expect(useRepoStore.getState().error).toMatch(/transient failure/);
+  });
+
+  it('narrow pass is a no-op when the repo has no GitHub owner/name', async () => {
+    // Non-GitHub remote (or remote that couldn't be resolved to an
+    // owner/name pair). The narrow pass short-circuits before issuing
+    // API calls; the optimistic pass already committed and is the
+    // authoritative state.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main' }, // no owner/name
+    });
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+
+    await runFetchOnce({ userInitiated: true });
+
+    // Optimistic's listOpenPRs is also skipped because runRefreshOnce
+    // guards on owner/name. Net: zero calls.
+    expect(asMock(github.listOpenPRsForBranches)).not.toHaveBeenCalled();
+    expect(asMock(github.batchFetchPRs)).not.toHaveBeenCalled();
   });
 
   it('background tick does NOT invalidate the per-PR cache', async () => {

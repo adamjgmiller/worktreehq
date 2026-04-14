@@ -514,19 +514,19 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   // against LOCAL state (no waiting for the network fetch) so cards update
   // within ~half a second instead of after the 1-2 seconds the remote takes
   // to respond. The real fetch runs in parallel below; once it completes,
-  // `await refreshOnce(opts)` re-derives a second time with the fresh remote
-  // refs. Dedupe semantics in refreshOnce handle the sequencing: if the
-  // optimistic is still in flight when the post-fetch call fires, the
-  // post-fetch call queues as pendingUserRefresh and runs automatically
-  // after the optimistic completes. If the optimistic has already finished,
-  // the post-fetch call starts a fresh pipeline.
+  // the post-fetch branch re-derives — either a full `refreshOnce` (when
+  // fetch moved refs) or a narrow PR-only pass (when refs are unchanged,
+  // so the pipeline's inputs are provably identical to the optimistic's).
   //
-  // Fire-and-forget (`void`) because awaiting it would serialize with the
-  // fetch and cost us the parallelism that makes this feel instant. The
-  // `fetching` flag (set here) + the spinner refcount (held above) keep
-  // the RepoBar spinner + grid grey-out pinned through both phases.
+  // Fired without awaiting here so it overlaps the fetch. We capture the
+  // promise so the narrow-pass branch below can await the optimistic's
+  // commit before patching `.pr` fields — the patch operates on the
+  // branches committed by the optimistic. The `fetching` flag (set here)
+  // + the spinner refcount (held above) keep the RepoBar spinner + grid
+  // grey-out pinned through both phases.
+  let optimisticP: Promise<void> | null = null;
   if (userInitiated) {
-    void refreshOnce({ userInitiated: true });
+    optimisticP = refreshOnce({ userInitiated: true });
   }
   let fetchFailed = false;
   const body = (async () => {
@@ -601,10 +601,34 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
         invalidateOpenPrListCache(repo.owner, repo.name);
       }
     }
-    // Fetch changed remote refs on disk (or this is a user-initiated fetch
-    // and we want guaranteed visible feedback); trigger a refresh so the UI
-    // reflects the new state.
-    await refreshOnce(opts);
+    // Post-fetch re-derive. Two shapes:
+    //
+    //   refsChanged === true           Full pipeline. New remote refs could
+    //     OR !userInitiated            have moved squash classifications,
+    //                                  added PRs, fast-forwarded main, etc.
+    //
+    //   refsChanged === false          Narrow PR-only pass. Refs didn't move,
+    //     AND userInitiated            so listBranches / listMainCommits /
+    //                                  listTags / listWorktrees / squash
+    //                                  detection / conflict detection /
+    //                                  Claude presence all have bit-
+    //                                  identical inputs to the optimistic.
+    //                                  Skip them; only re-fetch PR metadata
+    //                                  (which can change without ref moves —
+    //                                  closed-without-merge, draft toggle,
+    //                                  checks) and patch `.pr` on branches.
+    //
+    // Await the optimistic before patching so the narrow pass operates on
+    // the branches it committed. `runRefreshOnce` swallows pipeline errors
+    // internally (sets the store error banner and returns), so this await
+    // never rejects — on a transient optimistic failure the narrow pass
+    // simply patches whatever branches existed before the click.
+    if (refsChanged || !userInitiated) {
+      await refreshOnce(opts);
+    } else {
+      if (optimisticP) await optimisticP;
+      await runNarrowPrRefresh(repo, opts);
+    }
   } catch (e) {
     // Catches snapshotRemoteRefs failures and any unhandled error from the
     // refresh chain. fetchAllPrune failures are caught above; this path
@@ -634,6 +658,84 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   })();
   fetchInFlightPromise = body;
   await body;
+}
+
+// Narrow post-fetch refresh used when `git fetch` confirms no remote refs
+// moved on a user-initiated click. The optimistic pass has already committed
+// fresh local state (worktrees, branches, squash classifications, conflict
+// detection, Claude presence); the only thing that can have changed remotely
+// without moving refs is PR metadata — closed-without-merge, draft toggle,
+// checks, reviews. So we re-fetch just the open-PR list + per-PR details
+// (the latter usually a cache hit because `runFetchOnce` preserves the
+// per-PR cache when refs are unchanged) and patch `.pr` on affected
+// branches via the existing `setBranches` setter + `reconcileBranches`
+// structural-sharing helper.
+//
+// Why this is safe:
+//   - listBranches / listWorktrees / listMainCommits / listTags all derive
+//     from on-disk refs that provably didn't move.
+//   - detectSquashMerges: pass 1 reads the same mainCommits and pass 2's
+//     cherry cache is content-addressed by (branch sha, main sha).
+//   - Cross-worktree conflicts are computed from worktree state, which is
+//     stable across the ~1s between optimistic and narrow.
+//   - Ratchet is untouched because merge-status classifications aren't
+//     re-derived here.
+//
+// Error policy: on failure, log and leave the optimistic's commit as the
+// final state. The UI is still fresh on local-derived axes; a transient
+// GitHub hiccup shouldn't surface as an ErrorBanner after the user already
+// saw the optimistic update land.
+async function runNarrowPrRefresh(
+  repo: RepoState,
+  opts?: RefreshOptions,
+): Promise<void> {
+  const userInitiated = opts?.userInitiated === true;
+  if (userInitiated) holdSpinner();
+  try {
+    if (!repo.owner || !repo.name) return; // non-GitHub remote — nothing to refresh
+    // Bail on repo switch — same invariant as runRefreshOnce.
+    if (useRepoStore.getState().repo?.path !== repo.path) return;
+
+    const branches = useRepoStore.getState().branches;
+    const openPRs = await listOpenPRsForBranches(
+      repo.owner,
+      repo.name,
+      branches.map((b) => b.name),
+    );
+    if (openPRs.size > 0) {
+      const numbers = Array.from(openPRs.values()).map((pr) => pr.number);
+      const enriched = await batchFetchPRs(repo.owner, repo.name, numbers);
+      for (const [branchName, rest] of openPRs) {
+        const full = enriched.get(rest.number);
+        if (full) openPRs.set(branchName, { ...full, state: rest.state });
+      }
+    }
+
+    // Second repo-switch check — awaits above may have been long enough for
+    // the user to switch repos between calls.
+    if (useRepoStore.getState().repo?.path !== repo.path) return;
+
+    // Read branches fresh: the optimistic pass may have committed between
+    // our initial read and the awaits, bringing in new branches or dropping
+    // stale ones. Patch on the latest snapshot.
+    const current = useRepoStore.getState().branches;
+    const next = current.map((b) => {
+      const fresh = openPRs.get(b.name);
+      if (fresh) return { ...b, pr: fresh };
+      // Drop a stale open-PR attachment: the open-PR list didn't return it,
+      // so the PR was closed without merging (or its head branch was renamed
+      // remotely). Preserve PRs whose state isn't 'open' — those were
+      // attached by detectSquashMerges from the persistent per-PR cache and
+      // aren't in the open-PR list by design.
+      if (b.pr?.state === 'open') return { ...b, pr: undefined };
+      return b;
+    });
+    useRepoStore.getState().setBranches(reconcileBranches(current, next));
+  } catch (e) {
+    console.warn('[refreshLoop] narrow PR refresh failed:', e);
+  } finally {
+    if (userInitiated) releaseSpinner();
+  }
 }
 
 // `skipFirstTick` suppresses the immediate fetch on startup so callers that
