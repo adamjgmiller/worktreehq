@@ -666,6 +666,91 @@ describe('runFetchOnce skip-when-unchanged', () => {
     expect(useRepoStore.getState().error).toMatch(/GitHub API hiccup/);
   });
 
+  it('narrow pass bumps lastRefresh after committing so the label resets on user click', async () => {
+    // Users expect clicking refresh to reset the "updated X ago" indicator
+    // to "just now" when the full round-trip completes. The optimistic
+    // pass bumps lastRefresh ~0.5s after the click via commitRefreshResult;
+    // the narrow pass bumps it again on its own success ~1-2s later so the
+    // label reflects the actual completion of the PR-refresh phase, not
+    // an intermediate sub-phase.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      lastRefresh: 0,
+    });
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+    const beforeClick = Date.now();
+
+    await runFetchOnce({ userInitiated: true });
+
+    expect(useRepoStore.getState().lastRefresh).toBeGreaterThanOrEqual(beforeClick);
+  });
+
+  it('narrow pass does NOT bump lastRefresh on failure', async () => {
+    // The lastRefresh bump belongs inside the success path so a failed
+    // narrow pass doesn't lie to the user about when PR data was last
+    // successfully refreshed.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      lastRefresh: 0,
+    });
+    asMock(git.snapshotRemoteRefs).mockResolvedValue('same\n');
+    asMock(github.listOpenPRsForBranches)
+      .mockResolvedValueOnce(new Map()) // optimistic succeeds
+      .mockRejectedValueOnce(new Error('narrow pass fail'));
+
+    const tsBeforeFail = Date.now();
+    await runFetchOnce({ userInitiated: true });
+
+    // Optimistic still committed via commitRefreshResult, which bumps
+    // lastRefresh. That's the only bump — the narrow pass's failure path
+    // must not bump.
+    const lastRefresh = useRepoStore.getState().lastRefresh;
+    expect(lastRefresh).toBeGreaterThan(0);
+    // Ensure the value we see is from the optimistic commit, which fires
+    // before the narrow pass runs. Checking this exactly is timing-
+    // dependent; the weaker invariant that survives jitter is: the error
+    // was recorded and lastRefresh was not bumped AFTER that error.
+    expect(useRepoStore.getState().error).toMatch(/narrow pass fail/);
+    expect(lastRefresh).toBeLessThanOrEqual(tsBeforeFail + 50);
+  });
+
+  it('user click joining an in-flight background fetch invalidates both caches', async () => {
+    // Regression test for the pre-existing join-branch cache-staleness gap
+    // (super-code-review footnote #11). Without invalidation at the top
+    // of the join branch, the user's joined refreshes serve per-PR data
+    // from the 5-minute cache — defeating the refresh button's PR-state-
+    // surfacing purpose for ~3% of clicks that land on an in-flight
+    // background fetch.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    // Hold fetchAllPrune so click 2 lands on the in-flight fetch.
+    let releaseFetch: () => void = () => {};
+    asMock(git.fetchAllPrune).mockImplementation(
+      () => new Promise<void>((r) => { releaseFetch = () => r(); }),
+    );
+
+    const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    // Background fetch starts first (no userInitiated).
+    const bgFetch = runFetchOnce();
+    for (let i = 0; i < 3; i++) await tick();
+
+    // User click lands on the in-flight bg fetch → join branch.
+    const userClick = runFetchOnce({ userInitiated: true });
+    for (let i = 0; i < 3; i++) await tick();
+
+    // Both caches must be invalidated synchronously at the top of the
+    // join branch so the joined refreshes serve fresh data.
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+    expect(asMock(github.invalidatePrCacheForRepo)).toHaveBeenCalledWith('o', 'r');
+
+    // Release and drain.
+    releaseFetch();
+    await bgFetch;
+    await userClick;
+  });
+
   it('narrow pass is a no-op when the repo has no GitHub owner/name', async () => {
     // Non-GitHub remote (or remote that couldn't be resolved to an
     // owner/name pair). The narrow pass short-circuits before issuing

@@ -488,6 +488,19 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
       // one-fetch-window flicker from #73.
       holdSpinner();
       try {
+        // Invalidate both caches before the joined refreshes fire. The
+        // background fetch's body only invalidates `openPrListCache` (it's
+        // `!userInitiated`), so without this the user's joined refreshes
+        // would serve per-PR data from the 5-minute cache — exactly the
+        // stale-PR-metadata path the main-branch invalidation at line 585
+        // closes. Background fetch happens every 60s for ~1-2s, so ~3% of
+        // clicks land here; fresh data on those is worth the ~2 cheap
+        // cache-clear calls.
+        const joinRepo = useRepoStore.getState().repo;
+        if (joinRepo?.owner && joinRepo.name) {
+          invalidateOpenPrListCache(joinRepo.owner, joinRepo.name);
+          invalidatePrCacheForRepo(joinRepo.owner, joinRepo.name);
+        }
         void refreshOnce({ userInitiated: true });
         await fetchInFlightPromise.catch(() => {});
         await refreshOnce(opts);
@@ -732,6 +745,13 @@ async function runNarrowPrRefresh(
       return b;
     });
     useRepoStore.getState().setBranches(reconcileBranches(current, next));
+    // Bump lastRefresh so the "updated X ago" label resets to "just now"
+    // on user-initiated clicks where the narrow pass was the authoritative
+    // post-fetch update. The optimistic's `commitRefreshResult` already
+    // bumped the label ~1-2s earlier, but users expect clicking refresh
+    // to reset the indicator when the full round-trip completes — not
+    // when a sub-phase landed.
+    useRepoStore.setState({ lastRefresh: Date.now() });
   } catch (e) {
     // Defensive — see the error-policy comment above. Not reached for
     // typical GitHub API failures (service layer swallows those).
