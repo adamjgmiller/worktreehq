@@ -101,7 +101,7 @@ export function WorktreeFilterBar({
           value={search}
           onChange={(e) => onSearch(e.target.value)}
           placeholder="search worktrees…"
-          className="ml-auto w-64 bg-wt-bg border border-wt-border rounded px-3 py-1.5 text-sm font-mono"
+          className="ml-auto w-56 bg-wt-bg border border-wt-border rounded px-3 py-1.5 text-sm font-mono"
         />
       </div>
       {(active?.description || belowDescriptionExtra) && (

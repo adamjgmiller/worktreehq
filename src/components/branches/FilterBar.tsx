@@ -77,7 +77,7 @@ export function FilterBar({
           value={search}
           onChange={(e) => onSearch(e.target.value)}
           placeholder="search branches or PRs…"
-          className="ml-auto w-72 bg-wt-bg border border-wt-border rounded px-3 py-1.5 text-sm font-mono"
+          className="ml-auto w-56 bg-wt-bg border border-wt-border rounded px-3 py-1.5 text-sm font-mono"
         />
       </div>
       {description && (
