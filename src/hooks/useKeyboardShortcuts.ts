@@ -61,7 +61,14 @@ export function useKeyboardShortcuts({
           return;
         }
         // Worktrees tab: same shape — search clears first, then selection.
+        // Skip when any modal dialog is open: the shared Dialog wrapper
+        // handles its own Escape, and dispatching here on top of that would
+        // close the modal AND clear search/selection behind it on a single
+        // keypress. We detect via the ARIA selector the shared Dialog sets
+        // (`role="dialog" aria-modal="true"`); only actual modal dialogs
+        // match, so this won't suppress the escape on tooltips/menus.
         if (tab === 'worktrees') {
+          if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
           window.dispatchEvent(new CustomEvent('wthq:worktrees-escape'));
           return;
         }

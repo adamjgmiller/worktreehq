@@ -574,12 +574,18 @@ export function WorktreesView() {
       setBulkRemoving(true);
       setBulkErrors([]);
       const errors: string[] = [];
+      // Track paths whose `removeWorktree` call failed so we can keep them
+      // selected after the loop. Without this, a partial-failure run would
+      // clear the entire selection and the user would have to re-identify
+      // and re-select every failed entry to retry.
+      const failedPaths = new Set<string>();
       try {
         for (const w of removable) {
           try {
             await removeWorktree(repo.path, w.path, opts.force);
           } catch (e: any) {
             errors.push(`${basename(w.path)}: ${e?.message ?? String(e)}`);
+            failedPaths.add(w.path);
             // If the worktree itself didn't come down, skip the branch
             // cleanup for this entry — deleting the branch would orphan the
             // remaining worktree directory.
@@ -608,7 +614,16 @@ export function WorktreesView() {
             }
           }
         }
-        setSelection(new Set());
+        // Clear only the paths that successfully removed, plus paths that
+        // were never in `removable` (orphans, primary). Failed paths stay
+        // selected so the user can act on them again without re-selecting.
+        setSelection((prev) => {
+          const next = new Set(prev);
+          for (const w of removable) {
+            if (!failedPaths.has(w.path)) next.delete(w.path);
+          }
+          return next;
+        });
         setConfirmBulkRemove(false);
         setBulkErrors(errors);
         await refreshOnce({ userInitiated: true });

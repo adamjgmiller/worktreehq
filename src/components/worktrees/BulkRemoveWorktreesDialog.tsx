@@ -169,7 +169,10 @@ export function BulkRemoveWorktreesDialog({
           )}
           {requiresTyping && (
             <div className="mb-3">
-              <label className="text-xs text-wt-fg-2">
+              <label
+                htmlFor="bulk-remove-typing-confirm"
+                className="text-xs text-wt-fg-2"
+              >
                 Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
               </label>
               {requiresForce ? (
@@ -189,6 +192,7 @@ export function BulkRemoveWorktreesDialog({
                 </p>
               ) : null}
               <input
+                id="bulk-remove-typing-confirm"
                 value={typed}
                 onChange={(e) => setTyped(e.target.value)}
                 disabled={submitting}

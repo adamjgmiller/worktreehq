@@ -1,4 +1,5 @@
 import type { Branch, Worktree } from '../types';
+import { basename } from './format';
 
 export type WorktreePreset =
   | 'all'
@@ -78,8 +79,11 @@ export function searchWorktrees(
   const s = q.trim().toLowerCase();
   if (!s) return worktrees;
   return worktrees.filter((w) => {
-    const basename = w.path.split('/').pop()?.toLowerCase() ?? '';
-    if (basename.includes(s)) return true;
+    // Use the shared basename helper so Windows-native `wt.path` values
+    // (which can contain `\` separators when git is running on Windows)
+    // also match — `path.split('/')` would silently miss those.
+    const folder = basename(w.path).toLowerCase();
+    if (folder.includes(s)) return true;
     if (w.branch.toLowerCase().includes(s)) return true;
     const pr = branchByName.get(w.branch)?.pr;
     if (pr?.title.toLowerCase().includes(s)) return true;

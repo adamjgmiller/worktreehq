@@ -197,4 +197,15 @@ describe('searchWorktrees', () => {
   it('no match returns empty', () => {
     expect(searchWorktrees(wts, map, 'zzz').length).toBe(0);
   });
+  it('matches Windows-native paths by basename', () => {
+    // git worktree list emits native paths; on Windows that's `\` separators.
+    // Without the cross-platform basename helper, the search would silently
+    // miss folder-name matches on Windows.
+    const winWts = [
+      w({ path: 'C:\\Users\\dev\\repo\\wt\\windows-thing', branch: 'wt/win' }),
+    ];
+    expect(searchWorktrees(winWts, byName([]), 'windows-thing').map((x) => x.branch)).toEqual([
+      'wt/win',
+    ]);
+  });
 });
