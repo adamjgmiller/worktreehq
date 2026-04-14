@@ -115,11 +115,27 @@ export function WorktreesView() {
   // `deleting` flag so a double-click of the dialog's primary button can't
   // fire two parallel remove loops against the same selection.
   const [bulkRemoving, setBulkRemoving] = useState(false);
-  // Local error pile for bulk operations. Lives outside the store error
-  // because refreshOnce calls setError(null) at the start of each tick,
-  // which would clear bulk failures right after they're surfaced. Same
-  // pattern as BranchesView.tsx:29-30.
-  const [bulkErrors, setBulkErrors] = useState<string[]>([]);
+  // Result of the most recent bulk operation. Two error categories tracked
+  // separately so the banner can distinguish primary-action failures
+  // (worktree didn't come down) from opt-in side-effect failures (worktree
+  // removed, but branch cleanup hit an error). Conflating them — as the v1
+  // of this banner did — produced misleading totals like "Removed 1 of 2 —
+  // 1 failed" when a single worktree was removed successfully but its
+  // local-branch delete failed.
+  //   attempted     = removable.length at confirm time
+  //   succeeded     = attempted minus removalErrors.length
+  //   removalErrors = removeWorktree() throws (red/amber tone)
+  //   cleanupErrors = deleteLocalBranch / deleteRemoteBranch throws (warning tone)
+  // Lives outside the store error for the same reason BranchesView documents
+  // at BranchesView.tsx:29-30 (refresh loop clobbers store.error). Persistent
+  // (no auto-dismiss) so the user has time to read; replaced wholesale on
+  // the next bulk op.
+  const [bulkResult, setBulkResult] = useState<{
+    attempted: number;
+    succeeded: number;
+    removalErrors: string[];
+    cleanupErrors: string[];
+  } | null>(null);
   // Saved default for post-create commands. Re-read from config each time
   // the Create dialog opens so edits made in Settings between creations
   // are reflected. The dialog seeds its own editable state from this.
@@ -292,6 +308,19 @@ export function WorktreesView() {
     () => selectedActionable.filter((w) => w.isPrimary).length,
     [selectedActionable],
   );
+
+  // Reset selection + bulk-result banner when the user switches repos.
+  // WorktreesView isn't unmounted on repo change (tabs are local state in
+  // App.tsx), so without this a stale "Removed N worktrees" banner from the
+  // previous repo would sit over the new repo's grid until the user
+  // dismissed it manually. Selection is masked at action time by the
+  // filtered ∩ selection intersection (see selectedActionable above), but
+  // the banner has no such guard and would mislead.
+  const repoPath = repo?.path;
+  useEffect(() => {
+    setBulkResult(null);
+    setSelection(new Set());
+  }, [repoPath]);
 
   // Listen for global keyboard shortcuts (Cmd+A, Esc) dispatched by
   // useKeyboardShortcuts. Mirrors the Branches tab pattern.
@@ -572,8 +601,11 @@ export function WorktreesView() {
     async (opts: BulkRemoveOptions) => {
       if (!repo || bulkRemoving) return;
       setBulkRemoving(true);
-      setBulkErrors([]);
-      const errors: string[] = [];
+      // Don't pre-clear bulkResult — leaving the previous result up while the
+      // new run is in flight is harmless (the dialog covers it visually) and
+      // avoids a brief blank moment if the new run finishes instantly.
+      const removalErrors: string[] = [];
+      const cleanupErrors: string[] = [];
       // Track paths whose `removeWorktree` call failed so we can keep them
       // selected after the loop. Without this, a partial-failure run would
       // clear the entire selection and the user would have to re-identify
@@ -584,7 +616,7 @@ export function WorktreesView() {
           try {
             await removeWorktree(repo.path, w.path, opts.force);
           } catch (e: any) {
-            errors.push(`${basename(w.path)}: ${e?.message ?? String(e)}`);
+            removalErrors.push(`${basename(w.path)}: ${e?.message ?? String(e)}`);
             failedPaths.add(w.path);
             // If the worktree itself didn't come down, skip the branch
             // cleanup for this entry — deleting the branch would orphan the
@@ -597,7 +629,7 @@ export function WorktreesView() {
             try {
               await deleteLocalBranch(repo.path, branch.name, true);
             } catch (e: any) {
-              errors.push(`${branch.name} (local): ${e?.message ?? String(e)}`);
+              cleanupErrors.push(`${branch.name} (local): ${e?.message ?? String(e)}`);
             }
           }
           if (opts.deleteRemoteBranch && branch.hasRemote) {
@@ -607,9 +639,9 @@ export function WorktreesView() {
               const msg = e?.message ?? String(e);
               // Idempotent: if the remote ref is already gone (race with
               // someone else, or we deleted it earlier in this loop somehow),
-              // don't surface it as a bulk failure.
+              // don't surface it as a bulk warning.
               if (!/remote ref does not exist|unable to delete.*remote ref/i.test(msg)) {
-                errors.push(`${branch.name} (remote): ${msg}`);
+                cleanupErrors.push(`${branch.name} (remote): ${msg}`);
               }
             }
           }
@@ -625,7 +657,16 @@ export function WorktreesView() {
           return next;
         });
         setConfirmBulkRemove(false);
-        setBulkErrors(errors);
+        // Surface the result. The two error categories stay separate so the
+        // banner can show "Removed N. K branch-cleanup warnings:" — a single
+        // worktree successfully removed with a branch-delete failure no
+        // longer reports as "Removed 1 of 2 — 1 failed".
+        setBulkResult({
+          attempted: removable.length,
+          succeeded: removable.length - failedPaths.size,
+          removalErrors,
+          cleanupErrors,
+        });
         await refreshOnce({ userInitiated: true });
       } finally {
         setBulkRemoving(false);
@@ -636,32 +677,54 @@ export function WorktreesView() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-6 pt-4 pb-3">
-        <button
-          onClick={() => {
-            void openCreate();
-          }}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-info/20 border border-wt-info/50 text-wt-info rounded hover:bg-wt-info/30"
-        >
-          <Plus className="w-3.5 h-3.5" /> New worktree <kbd className="ml-1 text-[10px] opacity-60">N</kbd>
-        </button>
-        <WorktreeSortMenu
-          mode={worktreeSortMode}
-          onChange={handleSortModeChange}
-        />
-        {!dragEnabled && (
-          <span className="text-[0.625rem] text-wt-muted ml-2">
-            drag-to-reorder paused while filtered
-          </span>
-        )}
-      </div>
-      {worktrees.length > 0 && (
+      {worktrees.length > 0 ? (
+        // One consolidated toolbar: New worktree + Sort live on the same
+        // row as the filter chips and search. Replaces the prior two-bar
+        // stack, which read as two separate sections rather than a single
+        // toolbar. The drag-paused hint moves under the chips so it
+        // doesn't crowd the action buttons.
         <WorktreeFilterBar
           value={preset}
           onChange={setPreset}
           search={search}
           onSearch={setSearch}
+          leftActions={
+            <>
+              <button
+                onClick={() => {
+                  void openCreate();
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-info/20 border border-wt-info/50 text-wt-info rounded hover:bg-wt-info/30"
+              >
+                <Plus className="w-3.5 h-3.5" /> New worktree{' '}
+                <kbd className="ml-1 text-[10px] opacity-60">N</kbd>
+              </button>
+              <WorktreeSortMenu
+                mode={worktreeSortMode}
+                onChange={handleSortModeChange}
+              />
+            </>
+          }
+          belowDescriptionExtra={
+            !dragEnabled ? 'Drag-to-reorder is paused while a filter or search is active.' : undefined
+          }
         />
+      ) : (
+        // Zero-worktree case: the filter bar would be meaningless (nothing
+        // to filter), but we still want the New worktree button reachable
+        // in case the user lands here on a fresh repo where listWorktrees
+        // raced the first render. Render a minimal action row instead.
+        <div className="flex items-center gap-2 px-6 pt-4 pb-3">
+          <button
+            onClick={() => {
+              void openCreate();
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-info/20 border border-wt-info/50 text-wt-info rounded hover:bg-wt-info/30"
+          >
+            <Plus className="w-3.5 h-3.5" /> New worktree{' '}
+            <kbd className="ml-1 text-[10px] opacity-60">N</kbd>
+          </button>
+        </div>
       )}
       {worktrees.length === 0 ? (
         // A valid git repo always has at least the primary worktree, so an
@@ -738,18 +801,67 @@ export function WorktreesView() {
           </DndContext>
         </div>
       )}
-      {bulkErrors.length > 0 && (
-        <div className="px-4 py-2 bg-wt-conflict/10 border-t border-wt-conflict/40 text-xs text-wt-conflict font-mono flex items-start gap-3">
-          <div className="flex-1 whitespace-pre-wrap">{bulkErrors.join('\n')}</div>
-          <button
-            onClick={() => setBulkErrors([])}
-            className="text-wt-fg-2 hover:text-wt-fg"
-            aria-label="dismiss errors"
+      {bulkResult && bulkResult.attempted > 0 && (() => {
+        // Tone tiers: removal failure dominates (red/amber), then cleanup-
+        // only warnings (amber), then clean success (green). The summary
+        // line speaks ONLY to the primary action (worktree removal); the
+        // optional cleanup-warnings block below speaks to the opt-in side
+        // effect (branch deletion) so the two outcomes never get conflated.
+        // v1 of this banner mixed them and produced impossible totals when
+        // a worktree removed but its branch delete failed.
+        const { attempted, succeeded, removalErrors, cleanupErrors } = bulkResult;
+        const removalFailed = attempted - succeeded;
+        const tone = succeeded === 0
+          ? 'conflict'
+          : removalFailed > 0 || cleanupErrors.length > 0
+            ? 'dirty'
+            : 'clean';
+        const summary = succeeded === 0
+          ? `All ${attempted} removal${attempted === 1 ? '' : 's'} failed.`
+          : removalFailed > 0
+            ? `Removed ${succeeded} of ${attempted} — ${removalFailed} failed.`
+            : `Removed ${succeeded} worktree${succeeded === 1 ? '' : 's'}.`;
+        return (
+          <div
+            // role=status + aria-live=polite so screen readers announce the
+            // result. Errors get aria-live=assertive on the inner block.
+            role="status"
+            aria-live="polite"
+            className={clsx(
+              'px-4 py-2 border-t text-xs font-mono flex items-start gap-3',
+              tone === 'clean' && 'bg-wt-clean/10 border-wt-clean/40 text-wt-clean',
+              tone === 'dirty' && 'bg-wt-dirty/10 border-wt-dirty/40 text-wt-dirty',
+              tone === 'conflict' && 'bg-wt-conflict/10 border-wt-conflict/40 text-wt-conflict',
+            )}
           >
-            ×
-          </button>
-        </div>
-      )}
+            <div className="flex-1 min-w-0">
+              <div>{summary}</div>
+              {removalErrors.length > 0 && (
+                <pre className="mt-1 whitespace-pre-wrap text-wt-fg-2">
+                  {removalErrors.join('\n')}
+                </pre>
+              )}
+              {cleanupErrors.length > 0 && (
+                <>
+                  <div className="mt-2">
+                    {cleanupErrors.length} branch-cleanup warning{cleanupErrors.length === 1 ? '' : 's'}:
+                  </div>
+                  <pre className="mt-1 whitespace-pre-wrap text-wt-fg-2">
+                    {cleanupErrors.join('\n')}
+                  </pre>
+                </>
+              )}
+            </div>
+            <button
+              onClick={() => setBulkResult(null)}
+              className="text-wt-fg-2 hover:text-wt-fg flex-shrink-0"
+              aria-label="dismiss"
+            >
+              ×
+            </button>
+          </div>
+        );
+      })()}
       <WorktreeBulkActionBar
         totalSelected={selectedActionable.length}
         removableCount={removable.length}

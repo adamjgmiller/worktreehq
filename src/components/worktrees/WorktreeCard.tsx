@@ -103,12 +103,28 @@ function CopyableTitle({ path }: { path: string }) {
   );
 }
 
-// Corner selection checkbox. Lives absolutely positioned so it doesn't
-// reflow the title row, and `<button>` so the parent's CardPointerSensor
-// (WorktreesView.tsx) skips drag activation on click. Visibility is gated
-// by either `selectionActive` (some other card in the grid is selected — a
-// sticky "selection mode" affordance) or the parent group-hover state, so
-// the zero-selection grid looks identical to before.
+// Corner selection checkbox. Native `<input type="checkbox">` so the visual
+// matches the Branches tab exactly (BranchRow.tsx:88) — the prior custom
+// button at w-5/border-2 was ~50% larger than the native control and
+// crowded the status dot. Visibility is still gated by `selectionActive`
+// (some other card is selected) or parent group-hover, so the zero-
+// selection grid looks identical to before.
+//
+// Click handling: `onClick` captures the MouseEvent (we need `shiftKey` for
+// range select). We deliberately DO NOT call `e.preventDefault()` — the
+// browser's default toggle produces an optimistic visual flip right on
+// click, and `onToggle` schedules the matching React state update so the
+// next commit re-affirms the same state. Preventing the default makes the
+// visual wait on React's commit, which on a grid of ~20 cards lags
+// perceptibly because `selectionActive` flipping triggers a broad
+// re-render. (There's a minor flicker if the user shift-clicks an
+// already-selected card — browser flips off, React's additive range-add
+// flips it back on — but that path is rare and the flicker is
+// sub-perceptual compared to the first-click lag.)
+//
+// `onChange` is a no-op purely to satisfy React's controlled-input
+// contract. The actual toggle routes through `onClick → onToggle` so the
+// parent owns state.
 function SelectionCheckbox({
   selected,
   selectionActive,
@@ -119,31 +135,24 @@ function SelectionCheckbox({
   onToggle: (e: React.MouseEvent) => void;
 }) {
   return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={selected}
-      aria-label={selected ? 'Deselect worktree' : 'Select worktree'}
+    <input
+      type="checkbox"
+      checked={selected}
+      onChange={() => {
+        /* state owned by parent; see onClick */
+      }}
       onClick={(e) => {
         e.stopPropagation();
         onToggle(e);
       }}
+      aria-label={selected ? 'Deselect worktree' : 'Select worktree'}
       className={clsx(
-        'absolute top-2 left-2 z-10 w-5 h-5 rounded border-2 flex items-center justify-center transition-opacity',
-        selected
-          ? 'border-wt-info bg-wt-info text-wt-bg opacity-100'
-          : 'border-wt-border bg-wt-bg/80 text-transparent hover:border-wt-info/70',
-        // When something is selected, every card's checkbox stays visible.
-        // Otherwise reveal on hover of the parent .group/card. Selected always
-        // visible (handled above by the explicit opacity-100 with the colored
-        // border path).
-        !selected && (selectionActive
+        'absolute top-2 left-2 z-10 cursor-pointer transition-opacity',
+        selected || selectionActive
           ? 'opacity-100'
-          : 'opacity-0 group-hover/card:opacity-100 focus:opacity-100'),
+          : 'opacity-0 group-hover/card:opacity-100 focus:opacity-100',
       )}
-    >
-      <Check className="w-3 h-3" strokeWidth={3} />
-    </button>
+    />
   );
 }
 
