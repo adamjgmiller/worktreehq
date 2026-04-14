@@ -94,6 +94,20 @@ interface StoreState {
   // config.toml value.
   themePreference: ThemePreference;
 
+  /**
+   * Low-level setter for the `repo` field.
+   *
+   * @internal Prefer `setRepoAndRefresh()` from `services/refreshLoop` for
+   * every new call site. `runRefreshOnce` has a repo-switch early return
+   * that deliberately leaks `loading: true`, relying on the new repo's
+   * follow-up refresh to drive loading back to false. Calling this setter
+   * without queuing a refresh will pin the shimmer forever.
+   *
+   * Current direct callers: `useRepoBootstrap` (only because the bootstrap
+   * path awaits `runFetchOnce()` before starting the refresh loop — see
+   * inline comment there). Everything else goes through
+   * `setRepoAndRefresh`. See the CONTRACT comment in `refreshLoop.ts`.
+   */
   setRepo: (r: RepoState) => void;
   setWorktrees: (w: Worktree[]) => void;
   setBranches: (b: Branch[]) => void;

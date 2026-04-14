@@ -27,7 +27,16 @@ import {
 // continuous write stream (hot reload, `npm install`) would otherwise fire
 // a refresh every 250ms forever. With the watcher scoped to `.git/` this
 // rarely matters in practice, but the floor is cheap insurance.
-const WATCHER_MIN_INTERVAL_MS = 2000;
+//
+// Raised from 2s to 5s as part of #72 cadence cleanup. 2s was aggressive
+// enough that the watcher-driven refresh cadence felt more like a glitch
+// than a feature — the "updated X ago" label would reset at unpredictable
+// sub-poll intervals whenever anything inside `.git/` wrote (including
+// our own `git fetch`'s FETCH_HEAD write; see the linked follow-up issue).
+// 5s preserves the "I just committed" immediacy case (the debounce still
+// fires within 250ms if nothing else has refreshed lately) but prevents
+// the label from resetting 3-4 times per minute on a routinely-busy repo.
+const WATCHER_MIN_INTERVAL_MS = 5000;
 
 interface AppConfig {
   github_token: string;
@@ -280,6 +289,16 @@ export function useRepoBootstrap() {
         // waste. The refresh loop reads these off `repo` directly.
         const remote = await getRemoteUrl(info.path);
         if (cancelled) return;
+        // Bootstrap path: uses raw `setRepo` (not `setRepoAndRefresh`)
+        // because we deliberately defer the first refresh until after
+        // `runFetchOnce()` below — starting the refresh before the fetch
+        // commits would let the first tick commit a snapshot derived from
+        // stale `origin/*` refs, leaving squash-merged branches shown as
+        // "unmerged" until the fetch-chained follow-up corrected them.
+        // The refresh that clears `loading` is driven by `startRefreshLoop`
+        // after the initial fetch returns. Every other setRepo call site
+        // should prefer `setRepoAndRefresh` — see the CONTRACT comment in
+        // refreshLoop.ts.
         setRepo({
           path: info.path,
           defaultBranch,

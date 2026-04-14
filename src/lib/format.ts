@@ -4,6 +4,16 @@ export function relativeTime(iso: string): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
+  // Under 3s of delta reads as "just now" rather than "0 seconds ago".
+  // formatDistanceToNowStrict rounds down so anything <1s prints as
+  // "0 seconds ago", which looks frozen in the first frame after a refresh
+  // commits (lastRefresh is set to Date.now() at that instant). The
+  // threshold is small on purpose — by 3s the exact count is meaningful
+  // again. Guard on delta >= 0 so clock skew putting a timestamp slightly
+  // in the future still falls through to formatDistanceToNowStrict, which
+  // emits "in X seconds" via addSuffix.
+  const deltaMs = Date.now() - d.getTime();
+  if (deltaMs >= 0 && deltaMs < 3000) return 'just now';
   return formatDistanceToNowStrict(d, { addSuffix: true });
 }
 

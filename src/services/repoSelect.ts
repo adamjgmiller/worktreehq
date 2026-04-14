@@ -8,7 +8,7 @@
 import { useRepoStore } from '../store/useRepoStore';
 import { invoke, updateConfig } from './tauriBridge';
 import { checkGitAvailable, setGitVersion, getDefaultBranch, getRemoteUrl } from './gitService';
-import { refreshOnce } from './refreshLoop';
+import { setRepoAndRefresh } from './refreshLoop';
 import { readWorktreeOrder } from './worktreeOrderService';
 
 interface RepoInfo {
@@ -53,7 +53,6 @@ export async function pickDirectory(): Promise<string | null> {
 // On failure sets the store error and leaves the prior repo in place.
 export async function loadRepoAtPath(candidate: string): Promise<boolean> {
   const {
-    setRepo,
     setError,
     setLastFetchError,
     setRecentRepoPaths,
@@ -103,20 +102,32 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     setCrossWorktreeConflicts([], new Map());
     setDataRepoPath(null);
     setLastFetchError(null);
-    setRepo({
-      path: info.path,
-      defaultBranch,
-      owner: remote.owner,
-      name: remote.name,
-    });
-    setError(null);
-    // Hydrate persisted card order for the new repo.
+    // Hydrate the persisted card order for the new repo BEFORE we flip
+    // `repo` and queue the refresh. Otherwise `setRepoAndRefresh` fires
+    // its refresh pipeline immediately, and if `commitRefreshResult`
+    // lands before `readWorktreeOrder` resolves, the Worktrees tab will
+    // render using the PREVIOUS repo's `worktreeOrder` — and then flicker
+    // to the new order once the read completes. Awaiting here preserves
+    // the old pre-#74 ordering guarantee on repo switches (a manual-sort
+    // repo never briefly shows the old repo's arrangement).
     try {
       const order = await readWorktreeOrder(info.path);
       setWorktreeOrder(order);
     } catch {
       setWorktreeOrder([]);
     }
+    // setRepoAndRefresh couples the store write to the follow-up refresh.
+    // runRefreshOnce's repo-switch early return leaks `loading: true` on
+    // purpose; the new repo's refresh is what clears it. A bare setRepo()
+    // here would leave the shimmer pinned if the refresh call were ever
+    // forgotten. See the CONTRACT comment in refreshLoop.ts.
+    setRepoAndRefresh({
+      path: info.path,
+      defaultBranch,
+      owner: remote.owner,
+      name: remote.name,
+    });
+    setError(null);
     // Update the in-memory MRU list immediately so the dropdown re-renders
     // before the config write resolves. The store is the source of truth
     // for the UI; the config write below mirrors it for persistence.
@@ -134,8 +145,6 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     } catch {
       /* persist is best-effort; the in-memory repo still works */
     }
-    // Kick off an immediate refresh against the new repo.
-    void refreshOnce({ userInitiated: true });
     return true;
   } catch (e: any) {
     setError(`Could not load repo: ${e?.message ?? e}`);

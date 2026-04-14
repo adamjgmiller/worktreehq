@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useRepoStore } from '../../store/useRepoStore';
 import { SquashDetail } from './SquashDetail';
 import { relativeTime, shortSha } from '../../lib/format';
+import { useLiveTick } from '../../hooks/useLiveRelativeTime';
 import { EmptyState } from '../common/EmptyState';
 import { Archive } from 'lucide-react';
 
@@ -11,6 +12,8 @@ export function SquashView() {
   const authStatus = useRepoStore((s) => s.githubAuthStatus);
   const authMethod = useRepoStore((s) => s.authMethod);
   const [selected, setSelected] = useState<string | null>(null);
+  // Shared tick drives per-row relativeTime in the list below.
+  useLiveTick();
   const mapBySha = new Map(mappings.map((m) => [m.squashCommitSha, m]));
 
   if (commits.length === 0) {

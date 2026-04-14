@@ -1,9 +1,8 @@
-import { useEffect, useState } from 'react';
 import { RefreshCw, Settings, Github, Download, AlertTriangle, Sun, Moon, Terminal, Key } from 'lucide-react';
 import { useRepoStore } from '../store/useRepoStore';
 import { isMac } from '../lib/platform';
 import { runFetchOnce } from '../services/refreshLoop';
-import { relativeTime } from '../lib/format';
+import { useLiveRelativeTime } from '../hooks/useLiveRelativeTime';
 import { RecentReposMenu } from './RecentReposMenu';
 import { persistThemePreference, resolveTheme } from '../hooks/useTheme';
 
@@ -18,19 +17,13 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
   const fetching = useRepoStore((s) => s.fetching);
   const busy = userRefreshing || fetching;
   const lastRefresh = useRepoStore((s) => s.lastRefresh);
-  // Force a re-render once a second so the "updated X ago" label ticks
-  // forward between refresh commits. Without this, the label is frozen
-  // to whatever relativeTime() returned at the moment of the last commit
-  // (always "0 seconds ago" because lastRefresh === Date.now() at that
-  // instant) and never ages visibly — RepoBar only re-renders when one
-  // of its subscribed store fields changes, not on wall-clock advance.
-  // 1s keeps the first-minute transitions smooth; the 15s poll tick
-  // resets lastRefresh before we reach the minute boundary anyway.
-  const [, setClockTick] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => setClockTick((t) => t + 1), 1000);
-    return () => window.clearInterval(id);
-  }, []);
+  // useLiveRelativeTime ticks once a second across every call site in the
+  // app, so the "updated X ago" label ages visibly between refresh
+  // commits. Was previously an inline setClockTick pattern here only;
+  // extracted so BranchRow/GraphView/SquashView/etc. all tick too.
+  const lastRefreshLabel = useLiveRelativeTime(
+    lastRefresh ? new Date(lastRefresh).toISOString() : '',
+  );
   const lastFetchError = useRepoStore((s) => s.lastFetchError);
   const authStatus = useRepoStore((s) => s.githubAuthStatus);
   const authMethod = useRepoStore((s) => s.authMethod);
@@ -75,7 +68,7 @@ export function RepoBar({ onSettings }: { onSettings: () => void }) {
         </button>
       )}
       <div className="text-xs text-wt-muted">
-        {lastRefresh ? `updated ${relativeTime(new Date(lastRefresh).toISOString())}` : 'never'}
+        {lastRefresh ? `updated ${lastRefreshLabel}` : 'never'}
       </div>
       {/*
         The refresh button always runs `runFetchOnce` (fetch → invalidate PR
