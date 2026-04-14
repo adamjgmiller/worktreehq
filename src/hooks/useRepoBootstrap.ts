@@ -280,6 +280,16 @@ export function useRepoBootstrap() {
         // waste. The refresh loop reads these off `repo` directly.
         const remote = await getRemoteUrl(info.path);
         if (cancelled) return;
+        // Bootstrap path: uses raw `setRepo` (not `setRepoAndRefresh`)
+        // because we deliberately defer the first refresh until after
+        // `runFetchOnce()` below — starting the refresh before the fetch
+        // commits would let the first tick commit a snapshot derived from
+        // stale `origin/*` refs, leaving squash-merged branches shown as
+        // "unmerged" until the fetch-chained follow-up corrected them.
+        // The refresh that clears `loading` is driven by `startRefreshLoop`
+        // after the initial fetch returns. Every other setRepo call site
+        // should prefer `setRepoAndRefresh` — see the CONTRACT comment in
+        // refreshLoop.ts.
         setRepo({
           path: info.path,
           defaultBranch,

@@ -561,6 +561,65 @@ describe('runFetchOnce skip-when-unchanged', () => {
     expect(useRepoStore.getState().userRefreshing).toBe(false);
   });
 
+  it('two rapid user clicks in one fetch window keep the spinner pinned (refcount)', async () => {
+    // Regression test for #73: before the refcount, click 1's finally
+    // would flip userRefreshing OFF as soon as its fetch resolved, even
+    // while click 2's post-fetch refresh was still running — flickering
+    // the grid's grey-out mid-click. With the hold/release refcount,
+    // click 1's release is balanced against click 2's active claim, so
+    // the flag stays pinned until the last caller lets go.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    // Hold fetchAllPrune so click 1 stays in the fetch window when
+    // click 2 fires — this is what pushes click 2 into the
+    // `fetchInFlight` join branch of runFetchOnce.
+    let releaseFetch: () => void = () => {};
+    asMock(git.fetchAllPrune).mockImplementation(
+      () => new Promise<void>((r) => { releaseFetch = () => r(); }),
+    );
+    // Hold the inner refreshOnce pipelines open so the spinner state is
+    // observable in each phase.
+    const releases: Array<(v: unknown) => void> = [];
+    asMock(git.listWorktrees).mockImplementation(
+      () => new Promise((r) => { releases.push(r); }),
+    );
+
+    const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    const click1 = runFetchOnce({ userInitiated: true });
+    for (let i = 0; i < 5; i++) await tick();
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+
+    // Click 2 lands while click 1's fetch is still in flight. This is
+    // the exact scenario #73 reproduces — both clicks want ownership of
+    // the spinner flag. Before the refcount, they fought and flickered.
+    const click2 = runFetchOnce({ userInitiated: true });
+    for (let i = 0; i < 5; i++) await tick();
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+
+    // Release the fetch. Click 1's body finally releases ITS spinner
+    // claim, but click 2 is still holding its own claim (plus any
+    // inner refreshOnce claims). The pre-refcount code released the
+    // flag here; the refcount version must not.
+    releaseFetch();
+    for (let i = 0; i < 10; i++) await tick();
+    expect(useRepoStore.getState().userRefreshing).toBe(true);
+
+    // Drain whatever queued listWorktrees calls remain from the inner
+    // optimistic + post-fetch refreshOnce pipelines from both clicks.
+    // The exact count depends on dedupe collapse ordering; just drain
+    // until both click promises resolve.
+    for (let i = 0; i < 20 && releases.length > 0; i++) {
+      releases.shift()!([]);
+      for (let j = 0; j < 3; j++) await tick();
+    }
+    await click1;
+    await click2;
+
+    expect(useRepoStore.getState().userRefreshing).toBe(false);
+  });
+
   it('invalidates the open-PR list cache when refs do change', async () => {
     useRepoStore.setState({
       repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
