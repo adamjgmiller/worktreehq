@@ -10,6 +10,26 @@ import { useRepoStore } from '../../store/useRepoStore';
 import { Terminal, Key, ShieldOff } from 'lucide-react';
 import { Dialog, DialogHeader, DialogFooter } from './Dialog';
 
+const REFRESH_PRESETS: { ms: number; label: string }[] = [
+  { ms: 5_000,   label: '5 seconds' },
+  { ms: 10_000,  label: '10 seconds' },
+  { ms: 15_000,  label: '15 seconds (default)' },
+  { ms: 30_000,  label: '30 seconds' },
+  { ms: 60_000,  label: '1 minute' },
+  { ms: 120_000, label: '2 minutes' },
+  { ms: 300_000, label: '5 minutes' },
+];
+
+function isPreset(ms: number): boolean {
+  return REFRESH_PRESETS.some((p) => p.ms === ms);
+}
+
+function formatMsAsSeconds(ms: number): string {
+  const seconds = ms / 1000;
+  const rendered = Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
+  return `${rendered} ${seconds === 1 ? 'second' : 'seconds'}`;
+}
+
 // Loose shape — we read the full config object, spread it on save, and only
 // override the fields this modal owns. The rest (recent_repo_paths, zoom_level,
 // any future field) round-trips untouched.
@@ -17,15 +37,19 @@ type AppConfigShape = Record<string, unknown> & {
   github_token?: string;
   auth_method?: AuthMethod;
   post_create_commands?: string;
+  refresh_interval_ms?: number;
 };
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const setGithubAuthStatus = useRepoStore((s) => s.setGithubAuthStatus);
   const setAuthMethod = useRepoStore((s) => s.setAuthMethod);
+  const setRefreshInterval = useRepoStore((s) => s.setRefreshInterval);
 
   const [selectedMethod, setSelectedMethod] = useState<AuthMethod>('none');
   const [token, setToken] = useState('');
   const [postCreateCommands, setPostCreateCommands] = useState('');
+  const [refreshIntervalMs, setRefreshIntervalMsLocal] = useState<number>(15_000);
+  const [refreshTouched, setRefreshTouched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +78,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         setGhDetected(gh);
         setGhChecking(false);
         setPostCreateCommands((cfg.post_create_commands as string | undefined) ?? '');
+
+        const cfgInterval =
+          typeof cfg.refresh_interval_ms === 'number' && cfg.refresh_interval_ms > 0
+            ? cfg.refresh_interval_ms
+            : 15_000;
+        setRefreshIntervalMsLocal(cfgInterval);
+        setRefreshTouched(false);
 
         // Load the PAT from keychain (preferred) or config (legacy), but
         // only when the persisted auth method is 'pat' (or not yet set, for
@@ -137,11 +168,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         }
       }
 
-      // Persist auth method preference and clear the plaintext token from config
+      // Persist auth method preference and clear the plaintext token from config.
+      // refresh_interval_ms is only spread in when the user actually touched the
+      // dropdown — so a hand-edited exotic value (e.g. 7500ms) round-trips
+      // untouched when the user saves unrelated settings.
       await updateConfig({
         github_token: '',
         auth_method: selectedMethod,
         post_create_commands: postCreateCommands,
+        ...(refreshTouched ? { refresh_interval_ms: refreshIntervalMs } : {}),
       });
 
       // Initialize the transport with the new method
@@ -157,6 +192,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           break;
       }
       setAuthMethod(selectedMethod);
+      if (refreshTouched) {
+        setRefreshInterval(refreshIntervalMs);
+      }
       void setGitAuthMethod(
         selectedMethod,
         selectedMethod === 'pat' && token ? token : undefined,
@@ -317,6 +355,41 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             spellCheck={false}
             className="w-full bg-wt-bg border border-wt-border rounded px-3 py-2 font-mono text-xs resize-y disabled:opacity-50"
           />
+        </div>
+
+        {/* ── Auto-refresh interval ── */}
+        <div className="pt-4 border-t border-wt-border mt-4">
+          <h3 className="text-sm font-semibold mb-1">Auto-refresh interval</h3>
+          <p className="text-xs text-wt-fg-2 mb-2">
+            How often the app polls for background changes. The filesystem
+            watcher handles local git changes immediately; this poll is a
+            safety net for remote state (PRs, squash detection) and anything
+            the watcher misses.
+          </p>
+          <select
+            value={refreshIntervalMs}
+            onChange={(e) => {
+              setRefreshIntervalMsLocal(Number(e.target.value));
+              setRefreshTouched(true);
+            }}
+            disabled={loading || saving}
+            className="bg-wt-bg border border-wt-border rounded px-2 py-1.5 text-sm disabled:opacity-50"
+          >
+            {!isPreset(refreshIntervalMs) && (
+              <option value={refreshIntervalMs}>
+                Custom ({formatMsAsSeconds(refreshIntervalMs)})
+              </option>
+            )}
+            {REFRESH_PRESETS.map((p) => (
+              <option key={p.ms} value={p.ms}>{p.label}</option>
+            ))}
+          </select>
+          {!isPreset(refreshIntervalMs) && (
+            <p className="mt-2 text-xs text-wt-dirty bg-wt-dirty/10 border border-wt-dirty/40 rounded px-2 py-1.5">
+              Your config has a custom interval of {formatMsAsSeconds(refreshIntervalMs)}.
+              Selecting a preset above will replace it.
+            </p>
+          )}
         </div>
         {error && (
           <div className="mt-3 text-xs text-wt-conflict bg-wt-conflict/10 border border-wt-conflict/40 rounded px-2 py-1.5 font-mono">
