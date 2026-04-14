@@ -498,12 +498,32 @@ describe('runFetchOnce skip-when-unchanged', () => {
     // bypassed for user-initiated because the user may be surfacing
     // PR-state-only changes that don't move refs.
     expect(asMock(git.listWorktrees)).toHaveBeenCalledTimes(2);
+    // Open-PR list cache IS invalidated so PR state changes that don't move
+    // refs (closed-without-merge, draft toggle) still surface on the click.
     expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
-    // The per-PR detail cache must ALSO be invalidated on user-initiated
-    // fetches. Without this, squashDetector pass 1 reads the still-cached
-    // open-state PR via batchFetchPRs and won't detect a fresh merge until
-    // the 5min TTL expires — exactly the freshness bug the refresh button
-    // is supposed to fix.
+    // Per-PR detail cache is NOT invalidated when refs didn't move — the
+    // optimistic pass populated it ~2s ago, and the 5-min TTL makes serving
+    // those entries to the post-fetch pass safe. This is the #113 fix: avoid
+    // making a duplicate GraphQL round-trip for PR data that can't have
+    // changed without a ref move (merge_commit_sha, state → merged, etc.).
+    expect(asMock(github.invalidatePrCacheForRepo)).not.toHaveBeenCalled();
+  });
+
+  it('user-initiated fetch + refs moved → both invalidations fire', async () => {
+    // Confirms the gate flips back to the full invalidation when refs
+    // actually moved — a freshly-merged PR upstream may have changed its
+    // state from 'open' to 'merged' and the cached 'open' entry would
+    // mis-classify squash-merged branches on the post-fetch pass.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    asMock(git.snapshotRemoteRefs)
+      .mockResolvedValueOnce('before\n')
+      .mockResolvedValueOnce('after\n');
+
+    await runFetchOnce({ userInitiated: true });
+
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
     expect(asMock(github.invalidatePrCacheForRepo)).toHaveBeenCalledWith('o', 'r');
   });
 

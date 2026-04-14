@@ -583,15 +583,22 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
       return;
     }
     if (repo.owner && repo.name) {
-      invalidateOpenPrListCache(repo.owner, repo.name);
-      // For user-initiated fetches, ALSO drop the per-PR detail cache.
-      // squashDetector pass 1 reads it via batchFetchPRs and would otherwise
-      // serve a freshly-merged PR as `state: 'open'` for up to 5 minutes,
-      // defeating the whole point of the user clicking refresh after a
-      // merge. Background ticks skip this — they're fine letting the
-      // 5-minute TTL roll naturally.
-      if (userInitiated) {
-        invalidatePrCacheForRepo(repo.owner, repo.name);
+      if (refsChanged) {
+        invalidateOpenPrListCache(repo.owner, repo.name);
+        // Refs moved — remote PR state could legitimately be stale (e.g. a
+        // freshly-merged PR). Drop the per-PR detail cache for user-initiated
+        // fetches so squashDetector pass 1 doesn't serve `state: 'open'` for
+        // a PR that just merged.
+        if (userInitiated) invalidatePrCacheForRepo(repo.owner, repo.name);
+      } else if (userInitiated) {
+        // Refs didn't move, but PR metadata (closed-without-merge, draft
+        // toggle, checks, reviews) can change independently of ref moves.
+        // Refresh the open-PR list so those surface on the click; preserve
+        // the per-PR detail cache so the post-fetch pass serves the
+        // optimistic's ~2s-old entries instead of making a duplicate
+        // GraphQL round-trip. The per-PR cache's 5-min TTL makes the
+        // preservation safe — actually-stale entries expire naturally.
+        invalidateOpenPrListCache(repo.owner, repo.name);
       }
     }
     // Fetch changed remote refs on disk (or this is a user-initiated fetch
