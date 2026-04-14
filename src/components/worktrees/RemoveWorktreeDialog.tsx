@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import type { Worktree } from '../../types';
+import type { MergeStatus, Worktree } from '../../types';
 import { Dialog, DialogHeader, DialogFooter } from '../common/Dialog';
 
 export function RemoveWorktreeDialog({
   worktree,
   hasLocalBranch,
   hasRemoteBranch,
+  branchMergeStatus,
   isDefaultBranch,
   onCancel,
   onConfirm,
@@ -14,6 +15,7 @@ export function RemoveWorktreeDialog({
   worktree: Worktree;
   hasLocalBranch: boolean;
   hasRemoteBranch: boolean;
+  branchMergeStatus?: MergeStatus;
   isDefaultBranch: boolean;
   onCancel: () => void;
   onConfirm: (opts: {
@@ -36,16 +38,23 @@ export function RemoveWorktreeDialog({
     worktree.hasConflicts ||
     !!worktree.inProgress;
   const requiresForce = dirty;
-  // Tier the typed confirmation to actual blast radius. Worktree removal on a
-  // clean tree with no branch cleanup is reversible (`git worktree add`
-  // recreates it). Each of the other paths is unrecoverable in some way:
-  // force-removing a dirty worktree discards uncommitted work; deleting the
-  // remote branch is team-visible; deleting the local branch here uses
-  // `git branch -D` (force=true at WorktreesView handleConfirmRemove) so it
-  // can silently drop unmerged commits — unlike the ConfirmDeleteDialog local
-  // path which uses `git -d` and is refused by git for unmerged branches.
-  // Any of those three keeps the typing gate.
-  const requiresTyping = dirty || deleteRemote || deleteLocal;
+  // The local branch delete here always uses `git branch -D` (force=true at
+  // WorktreesView handleConfirmRemove) because we need to be able to remove
+  // squash-merged and direct-merged branches, which `git -d` would refuse
+  // (git doesn't recognize either merge style). `-D` skips git's safety
+  // check, so for genuinely-unmerged branches it can silently drop commits —
+  // but when the app's own merge detector has already classified the branch
+  // as merged or empty, the force-delete is provably safe and the typing
+  // gate is just noise. Tier accordingly:
+  //   - dirty worktree → typing (force-removing discards uncommitted work)
+  //   - remote delete  → typing (team-visible, can't be undone locally)
+  //   - local delete   → typing only when mergeStatus says we could lose commits
+  const localDeleteIsSafe =
+    branchMergeStatus === 'merged-normally' ||
+    branchMergeStatus === 'squash-merged' ||
+    branchMergeStatus === 'direct-merged' ||
+    branchMergeStatus === 'empty';
+  const requiresTyping = dirty || deleteRemote || (deleteLocal && !localDeleteIsSafe);
   const typedOk = !requiresTyping || typed === 'delete';
 
   useEffect(() => {

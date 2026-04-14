@@ -492,6 +492,7 @@ export function WorktreesView() {
             worktree={removeTarget}
             hasLocalBranch={branch?.hasLocal ?? false}
             hasRemoteBranch={branch?.hasRemote ?? false}
+            branchMergeStatus={branch?.mergeStatus}
             isDefaultBranch={removeTarget.branch === repo?.defaultBranch}
             onCancel={() => setRemoveTarget(null)}
             onConfirm={handleConfirmRemove}
