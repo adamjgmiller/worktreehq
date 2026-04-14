@@ -2,8 +2,7 @@ import clsx from 'clsx';
 import type { Branch, ChecksStatus, ReviewDecision } from '../../types';
 import type { GithubAuthStatus } from '../../store/useRepoStore';
 import { mergeStatusClass, mergeStatusLabel, mergeStatusTooltip } from '../../lib/colors';
-import { aheadBehind, shortSha } from '../../lib/format';
-import { useLiveRelativeTime } from '../../hooks/useLiveRelativeTime';
+import { relativeTime, aheadBehind, shortSha } from '../../lib/format';
 import { openUrl } from '../../services/tauriBridge';
 import {
   HardDrive,
@@ -83,7 +82,6 @@ export function BranchRow({
   authStatus: GithubAuthStatus;
 }) {
   const authUnavailable = authStatus !== 'valid' && authStatus !== 'checking';
-  const lastCommitAgo = useLiveRelativeTime(branch.lastCommitDate);
   return (
     <tr className="border-b border-wt-border hover:bg-wt-panel/60">
       <td className="px-3 py-3">
@@ -206,7 +204,7 @@ export function BranchRow({
           <span className="text-wt-muted">—</span>
         )}
       </td>
-      <td className="px-3 py-3 text-xs text-wt-muted">{lastCommitAgo}</td>
+      <td className="px-3 py-3 text-xs text-wt-muted">{relativeTime(branch.lastCommitDate)}</td>
     </tr>
   );
 }

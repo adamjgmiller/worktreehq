@@ -1,5 +1,6 @@
 import type { Branch } from '../../types';
 import { useRepoStore } from '../../store/useRepoStore';
+import { useLiveTick } from '../../hooks/useLiveRelativeTime';
 import { BranchRow } from './BranchRow';
 
 export function BranchTable({
@@ -14,6 +15,12 @@ export function BranchTable({
   onToggleAll: () => void;
 }) {
   const authStatus = useRepoStore((s) => s.githubAuthStatus);
+  // Subscribe to the shared 1-second tick once at the table level so the
+  // `relativeTime(...)` calls inside each BranchRow pick up fresh Date.now()
+  // on every tick. Calling the hook inside BranchRow would instead schedule
+  // one React setState per row per tick — on a repo with a large branch
+  // list, that's N independent re-renders per second while idle.
+  useLiveTick();
   const authUnavailable = authStatus !== 'valid' && authStatus !== 'checking';
   const allSelected = branches.length > 0 && branches.every((b) => selection.has(b.name));
   return (
