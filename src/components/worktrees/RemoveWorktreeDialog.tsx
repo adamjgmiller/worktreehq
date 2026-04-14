@@ -167,9 +167,13 @@ export function RemoveWorktreeDialog({
             <p className="text-xs text-wt-muted mt-1">
               This discards the uncommitted state listed above and can't be undone.
             </p>
-          ) : deleteLocal ? (
+          ) : deleteLocal && !localDeleteIsSafe ? (
             <p className="text-xs text-wt-muted mt-1">
               The local branch is force-deleted, which can drop commits not merged anywhere else.
+            </p>
+          ) : deleteRemote ? (
+            <p className="text-xs text-wt-muted mt-1">
+              The remote branch is shared with collaborators; deleting it removes it for everyone.
             </p>
           ) : null}
           <input
