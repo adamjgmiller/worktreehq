@@ -123,10 +123,12 @@ export function BulkRemoveWorktreesDialog({
 
   const handleConfirm = async () => {
     if (submitting || !typedOk) return;
-    // Snapshot the current props into frozen state before firing the
-    // async confirm. React batches this setState with the parent's
-    // `submitting=true` flip, so the next render sees `effectiveWorktrees`
-    // pinned for the entire remove loop.
+    // Snapshot the current props into frozen state synchronously, before
+    // the `await` below yields control. The freeze is load-bearing because
+    // every memo reads via `frozenInputs?.worktrees ?? worktrees`, so once
+    // this setter runs any subsequent prop changes are ignored for the rest
+    // of the remove loop. Do NOT move this call after an await — the props
+    // can change while the loop is in flight and the snapshot would lose.
     setFrozenInputs({ worktrees, branchByName });
     await onConfirm({
       force: requiresForce,
