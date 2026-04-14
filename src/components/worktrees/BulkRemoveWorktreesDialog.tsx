@@ -75,10 +75,34 @@ export function BulkRemoveWorktreesDialog({
     [worktrees],
   );
   const requiresForce = dirtyOnes.length > 0;
-  // Same tiering rule as the per-worktree dialog: typing required if
-  // dirty (force-remove discards uncommitted state) OR delete-remote OR
-  // delete-local (git -D under the hood).
-  const requiresTyping = requiresForce || deleteRemote || deleteLocal;
+  // Mirror the per-worktree dialog's tiering rule (added in #102) at the
+  // batch level. The local-branch delete here always uses `git branch -D`
+  // (force=true at WorktreesView handleBulkRemove) because we need to be
+  // able to remove squash-merged/direct-merged branches that `git -d` would
+  // refuse. `-D` skips git's safety check, so for genuinely-unmerged
+  // branches it can silently drop commits — but when the merge detector
+  // has already classified each selected branch as merged or empty, the
+  // force-delete is provably safe and the typing gate is just noise.
+  //
+  // For a batch the rule promotes to "all-or-nothing": typing only
+  // skipped if EVERY selected worktree's branch is in a known-safe
+  // merge state. One genuinely-unmerged branch in the batch is enough
+  // to require typing for the whole confirmation.
+  const allLocalDeletesAreSafe = useMemo(
+    () =>
+      worktrees.every((w) => {
+        const m = branchByName.get(w.branch)?.mergeStatus;
+        return (
+          m === 'merged-normally' ||
+          m === 'squash-merged' ||
+          m === 'direct-merged' ||
+          m === 'empty'
+        );
+      }),
+    [worktrees, branchByName],
+  );
+  const requiresTyping =
+    requiresForce || deleteRemote || (deleteLocal && !allLocalDeletesAreSafe);
   const typedOk = !requiresTyping || typed === 'delete';
 
   const handleConfirm = async () => {
@@ -185,10 +209,10 @@ export function BulkRemoveWorktreesDialog({
                   Remote branches are shared with collaborators — deletion is visible to
                   everyone on the team.
                 </p>
-              ) : deleteLocal ? (
+              ) : deleteLocal && !allLocalDeletesAreSafe ? (
                 <p className="text-xs text-wt-muted mt-1">
-                  Local branches are force-deleted, which can drop commits not merged
-                  anywhere else.
+                  At least one selected branch isn’t known-merged, so the force-delete
+                  could drop commits not merged anywhere else.
                 </p>
               ) : null}
               <input
