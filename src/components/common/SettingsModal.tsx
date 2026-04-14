@@ -6,6 +6,7 @@ import {
   detectGhCli,
   type AuthMethod,
 } from '../../services/githubService';
+import { startRefreshLoop, stopRefreshLoop } from '../../services/refreshLoop';
 import { useRepoStore } from '../../store/useRepoStore';
 import { Terminal, Key, ShieldOff } from 'lucide-react';
 import { Dialog, DialogHeader, DialogFooter } from './Dialog';
@@ -194,6 +195,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       setAuthMethod(selectedMethod);
       if (refreshTouched) {
         setRefreshInterval(refreshIntervalMs);
+        // Reschedule the poll loop so the new cadence takes effect immediately. Without
+        // this, the already-armed setTimeout from the previous interval keeps running —
+        // meaning a user who shortens from e.g. 5 min → 5 sec would wait up to the OLD
+        // interval before seeing the new cadence. `startRefreshLoop` calls tick() which
+        // runs `refreshOnce()` immediately; subsequent ticks re-read the new interval.
+        stopRefreshLoop();
+        startRefreshLoop();
       }
       void setGitAuthMethod(
         selectedMethod,
