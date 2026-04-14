@@ -488,6 +488,19 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
       // one-fetch-window flicker from #73.
       holdSpinner();
       try {
+        // Invalidate both caches before the joined refreshes fire. The
+        // background fetch's body only invalidates `openPrListCache` (it's
+        // `!userInitiated`), so without this the user's joined refreshes
+        // would serve per-PR data from the 5-minute cache — exactly the
+        // stale-PR-metadata path the main-branch invalidation at line 585
+        // closes. Background fetch happens every 60s for ~1-2s, so ~3% of
+        // clicks land here; fresh data on those is worth the ~2 cheap
+        // cache-clear calls.
+        const joinRepo = useRepoStore.getState().repo;
+        if (joinRepo?.owner && joinRepo.name) {
+          invalidateOpenPrListCache(joinRepo.owner, joinRepo.name);
+          invalidatePrCacheForRepo(joinRepo.owner, joinRepo.name);
+        }
         void refreshOnce({ userInitiated: true });
         await fetchInFlightPromise.catch(() => {});
         await refreshOnce(opts);
@@ -514,19 +527,19 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   // against LOCAL state (no waiting for the network fetch) so cards update
   // within ~half a second instead of after the 1-2 seconds the remote takes
   // to respond. The real fetch runs in parallel below; once it completes,
-  // `await refreshOnce(opts)` re-derives a second time with the fresh remote
-  // refs. Dedupe semantics in refreshOnce handle the sequencing: if the
-  // optimistic is still in flight when the post-fetch call fires, the
-  // post-fetch call queues as pendingUserRefresh and runs automatically
-  // after the optimistic completes. If the optimistic has already finished,
-  // the post-fetch call starts a fresh pipeline.
+  // the post-fetch branch re-derives — either a full `refreshOnce` (when
+  // fetch moved refs) or a narrow PR-only pass (when refs are unchanged,
+  // so the pipeline's inputs are provably identical to the optimistic's).
   //
-  // Fire-and-forget (`void`) because awaiting it would serialize with the
-  // fetch and cost us the parallelism that makes this feel instant. The
-  // `fetching` flag (set here) + the spinner refcount (held above) keep
-  // the RepoBar spinner + grid grey-out pinned through both phases.
+  // Fired without awaiting here so it overlaps the fetch. We capture the
+  // promise so the narrow-pass branch below can await the optimistic's
+  // commit before patching `.pr` fields — the patch operates on the
+  // branches committed by the optimistic. The `fetching` flag (set here)
+  // + the spinner refcount (held above) keep the RepoBar spinner + grid
+  // grey-out pinned through both phases.
+  let optimisticP: Promise<void> | null = null;
   if (userInitiated) {
-    void refreshOnce({ userInitiated: true });
+    optimisticP = refreshOnce({ userInitiated: true });
   }
   let fetchFailed = false;
   const body = (async () => {
@@ -584,20 +597,45 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     }
     if (repo.owner && repo.name) {
       invalidateOpenPrListCache(repo.owner, repo.name);
-      // For user-initiated fetches, ALSO drop the per-PR detail cache.
-      // squashDetector pass 1 reads it via batchFetchPRs and would otherwise
-      // serve a freshly-merged PR as `state: 'open'` for up to 5 minutes,
-      // defeating the whole point of the user clicking refresh after a
-      // merge. Background ticks skip this — they're fine letting the
-      // 5-minute TTL roll naturally.
-      if (userInitiated) {
-        invalidatePrCacheForRepo(repo.owner, repo.name);
-      }
+      // On user-initiated fetches, ALSO drop the per-PR detail cache. PR
+      // metadata (isDraft, checksStatus, reviewDecision, mergeable, title)
+      // can change independently of ref moves, and `batchFetchPRs` returns
+      // cached entries blindly — it can't distinguish "fresh enough" from
+      // "actually stale." Preserving the cache would serve the optimistic's
+      // just-populated entries to the post-fetch pass and defeat the whole
+      // point of the refresh button (surfacing PR-state changes on click).
+      // Background ticks skip this — the 5min TTL is fine for unattended
+      // polling.
+      if (userInitiated) invalidatePrCacheForRepo(repo.owner, repo.name);
     }
-    // Fetch changed remote refs on disk (or this is a user-initiated fetch
-    // and we want guaranteed visible feedback); trigger a refresh so the UI
-    // reflects the new state.
-    await refreshOnce(opts);
+    // Post-fetch re-derive. Two shapes:
+    //
+    //   refsChanged === true           Full pipeline. New remote refs could
+    //     OR !userInitiated            have moved squash classifications,
+    //                                  added PRs, fast-forwarded main, etc.
+    //
+    //   refsChanged === false          Narrow PR-only pass. Refs didn't move,
+    //     AND userInitiated            so listBranches / listMainCommits /
+    //                                  listTags / listWorktrees / squash
+    //                                  detection / conflict detection /
+    //                                  Claude presence all have bit-
+    //                                  identical inputs to the optimistic.
+    //                                  Skip them; only re-fetch PR metadata
+    //                                  (which can change without ref moves —
+    //                                  closed-without-merge, draft toggle,
+    //                                  checks) and patch `.pr` on branches.
+    //
+    // Await the optimistic before patching so the narrow pass operates on
+    // the branches it committed. `runRefreshOnce` swallows pipeline errors
+    // internally (sets the store error banner and returns), so this await
+    // never rejects — on a transient optimistic failure the narrow pass
+    // simply patches whatever branches existed before the click.
+    if (refsChanged || !userInitiated) {
+      await refreshOnce(opts);
+    } else {
+      if (optimisticP) await optimisticP;
+      await runNarrowPrRefresh(repo, opts);
+    }
   } catch (e) {
     // Catches snapshotRemoteRefs failures and any unhandled error from the
     // refresh chain. fetchAllPrune failures are caught above; this path
@@ -627,6 +665,102 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   })();
   fetchInFlightPromise = body;
   await body;
+}
+
+// Narrow post-fetch refresh used when `git fetch` confirms no remote refs
+// moved on a user-initiated click. The optimistic pass has already committed
+// fresh local state (worktrees, branches, squash classifications, conflict
+// detection, Claude presence); the only thing that can have changed remotely
+// without moving refs is PR metadata — closed-without-merge, draft toggle,
+// checks, reviews. So we re-fetch just the open-PR list + per-PR details
+// (both cold-cache after `runFetchOnce`'s unconditional invalidation, so
+// the data is guaranteed fresh from GitHub) and patch `.pr` on affected
+// branches via the existing `setBranches` setter + `reconcileBranches`
+// structural-sharing helper.
+//
+// Why this is safe:
+//   - listBranches / listWorktrees / listMainCommits / listTags all derive
+//     from on-disk refs that provably didn't move.
+//   - detectSquashMerges: pass 1 reads the same mainCommits and pass 2's
+//     cherry cache is content-addressed by (branch sha, main sha).
+//   - Cross-worktree conflicts are computed from worktree state, which is
+//     stable across the ~1s between optimistic and narrow.
+//   - Ratchet is untouched because merge-status classifications aren't
+//     re-derived here.
+//
+// Error policy: the catch below is defensive. In practice
+// `listOpenPRsForBranches` (githubService.ts:282-285) and `batchFetchPRs`
+// (githubService.ts:241-243) swallow their own errors — returning empty-or-
+// stale maps rather than rejecting — so common GitHub API failures (rate
+// limit, 500, revoked token) do NOT trip this catch. The catch exists so
+// that (a) unexpected throws from store reads, helper code, or future
+// service-layer changes that start rethrowing surface via the error banner
+// instead of becoming silent, and (b) the code path is symmetric with
+// runRefreshOnce's own catch. A principled fix for "service layer swallows
+// API failures" belongs in githubService.ts, not here — tracked as a
+// follow-up.
+async function runNarrowPrRefresh(
+  repo: RepoState,
+  opts?: RefreshOptions,
+): Promise<void> {
+  const userInitiated = opts?.userInitiated === true;
+  if (userInitiated) holdSpinner();
+  try {
+    if (!repo.owner || !repo.name) return; // non-GitHub remote — nothing to refresh
+    // Bail on repo switch — same invariant as runRefreshOnce.
+    if (useRepoStore.getState().repo?.path !== repo.path) return;
+
+    const branches = useRepoStore.getState().branches;
+    const openPRs = await listOpenPRsForBranches(
+      repo.owner,
+      repo.name,
+      branches.map((b) => b.name),
+    );
+    if (openPRs.size > 0) {
+      const numbers = Array.from(openPRs.values()).map((pr) => pr.number);
+      const enriched = await batchFetchPRs(repo.owner, repo.name, numbers);
+      for (const [branchName, rest] of openPRs) {
+        const full = enriched.get(rest.number);
+        if (full) openPRs.set(branchName, { ...full, state: rest.state });
+      }
+    }
+
+    // Second repo-switch check — awaits above may have been long enough for
+    // the user to switch repos between calls.
+    if (useRepoStore.getState().repo?.path !== repo.path) return;
+
+    // Read branches fresh: the optimistic pass may have committed between
+    // our initial read and the awaits, bringing in new branches or dropping
+    // stale ones. Patch on the latest snapshot.
+    const current = useRepoStore.getState().branches;
+    const next = current.map((b) => {
+      const fresh = openPRs.get(b.name);
+      if (fresh) return { ...b, pr: fresh };
+      // Drop a stale open-PR attachment: the open-PR list didn't return it,
+      // so the PR was closed without merging (or its head branch was renamed
+      // remotely). Preserve PRs whose state isn't 'open' — those were
+      // attached by detectSquashMerges from the persistent per-PR cache and
+      // aren't in the open-PR list by design.
+      if (b.pr?.state === 'open') return { ...b, pr: undefined };
+      return b;
+    });
+    useRepoStore.getState().setBranches(reconcileBranches(current, next));
+    // Bump lastRefresh so the "updated X ago" label resets to "just now"
+    // on user-initiated clicks where the narrow pass was the authoritative
+    // post-fetch update. The optimistic's `commitRefreshResult` already
+    // bumped the label ~1-2s earlier, but users expect clicking refresh
+    // to reset the indicator when the full round-trip completes — not
+    // when a sub-phase landed.
+    useRepoStore.setState({ lastRefresh: Date.now() });
+  } catch (e) {
+    // Defensive — see the error-policy comment above. Not reached for
+    // typical GitHub API failures (service layer swallows those).
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn('[refreshLoop] narrow PR refresh failed:', msg);
+    useRepoStore.getState().setError(msg);
+  } finally {
+    if (userInitiated) releaseSpinner();
+  }
 }
 
 // `skipFirstTick` suppresses the immediate fetch on startup so callers that
