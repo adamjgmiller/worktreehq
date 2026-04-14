@@ -103,6 +103,50 @@ function CopyableTitle({ path }: { path: string }) {
   );
 }
 
+// Corner selection checkbox. Lives absolutely positioned so it doesn't
+// reflow the title row, and `<button>` so the parent's CardPointerSensor
+// (WorktreesView.tsx) skips drag activation on click. Visibility is gated
+// by either `selectionActive` (some other card in the grid is selected — a
+// sticky "selection mode" affordance) or the parent group-hover state, so
+// the zero-selection grid looks identical to before.
+function SelectionCheckbox({
+  selected,
+  selectionActive,
+  onToggle,
+}: {
+  selected: boolean;
+  selectionActive: boolean;
+  onToggle: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={selected}
+      aria-label={selected ? 'Deselect worktree' : 'Select worktree'}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(e);
+      }}
+      className={clsx(
+        'absolute top-2 left-2 z-10 w-5 h-5 rounded border-2 flex items-center justify-center transition-opacity',
+        selected
+          ? 'border-wt-info bg-wt-info text-wt-bg opacity-100'
+          : 'border-wt-border bg-wt-bg/80 text-transparent hover:border-wt-info/70',
+        // When something is selected, every card's checkbox stays visible.
+        // Otherwise reveal on hover of the parent .group/card. Selected always
+        // visible (handled above by the explicit opacity-100 with the colored
+        // border path).
+        !selected && (selectionActive
+          ? 'opacity-100'
+          : 'opacity-0 group-hover/card:opacity-100 focus:opacity-100'),
+      )}
+    >
+      <Check className="w-3 h-3" strokeWidth={3} />
+    </button>
+  );
+}
+
 export interface WorktreeCardProps {
   wt: Worktree;
   // All per-card store data is prop-drilled from the parent so React.memo
@@ -120,6 +164,15 @@ export interface WorktreeCardProps {
   isDragging?: boolean;
   animateLayout?: boolean;
   isOverlay?: boolean;
+  // Selection: corner checkbox is hidden until either the card is hovered or
+  // selectionActive is true (i.e. some other card in the grid is selected).
+  // The pattern mirrors Gmail/Linear so the zero-selection state stays
+  // visually identical to today. Click toggles; shift-click range-selects
+  // (parent computes range across the filtered+sorted list). Single shared
+  // handler instead of a per-card binding so React.memo can short-circuit.
+  selected?: boolean;
+  selectionActive?: boolean;
+  onToggleSelected?: (path: string, e: React.MouseEvent) => void;
 }
 
 function WorktreeCardInner({
@@ -134,6 +187,9 @@ function WorktreeCardInner({
   isDragging,
   animateLayout,
   isOverlay,
+  selected,
+  selectionActive,
+  onToggleSelected,
 }: WorktreeCardProps) {
   // Orphaned branch: bookkeeping survives but the directory doesn't. Branch
   // out before touching any live-card state — none of it would be meaningful
@@ -143,7 +199,19 @@ function WorktreeCardInner({
   // uses the same outer shape so the transition between states stays smooth
   // when the user clicks Prune.
   if (wt.prunable) {
-    return <OrphanedCard wt={wt} onPruneOrphan={onPruneOrphan} onRemove={onRemove} isDragging={isDragging} animateLayout={animateLayout} isOverlay={isOverlay} />;
+    return (
+      <OrphanedCard
+        wt={wt}
+        onPruneOrphan={onPruneOrphan}
+        onRemove={onRemove}
+        isDragging={isDragging}
+        animateLayout={animateLayout}
+        isOverlay={isOverlay}
+        selected={selected}
+        selectionActive={selectionActive}
+        onToggleSelected={onToggleSelected}
+      />
+    );
   }
   const setError = useRepoStore((s) => s.setError);
   const authStatus = useRepoStore((s) => s.githubAuthStatus);
@@ -261,13 +329,25 @@ function WorktreeCardInner({
       initial={isOverlay ? false : { opacity: 0, y: 4 }}
       transition={{ duration: 0.15 }}
       className={clsx(
-        'rounded-xl border-2 p-5 min-w-[18.75rem]',
+        'group/card relative rounded-xl border-2 p-5 min-w-[18.75rem]',
         isDragging
           ? 'border-dashed border-wt-info/50 bg-wt-info/5'
           : `bg-wt-panel ${worktreeStatusClass(wt.status, branchInfo?.mergeStatus, isOnDefaultBranch)}`,
         isOverlay && 'shadow-2xl ring-2 ring-wt-info/40 bg-wt-panel',
+        // Selected ring sits on top of the existing border so it reads as an
+        // additive overlay rather than replacing the status border. Skipped
+        // on the drag overlay because we explicitly pass selected={false}
+        // there to keep the floating preview clean.
+        selected && !isOverlay && 'ring-2 ring-wt-info/70',
       )}
     >
+      {!isOverlay && onToggleSelected && (
+        <SelectionCheckbox
+          selected={!!selected}
+          selectionActive={!!selectionActive}
+          onToggle={(e) => onToggleSelected(wt.path, e)}
+        />
+      )}
       <div className={isDragging ? 'invisible' : undefined}>
       <div className="flex items-start gap-2 mb-2">
         <Tooltip label={statusIconEntry.label}>
@@ -484,6 +564,9 @@ function OrphanedCard({
   isDragging,
   animateLayout,
   isOverlay,
+  selected,
+  selectionActive,
+  onToggleSelected,
 }: {
   wt: Worktree;
   onPruneOrphan?: () => void;
@@ -491,6 +574,9 @@ function OrphanedCard({
   isDragging?: boolean;
   animateLayout?: boolean;
   isOverlay?: boolean;
+  selected?: boolean;
+  selectionActive?: boolean;
+  onToggleSelected?: (path: string, e: React.MouseEvent) => void;
 }) {
   const {
     attributes,
@@ -520,13 +606,21 @@ function OrphanedCard({
       initial={isOverlay ? false : { opacity: 0, y: 4 }}
       transition={{ duration: 0.15 }}
       className={clsx(
-        'rounded-xl border-2 p-5 min-w-[18.75rem]',
+        'group/card relative rounded-xl border-2 p-5 min-w-[18.75rem]',
         isDragging
           ? 'border-dashed border-wt-info/50 bg-wt-info/5'
           : 'bg-wt-panel border-wt-dirty/70 bg-wt-dirty/5',
         isOverlay && 'shadow-2xl ring-2 ring-wt-info/40 bg-wt-panel',
+        selected && !isOverlay && 'ring-2 ring-wt-info/70',
       )}
     >
+      {!isOverlay && onToggleSelected && (
+        <SelectionCheckbox
+          selected={!!selected}
+          selectionActive={!!selectionActive}
+          onToggle={(e) => onToggleSelected(wt.path, e)}
+        />
+      )}
       <div className={isDragging ? 'invisible' : undefined}>
       <div className="flex items-start gap-2 mb-3">
         <Tooltip label="Orphaned — git's bookkeeping points at a directory that no longer exists">

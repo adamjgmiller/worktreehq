@@ -60,6 +60,11 @@ export function useKeyboardShortcuts({
           window.dispatchEvent(new CustomEvent('wthq:branches-escape'));
           return;
         }
+        // Worktrees tab: same shape — search clears first, then selection.
+        if (tab === 'worktrees') {
+          window.dispatchEvent(new CustomEvent('wthq:worktrees-escape'));
+          return;
+        }
         return;
       }
 
@@ -82,10 +87,15 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // Cmd/Ctrl+A — select all branches (only on Branches tab)
+      // Cmd/Ctrl+A — select all (Branches and Worktrees tabs only)
       if (mod && e.key === 'a' && !e.shiftKey && !e.altKey && tab === 'branches') {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('wthq:toggle-all-branches'));
+        return;
+      }
+      if (mod && e.key === 'a' && !e.shiftKey && !e.altKey && tab === 'worktrees') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('wthq:toggle-all-worktrees'));
         return;
       }
 
@@ -141,15 +151,21 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // / — focus branch search (switch to Branches tab if needed)
+      // / — focus the search input. Stays on the current tab when it has
+      // its own search (Worktrees); otherwise jumps to Branches as the
+      // historical default.
       if (e.key === '/' && !mod && !e.altKey) {
         e.preventDefault();
-        setTab('branches');
-        requestAnimationFrame(() => {
-          document
-            .getElementById('branch-search-input')
-            ?.focus();
-        });
+        if (tab === 'worktrees') {
+          requestAnimationFrame(() => {
+            document.getElementById('worktree-search-input')?.focus();
+          });
+        } else {
+          setTab('branches');
+          requestAnimationFrame(() => {
+            document.getElementById('branch-search-input')?.focus();
+          });
+        }
         return;
       }
     };
