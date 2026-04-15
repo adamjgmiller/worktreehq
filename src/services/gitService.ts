@@ -974,6 +974,17 @@ export async function resolveRef(repo: string, ref: string): Promise<string> {
   return (await tryRun(repo, ['rev-parse', '--verify', ref])).trim();
 }
 
+/**
+ * Strict variant of resolveRef: resolves a ref to the commit SHA it points at
+ * (`<ref>^{commit}` peels annotated tags down to their target commit) and
+ * throws if the ref can't be resolved. Use this when "can't verify" must abort
+ * the caller rather than silently continue — e.g. comparing an existing
+ * archive tag's commit against a branch tip before a force-delete.
+ */
+export async function resolveCommitSha(repo: string, ref: string): Promise<string> {
+  return (await run(repo, ['rev-parse', '--verify', `${ref}^{commit}`])).trim();
+}
+
 /** Common ancestor of two refs. Returns empty string on failure. */
 export async function getMergeBase(
   repo: string,

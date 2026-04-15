@@ -55,6 +55,7 @@ export interface PRInfo {
   mergedAt?: string;
   mergeCommitSha?: string;
   headRef: string;
+  headSha?: string | null;
   mergeMethod?: 'merge' | 'squash' | 'rebase';
   url: string;
   isDraft?: boolean;

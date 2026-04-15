@@ -114,6 +114,49 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       }
       prByBranch.set(sourceBranch, pr);
     }
+
+    // Supplementary pass: local branches named `pr-<N>` are created by
+    // `gh pr checkout N` when the PR is from a fork OR when the upstream
+    // branch name would conflict. `pr.headRef` is the fork's branch name
+    // (e.g. `feature/multi-users`), so the loop above never tagged the
+    // local `pr-N` ref. Catch it here by name. Re-uses the already-fetched
+    // prMap, so no extra network I/O. The `mainShaSet` check mirrors the
+    // `isLikelySquash` guard above — we only tag when the PR's merge commit
+    // actually appears on main's first-parent history. The `headSha` check
+    // pins the tag to *content* equality: the local ref must still point at
+    // the PR's head commit as it existed when merged. Without this, a user
+    // who ran `gh pr checkout N` and then added local commits would get
+    // their unmerged work silently classified squash-merged. `headSha` is
+    // optional on PRInfo (older on-disk cache entries lack it) so the guard
+    // fails closed — no headSha means we refuse to tag.
+    const mainShaSet = new Set(mainCommits.map((c) => c.sha));
+    for (const b of branchIndex.values()) {
+      if (b.mergeStatus !== 'unmerged') continue;
+      // Only consider local pr-<N> refs: the `gh pr checkout N` flow this
+      // pass is compensating for creates a local ref. Remote-only `origin/pr-N`
+      // names are rare but possible and the headSha/mainSha guards would still
+      // let them through without this gate.
+      if (!b.hasLocal) continue;
+      const m = b.name.match(/^pr-(\d+)$/);
+      if (!m) continue;
+      const pr = prMap.get(parseInt(m[1], 10));
+      if (!pr) continue;
+      if (pr.state !== 'merged' || !pr.mergeCommitSha) continue;
+      if (!mainShaSet.has(pr.mergeCommitSha)) continue;
+      if (!pr.headSha || b.lastCommitSha !== pr.headSha) continue;
+      if (b.pr?.state === 'open') continue;
+      b.mergeStatus = 'squash-merged';
+      // Attach the merged PR. The open-PR guard above already skipped any
+      // branch that currently carries an open PR, so we won't clobber a live
+      // one. A closed or merged PR already on `b` (e.g. from the on-disk PR
+      // cache of a prior run) may be overwritten by the freshly-fetched
+      // prMap entry — benign because both describe the same terminal PR
+      // state but sourced from the newer fetch.
+      b.pr = pr;
+      // Intentionally not emitting a new SquashMapping: the archaeology view
+      // represents the PR merge event (one per PR), not the local ref. Pass 1
+      // already emitted the mapping keyed at pr.headRef.
+    }
   }
 
   // Fallback: cherry-based patch-id check for remaining unmerged. Parallelized
