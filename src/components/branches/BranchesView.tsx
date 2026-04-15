@@ -185,12 +185,24 @@ export function BranchesView() {
                         `${b.name}: archive tag ${tagName} already existed at this tip — reused`,
                       );
                     } else {
+                      // Archive preservation could not be proven (tag points
+                      // elsewhere). Abort before the remote delete — if we
+                      // can't vouch for the archive, we can't destroy the
+                      // last remote reference either. `continue` skips the
+                      // outer-loop remote-delete step below.
                       errors.push(
-                        `${b.name}: branch deleted but archive tag ${tagName} already exists at a different commit (existing=${existingTagSha.slice(0, 7)}, wanted=${archiveSha.slice(0, 7)}) — use \`git tag <new-name> ${archiveSha.slice(0, 7)}\` to preserve the deleted tip`,
+                        `${b.name}: branch deleted but archive tag ${tagName} already exists at a different commit (existing=${existingTagSha.slice(0, 7)}, wanted=${archiveSha.slice(0, 7)}) — use \`git tag <new-name> ${archiveSha.slice(0, 7)}\` to preserve the deleted tip; remote ref was NOT deleted`,
                       );
+                      continue;
                     }
                   } catch (cmpErr: any) {
-                    errors.push(`${b.name}: ${cmpErr?.message ?? cmpErr}`);
+                    // Same rationale as the SHA-mismatch branch above: if we
+                    // can't verify the existing tag at all, we can't prove
+                    // archive preservation, so don't proceed to remote delete.
+                    errors.push(
+                      `${b.name}: branch deleted but archive tag ${tagName} verification failed (${cmpErr?.message ?? cmpErr}); remote ref was NOT deleted`,
+                    );
+                    continue;
                   }
                 }
               }
