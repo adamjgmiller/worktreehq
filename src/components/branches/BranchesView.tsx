@@ -191,15 +191,22 @@ export function BranchesView() {
             // Covers every deferred archive-and-delete item regardless of
             // mergeStatus (squash-merged, unmerged, stale, other), so the
             // user's archive intent is honored even for unmerged/stale
-            // branches. A tag-creation failure (e.g. tag already exists from
-            // a prior retry) is collected into `errors` like any other
-            // per-item failure rather than aborting the loop.
+            // branches. A pre-existing archive tag (from a prior interrupted
+            // retry) means the archive intent is already satisfied — proceed
+            // to the force-delete rather than stranding the user with a tag
+            // error and an undeleted branch. Any OTHER tag-creation failure
+            // (permissions, corrupted refs) aborts this item via `continue`
+            // so we don't silently delete commits the user wanted preserved.
+            // LC_ALL=C in git_exec keeps the stderr string stable English.
             if (item.mode === 'archive-and-delete') {
               try {
                 await tagBranch(repo.path, item.branch.name, archiveTagNameFor(item.branch.name));
               } catch (e: any) {
-                errors.push(`${item.branch.name}: ${e?.message ?? e}`);
-                continue;
+                const msg = String(e?.message ?? e);
+                if (!/already exists/.test(msg)) {
+                  errors.push(`${item.branch.name}: ${msg}`);
+                  continue;
+                }
               }
             }
             await deleteLocalBranch(repo.path, item.branch.name, true);
