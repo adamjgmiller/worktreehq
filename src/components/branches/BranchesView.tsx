@@ -33,6 +33,10 @@ export function BranchesView() {
   // Local error slot — setError on the store gets clobbered by refreshOnce's `setError(null)`,
   // so bulk-delete errors need their own home where refreshes don't touch them.
   const [deleteErrors, setDeleteErrors] = useState<string[]>([]);
+  // Separate neutral-styled channel for idempotent-success notes (e.g. "archive
+  // tag already existed at this tip — reused"). Kept distinct from
+  // `deleteErrors` so a green/info banner doesn't imply failure.
+  const [deleteInfo, setDeleteInfo] = useState<string[]>([]);
   const [rejected, setRejected] = useState<RejectedDelete[] | null>(null);
   // In-flight guard for performDelete and performForceDelete. Both are
   // bound to dialogs whose primary buttons used to remain clickable while the
@@ -100,6 +104,7 @@ export function BranchesView() {
     // visible above the fresh result and the user can't tell what came from
     // which run.
     setDeleteErrors([]);
+    setDeleteInfo([]);
     const rejectedItems: RejectedDelete[] = [];
     const errors: string[] = [];
     const deletesLocal = mode !== 'remote';
@@ -184,6 +189,7 @@ export function BranchesView() {
     setDeleting(true);
     try {
       const errors: string[] = [];
+      const infos: string[] = [];
       for (const item of rejected) {
         try {
           if (item.branch.hasLocal) {
@@ -228,6 +234,10 @@ export function BranchesView() {
                     );
                     continue;
                   }
+                  // Same SHA — a prior interrupted retry already created this
+                  // tag. Surface it as an info note so the user can see their
+                  // earlier archive was preserved rather than silently assumed.
+                  infos.push(`${item.branch.name}: archive tag ${tagName} already existed at this tip — reused`);
                 } catch (cmpErr: any) {
                   errors.push(`${item.branch.name}: ${cmpErr?.message ?? cmpErr}`);
                   continue;
@@ -251,6 +261,9 @@ export function BranchesView() {
       if (errors.length > 0) {
         setDeleteErrors((prev) => [...prev, ...errors]);
       }
+      if (infos.length > 0) {
+        setDeleteInfo((prev) => [...prev, ...infos]);
+      }
       await refreshOnce({ userInitiated: true });
     } finally {
       setDeleting(false);
@@ -267,6 +280,18 @@ export function BranchesView() {
             onClick={() => setDeleteErrors([])}
             className="text-wt-fg-2 hover:text-wt-fg"
             aria-label="dismiss errors"
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {deleteInfo.length > 0 && (
+        <div className="px-4 py-2 bg-wt-info/10 border-b border-wt-info/40 text-xs text-wt-info font-mono flex items-start gap-3">
+          <div className="flex-1 whitespace-pre-wrap">{deleteInfo.join('\n')}</div>
+          <button
+            onClick={() => setDeleteInfo([])}
+            className="text-wt-fg-2 hover:text-wt-fg"
+            aria-label="dismiss info"
           >
             ×
           </button>
