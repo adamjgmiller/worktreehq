@@ -75,13 +75,14 @@ export function ConfirmDeleteDialog({
       )}
       {requiresTyping && (
         <div className="mb-3">
-          <label className="text-xs text-wt-fg-2">
+          <label htmlFor="confirm-delete-typed" className="text-xs text-wt-fg-2">
             Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
           </label>
           <p className="text-xs text-wt-muted mt-1">
             The remote branch is shared with collaborators; deleting it removes it for everyone.
           </p>
           <input
+            id="confirm-delete-typed"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             disabled={submitting}
