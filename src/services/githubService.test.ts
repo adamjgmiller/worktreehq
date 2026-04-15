@@ -180,6 +180,35 @@ describe('batchFetchPRs: mergeTimeHeadSha freeze on merged state', () => {
     expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
   });
 
+  it('keeps observedLive=false across TTL refresh once cold-bootstrapped', async () => {
+    // Sticky fail-closed invariant: once a PR is cold-bootstrapped
+    // (observedLive=false), re-observing it merged should not flip the
+    // flag to true. Without this, a user who first sees a pre-existing
+    // merged PR on install, then lets TTL expire, would get that PR
+    // "promoted" to observedLive=true on the next refetch — reintroducing
+    // the exact CX-F4 misclassification path the flag exists to close.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'bootstrap-tip'));
+      const first = await batchFetchPRs('o', 'r', [42]);
+      expect(first.get(42)?.mergeTimeHeadShaObservedLive).toBe(false);
+
+      // Advance past TTL; second fetch sees the same merged state. The
+      // live headSha may have advanced post-merge, but the frozen
+      // mergeTimeHeadSha + observedLive=false must stay stuck.
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const second = await batchFetchPRs('o', 'r', [42]);
+      const pr = second.get(42);
+      expect(pr?.headSha).toBe('post-merge-tip');
+      expect(pr?.mergeTimeHeadSha).toBe('bootstrap-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('sets observedLive=true when a PR transitions from open to merged during this process', async () => {
     // First observation: PR is open. No mergeTimeHeadSha — it only gets set
     // on merged state. Second observation: PR is now merged. setPrCacheEntry
