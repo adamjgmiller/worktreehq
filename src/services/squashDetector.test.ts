@@ -789,4 +789,99 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
 
     expect(result.updatedBranches.find((b) => b.name === 'pr-108')!.mergeStatus).toBe('unmerged');
   });
+
+  it("back-patches mapping.archiveTag to archive/pr-<N> when only the alias tag exists", async () => {
+    // Scenario: user ran `gh pr checkout 108` on a fork PR; local branch named
+    // `pr-108`; later ran archive-and-delete. `archiveTagNameFor('pr-108')`
+    // produced `archive/pr-108`. Pass 1's mapping was keyed at pr.headRef
+    // ('feature/multi-users') so it looked for `archive/feature/multi-users`
+    // and found none. Without back-patch the Squash Archaeology view says
+    // "Branch deleted, no archive tag found" for PR #108 even though the
+    // archive exists under the alias name.
+    batchFetchPRsMock.mockResolvedValue(
+      new Map([
+        [
+          108,
+          {
+            number: 108,
+            title: 'Multi-user DAO',
+            state: 'merged' as const,
+            mergeCommitSha: 'merge-sha-1',
+            headRef: 'feature/multi-users',
+            headSha: 'branch-sha',
+            mergeTimeHeadSha: 'branch-sha',
+            url: 'https://github.com/o/r/pull/108',
+          },
+        ],
+      ]),
+    );
+    cherryCheckMock.mockResolvedValue(false);
+
+    const result = await detectSquashMerges(
+      baseInput({
+        branches: [
+          {
+            name: 'pr-108',
+            hasLocal: true,
+            hasRemote: false,
+            lastCommitDate: new Date().toISOString(),
+            lastCommitSha: 'branch-sha',
+            aheadOfMain: 2,
+            behindMain: 0,
+            mergeStatus: 'unmerged',
+          } as Branch,
+        ],
+        tags: ['archive/pr-108'],
+      }),
+    );
+
+    const mapping = result.mappings.find((m) => m.prNumber === 108)!;
+    expect(mapping.archiveTag).toBe('archive/pr-108');
+  });
+
+  it('prefers canonical archive/<headRef> over alias archive/pr-<N> when both exist', async () => {
+    // Edge case: both tags present (e.g., user archived under the headRef name
+    // earlier from a non-`pr-<N>` local branch, then also archived the
+    // `pr-<N>` alias after the rename). Pass 1 already resolved the canonical
+    // archive/<headRef> into the mapping; pass 1b must not overwrite it.
+    batchFetchPRsMock.mockResolvedValue(
+      new Map([
+        [
+          108,
+          {
+            number: 108,
+            title: 'Multi-user DAO',
+            state: 'merged' as const,
+            mergeCommitSha: 'merge-sha-1',
+            headRef: 'feature/multi-users',
+            headSha: 'branch-sha',
+            mergeTimeHeadSha: 'branch-sha',
+            url: 'https://github.com/o/r/pull/108',
+          },
+        ],
+      ]),
+    );
+    cherryCheckMock.mockResolvedValue(false);
+
+    const result = await detectSquashMerges(
+      baseInput({
+        branches: [
+          {
+            name: 'pr-108',
+            hasLocal: true,
+            hasRemote: false,
+            lastCommitDate: new Date().toISOString(),
+            lastCommitSha: 'branch-sha',
+            aheadOfMain: 2,
+            behindMain: 0,
+            mergeStatus: 'unmerged',
+          } as Branch,
+        ],
+        tags: ['archive/feature/multi-users', 'archive/pr-108'],
+      }),
+    );
+
+    const mapping = result.mappings.find((m) => m.prNumber === 108)!;
+    expect(mapping.archiveTag).toBe('archive/feature/multi-users');
+  });
 });

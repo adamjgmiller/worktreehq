@@ -170,6 +170,21 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       // Intentionally not emitting a new SquashMapping: the archaeology view
       // represents the PR merge event (one per PR), not the local ref. Pass 1
       // already emitted the mapping keyed at pr.headRef.
+      //
+      // Back-patch the pass-1 mapping's archiveTag for the `pr-<N>` alias
+      // case. `archiveTagNameFor(b.name)` creates `archive/pr-<N>` when the
+      // user archive-and-deletes this branch, not `archive/<pr.headRef>` that
+      // pass 1 looks for. Without this, Squash Archaeology shows "no archive
+      // tag found" even though the tag exists. Prefer the canonical
+      // `archive/<pr.headRef>` when pass 1 already found one; only fill in the
+      // alias name when the canonical slot is empty.
+      const aliasTag = `archive/${b.name}`;
+      if (tags.includes(aliasTag)) {
+        const mapping = mappings.find((mm) => mm.prNumber === pr.number);
+        if (mapping && !mapping.archiveTag) {
+          mapping.archiveTag = aliasTag;
+        }
+      }
     }
   }
 
