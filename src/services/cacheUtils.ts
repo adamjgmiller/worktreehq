@@ -57,6 +57,18 @@ export class TTLCache<K, V> {
     // Skip trim on hydration — caller can trim once after bulk load.
   }
 
+  /** Force TTL expiry on an entry without removing it — subsequent `get()`
+   *  calls return undefined (triggering refetch), but `getStale()` still
+   *  returns the prior value. Used for soft-invalidation where the caller
+   *  wants to trigger a refetch while preserving state for stale-while-
+   *  revalidate paths. No-op when the key is not present. */
+  expire(key: K): boolean {
+    const entry = this.map.get(key);
+    if (!entry) return false;
+    this.map.set(key, { value: entry.value, at: 0 });
+    return true;
+  }
+
   /** Get the raw entry including timestamp (for persistence). */
   getRaw(key: K): { value: V; at: number } | undefined {
     return this.map.get(key);
@@ -91,14 +103,19 @@ export class TTLCache<K, V> {
     return this.map.entries();
   }
 
-  /** FIFO trim: drop the oldest `trimFraction` when over maxSize. */
+  /** FIFO trim: drop the oldest entries until size <= maxSize, in
+   *  chunks of `trimFraction` of the cap. Normal `set()` overshoots by 1
+   *  and exits after one chunk (amortising the delete loop cost); bulk
+   *  loaders that push size well above the cap keep chunking until under. */
   trim(): void {
-    if (this.maxSize === null || this.map.size <= this.maxSize) return;
-    const toDrop = Math.max(1, Math.floor(this.maxSize * this.trimFraction));
-    let i = 0;
-    for (const key of this.map.keys()) {
-      if (i++ >= toDrop) break;
-      this.map.delete(key);
+    if (this.maxSize === null) return;
+    const chunk = Math.max(1, Math.floor(this.maxSize * this.trimFraction));
+    while (this.map.size > this.maxSize) {
+      let i = 0;
+      for (const key of this.map.keys()) {
+        if (i++ >= chunk) break;
+        this.map.delete(key);
+      }
     }
   }
 }

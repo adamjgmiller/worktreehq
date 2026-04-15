@@ -55,6 +55,26 @@ export interface PRInfo {
   mergedAt?: string;
   mergeCommitSha?: string;
   headRef: string;
+  /** Live head-ref tip from GitHub — advances if the author pushes commits
+   *  after merge. Do NOT use as a merge-time-content proof; see
+   *  `mergeTimeHeadSha` for that. */
+  headSha?: string | null;
+  /** Head-ref tip captured the first time we observed this PR in
+   *  `state === 'merged'` — frozen once set. Used by the supplementary
+   *  `pr-<N>` detector pass to prove a local ref still matches the PR's
+   *  head as it existed when merged, even when GitHub's live `headSha`
+   *  has since advanced. Absent for PRs first observed as open/closed
+   *  (they'll pick it up on the merge-transition). */
+  mergeTimeHeadSha?: string | null;
+  /** True when `mergeTimeHeadSha` was captured from a live non-merged →
+   *  merged transition this code witnessed during a single process lifetime
+   *  (or preserved across one via the cache/getStale path). False when
+   *  bootstrapped from the current live `pr.headSha` on a cold cache —
+   *  which can be a post-merge-advanced tip if the author pushed commits
+   *  after merging. The supplementary `pr-<N>` detector pass requires
+   *  `true` to tag a branch `squash-merged`; cold bootstraps fall through
+   *  to the cherry-check fallback or stay `unmerged` (fail-closed). */
+  mergeTimeHeadShaObservedLive?: boolean;
   mergeMethod?: 'merge' | 'squash' | 'rebase';
   url: string;
   isDraft?: boolean;

@@ -114,6 +114,87 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       }
       prByBranch.set(sourceBranch, pr);
     }
+
+    // Supplementary pass for the narrow `pr-<N>` fallback name.
+    //
+    // `gh pr checkout N` normally names the local branch after the PR's
+    // `HeadRefName` (e.g. `patch-2`, `feature/multi-users`) — the common
+    // case is already covered by pass 1 above, which matches on
+    // `pr.headRef === sourceBranch`. gh only falls back to `pr-<N>` in a
+    // narrow cross-repo case where the head ref name would collide (most
+    // notably when a fork's head ref equals the target repo's default
+    // branch). Pass 1 can't catch that fallback because `pr.headRef` on
+    // GitHub is still the fork's branch name, not `pr-<N>` — so match it
+    // here by local name. Re-uses the already-fetched prMap, so no extra
+    // network I/O.
+    //
+    // Guards:
+    //   - `mainShaSet` mirrors pass 1's `isLikelySquash` — only tag when the
+    //     PR's merge commit actually appears on main's first-parent history.
+    //   - `mergeTimeHeadSha` pins the tag to *merge-time content* equality:
+    //     the local ref must still point at the PR's head commit AS IT
+    //     EXISTED WHEN MERGED, not the PR's current live head. GitHub's
+    //     `pr.headSha` advances if the author pushes commits after merge,
+    //     so using it directly would let post-merge pushes silently
+    //     classify a `pr-<N>` branch (with matching live tip) as
+    //     squash-merged even though the new commits aren't on main.
+    //     `githubService.setPrCacheEntry` freezes this on first
+    //     merged-state observation. `mergeTimeHeadSha` is optional on
+    //     PRInfo (cache entries from before this field existed lack it)
+    //     so the guard fails closed — no mergeTimeHeadSha means we refuse
+    //     to tag, and the first cache refresh will bootstrap it.
+    //   - `mergeTimeHeadShaObservedLive` distinguishes freezes captured
+    //     from a non-merged → merged transition this code witnessed
+    //     (trusted) from cold-bootstrap freezes taken from live
+    //     `pr.headSha` on first-ever observation of an already-merged PR
+    //     (untrusted — the live head may already be post-merge-advanced).
+    //     Fail closed when false: pre-existing merged PRs seen for the
+    //     first time on this install fall through to the cherry-check
+    //     pass or stay `unmerged`.
+    const mainShaSet = new Set(mainCommits.map((c) => c.sha));
+    for (const b of branchIndex.values()) {
+      if (b.mergeStatus !== 'unmerged') continue;
+      // Only consider local pr-<N> refs: the `gh pr checkout N` flow this
+      // pass is compensating for creates a local ref. Remote-only `origin/pr-N`
+      // names are rare but possible and the headSha/mainSha guards would still
+      // let them through without this gate.
+      if (!b.hasLocal) continue;
+      const m = b.name.match(/^pr-(\d+)$/);
+      if (!m) continue;
+      const pr = prMap.get(parseInt(m[1], 10));
+      if (!pr) continue;
+      if (pr.state !== 'merged' || !pr.mergeCommitSha) continue;
+      if (!mainShaSet.has(pr.mergeCommitSha)) continue;
+      if (!pr.mergeTimeHeadSha || !pr.mergeTimeHeadShaObservedLive) continue;
+      if (b.lastCommitSha !== pr.mergeTimeHeadSha) continue;
+      if (b.pr?.state === 'open') continue;
+      b.mergeStatus = 'squash-merged';
+      // Attach the merged PR. The open-PR guard above already skipped any
+      // branch that currently carries an open PR, so we won't clobber a live
+      // one. A closed or merged PR already on `b` (e.g. from the on-disk PR
+      // cache of a prior run) may be overwritten by the freshly-fetched
+      // prMap entry — benign because both describe the same terminal PR
+      // state but sourced from the newer fetch.
+      b.pr = pr;
+      // Intentionally not emitting a new SquashMapping: the archaeology view
+      // represents the PR merge event (one per PR), not the local ref. Pass 1
+      // already emitted the mapping keyed at pr.headRef.
+      //
+      // Back-patch the pass-1 mapping's archiveTag for the `pr-<N>` alias
+      // case. `archiveTagNameFor(b.name)` creates `archive/pr-<N>` when the
+      // user archive-and-deletes this branch, not `archive/<pr.headRef>` that
+      // pass 1 looks for. Without this, Squash Archaeology shows "no archive
+      // tag found" even though the tag exists. Prefer the canonical
+      // `archive/<pr.headRef>` when pass 1 already found one; only fill in the
+      // alias name when the canonical slot is empty.
+      const aliasTag = `archive/${b.name}`;
+      if (tags.includes(aliasTag)) {
+        const mapping = mappings.find((mm) => mm.prNumber === pr.number);
+        if (mapping && !mapping.archiveTag) {
+          mapping.archiveTag = aliasTag;
+        }
+      }
+    }
   }
 
   // Fallback: cherry-based patch-id check for remaining unmerged. Parallelized

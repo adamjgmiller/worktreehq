@@ -1,0 +1,163 @@
+import { useRef, useEffect, useState } from 'react';
+import type { Branch } from '../../types';
+import type { DeleteMode } from './ConfirmDeleteDialog';
+import { AlertTriangle } from 'lucide-react';
+import { Dialog, DialogHeader, DialogFooter } from '../common/Dialog';
+import { archiveTagNameFor } from '../../services/gitService';
+
+export type RejectReason = 'squash-merged' | 'unmerged' | 'other';
+
+export interface RejectedDelete {
+  branch: Branch;
+  mode: DeleteMode;
+  reason: RejectReason;
+}
+
+export function ForceDeleteRejectedDialog({
+  rejected,
+  submitting = false,
+  onCancel,
+  onConfirm,
+}: {
+  rejected: RejectedDelete[];
+  submitting?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [typed, setTyped] = useState('');
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+
+  // Three cohort variants:
+  //   - squash-merged: every reject is squash-merged. Detector + PR merge commit
+  //     confirm merged; force-deleting is safe if detection is correct.
+  //   - other: every reject is 'other' (detector classified merged-normally /
+  //     direct-merged / empty but git -d still refused). Uses neutral "git
+  //     refused unexpectedly" wording; risk framing is the same conditional-
+  //     loss as the squash-merged cohort.
+  //   - unmerged: at least one reject is 'unmerged'/'stale', OR the cohort is
+  //     mixed (e.g. squash + other). Mixed cohorts get the strong warning
+  //     because at least one branch's real state is uncertain and we'd rather
+  //     over-warn than under-warn.
+  const cohort: 'squash-merged' | 'other' | 'unmerged' = rejected.every(
+    (r) => r.reason === 'squash-merged',
+  )
+    ? 'squash-merged'
+    : rejected.every((r) => r.reason === 'other')
+      ? 'other'
+      : 'unmerged';
+  // Cohort-based tiering: squash-merged is click-to-confirm because the
+  // content-verified detector is an independent safety check. 'other' and
+  // 'unmerged'/mixed cohorts require typing — CLAUDE.md's tier would allow
+  // click-to-confirm for merged-normally/direct-merged/empty (the 'other'
+  // cohort's source classifications), but the detector-vs-git disagreement
+  // here is new information: git actively refused the delete despite the
+  // detector saying merged, so we can no longer vouch for safety on our own.
+  // The stricter gate is a deliberate departure from the generic tier rule.
+  const requiresTyping = cohort !== 'squash-merged';
+  const canConfirm = !submitting && (!requiresTyping || typed === 'delete');
+  const noun = rejected.length === 1 ? 'branch' : 'branches';
+  const subject = rejected.length === 1 ? 'it' : 'they';
+  const verbHave = rejected.length === 1 ? 'has' : 'have';
+  const verbDo = rejected.length === 1 ? "doesn't" : "don't";
+  const title =
+    cohort === 'squash-merged'
+      ? `Force delete squash-merged ${noun}?`
+      : cohort === 'other'
+        ? `Git refused — force delete ${noun}?`
+        : `Force delete unmerged ${noun}?`;
+
+  return (
+    <Dialog
+      onClose={onCancel}
+      disabled={submitting}
+      ariaLabelledBy="force-delete-rejected-title"
+      className="max-h-[80vh] flex flex-col"
+    >
+      <DialogHeader
+        title={title}
+        titleId="force-delete-rejected-title"
+        icon={<AlertTriangle className="w-5 h-5" />}
+        titleClassName="text-wt-conflict"
+        onClose={onCancel}
+        disabled={submitting}
+      />
+      <p className="text-sm text-wt-fg-2 mb-3">
+        {cohort === 'unmerged' ? (
+          <>
+            Git refused to delete {rejected.length} {noun} because {subject} {verbHave} commits
+            that aren&apos;t yet merged upstream. Force deleting will{' '}
+            <strong>lose those commits permanently</strong>.
+          </>
+        ) : cohort === 'other' ? (
+          <>
+            Git refused to delete {rejected.length} {noun} even though WorktreeHQ detected{' '}
+            {subject} as merged. If the detection is right, force deleting is safe; if it&apos;s
+            wrong, those commits will be unrecoverable.
+          </>
+        ) : (
+          <>
+            Git refused to delete {rejected.length} {noun} because {subject} {verbDo} look
+            merged from git&apos;s perspective. WorktreeHQ detected {subject} as squash-merged via
+            the PR merge commit. Force delete?
+          </>
+        )}
+      </p>
+      <div className="border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4 max-h-48 overflow-auto">
+        {rejected.map(({ branch, mode }) => (
+          <div key={branch.name}>
+            {mode === 'archive-and-delete' && <div>tag:    {archiveTagNameFor(branch.name)}</div>}
+            <div>local:  {branch.name}</div>
+            {(mode === 'both' || mode === 'archive-and-delete') && branch.hasRemote && (
+              <div>remote: origin/{branch.name}</div>
+            )}
+          </div>
+        ))}
+      </div>
+      {requiresTyping && (
+        <div className="mb-3">
+          <label htmlFor="force-delete-confirm" className="text-xs text-wt-fg-2">
+            Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
+          </label>
+          <p id="force-delete-confirm-hazard" className="text-xs text-wt-muted mt-1">
+            {cohort === 'unmerged'
+              ? 'These commits will be unrecoverable after deletion.'
+              : `If WorktreeHQ's detection is wrong, the commits on ${rejected.length === 1 ? 'this branch' : 'these branches'} will be unrecoverable.`}
+          </p>
+          <input
+            id="force-delete-confirm"
+            aria-describedby="force-delete-confirm-hazard"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={submitting}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
+          />
+        </div>
+      )}
+      <DialogFooter>
+        <button
+          ref={cancelRef}
+          onClick={onCancel}
+          disabled={submitting}
+          className="px-3 py-1.5 text-sm text-wt-fg-2 rounded focus:outline-none focus:ring-2 focus:ring-wt-info/40 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={!canConfirm}
+          className="px-3 py-1.5 text-sm bg-wt-conflict/20 border border-wt-conflict/60 text-wt-conflict rounded hover:bg-wt-conflict/30 disabled:opacity-40"
+        >
+          {submitting ? 'Force deleting…' : 'Force delete'}
+        </button>
+      </DialogFooter>
+    </Dialog>
+  );
+}

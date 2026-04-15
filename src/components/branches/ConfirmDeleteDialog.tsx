@@ -29,8 +29,10 @@ export function ConfirmDeleteDialog({
   // Tier confirmation to blast radius: local-only deletes use `git -d` which
   // refuses unmerged branches, so git itself prevents data loss — no need to
   // gate behind typing. Remote-touching modes (remote, both, archive-and-delete)
-  // are team-visible and stay behind the typed confirmation. Squash-merged
-  // rejections route to ForceDeleteSquashDialog, which always requires typing.
+  // are team-visible and stay behind the typed confirmation. `-d` rejections
+  // route to ForceDeleteRejectedDialog, which tiers by cohort: squash-merged
+  // cohort is click-to-confirm (detector is the safety check), while unmerged
+  // and 'other' cohorts require typing.
   const requiresTyping = mode !== 'local';
   const canConfirm = !submitting && (!requiresTyping || typed === 'delete');
   const cancelRef = useRef<HTMLButtonElement | null>(null);
@@ -73,13 +75,15 @@ export function ConfirmDeleteDialog({
       )}
       {requiresTyping && (
         <div className="mb-3">
-          <label className="text-xs text-wt-fg-2">
+          <label htmlFor="confirm-delete-typed" className="text-xs text-wt-fg-2">
             Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
           </label>
-          <p className="text-xs text-wt-muted mt-1">
+          <p id="confirm-delete-typed-hazard" className="text-xs text-wt-muted mt-1">
             The remote branch is shared with collaborators; deleting it removes it for everyone.
           </p>
           <input
+            id="confirm-delete-typed"
+            aria-describedby="confirm-delete-typed-hazard"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             disabled={submitting}

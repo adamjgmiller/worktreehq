@@ -41,6 +41,7 @@ import {
   validateToken,
   _clearPrCacheForTests,
   _getPrCacheKeysForTests,
+  _simulateCacheEvictionForTests,
 } from './githubService';
 
 describe('mapChecksStatus', () => {
@@ -141,6 +142,379 @@ describe('batchFetchPRs: chunking', () => {
   });
 });
 
+describe('batchFetchPRs: mergeTimeHeadSha freeze on merged state', () => {
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    initGithub('test-token');
+  });
+
+  const mergedPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  it('bootstraps mergeTimeHeadSha from live headSha on first fetch of a merged PR (observedLive=false)', async () => {
+    // Cold bootstrap: no prior observation of this PR. The live headSha
+    // might already be post-merge-advanced, so mark observedLive=false so
+    // the supplementary `pr-<N>` detector pass fails closed on this entry.
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'initial-tip'));
+    const result = await batchFetchPRs('o', 'r', [42]);
+    const pr = result.get(42);
+    expect(pr?.headSha).toBe('initial-tip');
+    expect(pr?.mergeTimeHeadSha).toBe('initial-tip');
+    expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
+  });
+
+  it('keeps observedLive=false across TTL refresh once cold-bootstrapped', async () => {
+    // Sticky fail-closed invariant: once a PR is cold-bootstrapped
+    // (observedLive=false), re-observing it merged should not flip the
+    // flag to true. Without this, a user who first sees a pre-existing
+    // merged PR on install, then lets TTL expire, would get that PR
+    // "promoted" to observedLive=true on the next refetch — reintroducing
+    // the exact CX-F4 misclassification path the flag exists to close.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'bootstrap-tip'));
+      const first = await batchFetchPRs('o', 'r', [42]);
+      expect(first.get(42)?.mergeTimeHeadShaObservedLive).toBe(false);
+
+      // Advance past TTL; second fetch sees the same merged state. The
+      // live headSha may have advanced post-merge, but the frozen
+      // mergeTimeHeadSha + observedLive=false must stay stuck.
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const second = await batchFetchPRs('o', 'r', [42]);
+      const pr = second.get(42);
+      expect(pr?.headSha).toBe('post-merge-tip');
+      expect(pr?.mergeTimeHeadSha).toBe('bootstrap-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sets observedLive=true when a PR transitions from open to merged during this process', async () => {
+    // First observation: PR is open. No mergeTimeHeadSha — it only gets set
+    // on merged state. Second observation: PR is now merged. setPrCacheEntry
+    // sees priorInCache with state !== 'merged' and treats the current
+    // pr.headSha as the witnessed merge-time tip (observedLive=true).
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      graphqlMock.mockResolvedValueOnce({
+        repository: {
+          p42: {
+            number: 42,
+            title: 'PR 42',
+            state: 'OPEN',
+            merged: false,
+            mergedAt: null,
+            mergeCommit: null,
+            headRefName: 'feat/42',
+            headRefOid: 'open-tip',
+            url: 'https://github.com/o/r/pull/42',
+            isDraft: false,
+            mergeable: 'MERGEABLE',
+            reviewDecision: null,
+            commits: { nodes: [] },
+          },
+        },
+      });
+      await batchFetchPRs('o', 'r', [42]);
+
+      // Advance past TTL so the next fetch re-hits the network.
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      const result = await batchFetchPRs('o', 'r', [42]);
+      const pr = result.get(42);
+      expect(pr?.state).toBe('merged');
+      expect(pr?.mergeTimeHeadSha).toBe('merge-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves mergeTimeHeadSha across re-fetches when live headSha advances', async () => {
+    // Advance Date.now() past the 5-min in-memory TTL between fetches so the
+    // second call actually hits the network (the first entry stays present
+    // for getStale but is treated as expired by prCache.get). This exercises
+    // the real production path: author pushes to head branch post-merge, the
+    // app re-fetches on next refresh, and setPrCacheEntry must preserve the
+    // originally-frozen merge-time tip.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'initial-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+
+      // Advance past the 5-min TTL.
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const result = await batchFetchPRs('o', 'r', [42]);
+      const pr = result.get(42);
+      expect(pr?.headSha).toBe('post-merge-tip');
+      // Frozen from first observation — not overwritten by the advanced tip.
+      expect(pr?.mergeTimeHeadSha).toBe('initial-tip');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves mergeTimeHeadSha + observedLive across user-initiated invalidation + re-fetch', async () => {
+    // invalidatePrCacheForRepo is called on every user-initiated refresh
+    // (refreshLoop.ts). It soft-expires cache entries so `get()` misses
+    // trigger a refetch, while `getStale()` still returns the prior value
+    // for setPrCacheEntry's fallback chain. Without this path, a follow-up
+    // fetch would re-bootstrap mergeTimeHeadSha from the current live
+    // headSha, defeating the freeze on the most common refresh path.
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'initial-tip'));
+    await batchFetchPRs('o', 'r', [42]);
+
+    // User clicks Refresh → repo cache invalidated (soft-expire).
+    invalidatePrCacheForRepo('o', 'r');
+
+    // Author pushed post-merge; live tip advanced.
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+    const result = await batchFetchPRs('o', 'r', [42]);
+    const pr = result.get(42);
+    expect(pr?.headSha).toBe('post-merge-tip');
+    // Freeze survived the invalidation via getStale fallback.
+    expect(pr?.mergeTimeHeadSha).toBe('initial-tip');
+    // observedLive preserved from the prior entry (initial fetch cold-
+    // bootstrapped with false; soft-expire preserves that through the
+    // refetch).
+    expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
+  });
+
+  it('preserves freeze + observedLive across simulated app restart (persist → rehydrate → refetch)', async () => {
+    // The most critical case for soft-mark-stale: if the app crashes or
+    // quits between invalidate and refetch, the on-disk cache keeps the
+    // expired entries. On next boot, `hydratePrCache` rehydrates them with
+    // their original `at` timestamp (so the crash-after-invalidate case
+    // hydrates at `at: 0`, i.e. still expired). `get()` misses, `getStale()`
+    // returns the entry, freeze survives.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Simulate a non-merged → merged observation so observedLive=true.
+      graphqlMock.mockResolvedValueOnce({
+        repository: {
+          p42: {
+            number: 42,
+            title: 'PR 42',
+            state: 'OPEN',
+            merged: false,
+            mergedAt: null,
+            mergeCommit: null,
+            headRefName: 'feat/42',
+            headRefOid: 'open-tip',
+            url: 'https://github.com/o/r/pull/42',
+            isDraft: false,
+            mergeable: 'MERGEABLE',
+            reviewDecision: null,
+            commits: { nodes: [] },
+          },
+        },
+      });
+      await batchFetchPRs('o', 'r', [42]);
+
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+
+      // User invalidates, then the app crashes before refetch completes.
+      invalidatePrCacheForRepo('o', 'r');
+
+      // Simulate app restart: clear in-memory state and rehydrate from
+      // whatever the last persist flushed. The soft-expired entry is
+      // serialized with the merged PR's value and at=0.
+      const persistedBlob = JSON.stringify({
+        version: 1,
+        entries: {
+          'o/r#42': {
+            at: 0, // soft-expired
+            pr: {
+              number: 42,
+              title: 'PR 42',
+              state: 'merged',
+              mergeCommitSha: 'merge-42',
+              headRef: 'feat/42',
+              headSha: 'merge-tip',
+              mergeTimeHeadSha: 'merge-tip',
+              mergeTimeHeadShaObservedLive: true,
+              url: 'https://github.com/o/r/pull/42',
+            },
+          },
+        },
+      });
+      _clearPrCacheForTests();
+      readPrCacheFileMock.mockResolvedValueOnce(persistedBlob);
+      await hydratePrCache();
+
+      // Fresh fetch after restart — live head has advanced post-merge.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const result = await batchFetchPRs('o', 'r', [42]);
+      const pr = result.get(42);
+      expect(pr?.headSha).toBe('post-merge-tip');
+      // Freeze and observedLive both survived the restart.
+      expect(pr?.mergeTimeHeadSha).toBe('merge-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses to grant observedLive=true when the only prior non-merged observation came from disk (rehydrated open entry)', async () => {
+    // Regression test for round-7 UF-1: setPrCacheEntry previously used
+    // `priorInCache.state !== 'merged'` as a proxy for "witnessed the
+    // transition in-process". That proxy misfires after app restart —
+    // hydratePrCache rehydrates persisted open entries, so the first post-
+    // restart fetch that finds the PR merged would see a rehydrated open
+    // prior and incorrectly flag observedLive=true. If post-merge commits
+    // were pushed during the offline window, the frozen mergeTimeHeadSha
+    // would then point PAST the actual merge, and pass 1b could classify
+    // a pr-<N> with real un-upstreamed work as squash-merged.
+    //
+    // Fix: track live observations via an in-memory Set that doesn't
+    // persist. Rehydrated entries don't populate it, so the first post-
+    // restart observation falls through to the cold-bootstrap branch.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Persist an open entry with an `at` that's within STALE_OPEN_PR_MS
+      // (so hydrate keeps it) but past the 5-min in-memory TTL (so the
+      // next get() misses and the fetch hits the network).
+      const persistedBlob = JSON.stringify({
+        version: 1,
+        entries: {
+          'o/r#42': {
+            at: Date.now() - 60 * 60 * 1000, // 1 hour old
+            pr: {
+              number: 42,
+              title: 'PR 42',
+              state: 'open',
+              headRef: 'feat/42',
+              headSha: 'pre-merge-tip',
+              url: 'https://github.com/o/r/pull/42',
+            },
+          },
+        },
+      });
+      readPrCacheFileMock.mockResolvedValueOnce(persistedBlob);
+      await hydratePrCache();
+
+      // First post-restart fetch returns the PR as merged with a live
+      // headSha that is already past the actual merge tip.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const result = await batchFetchPRs('o', 'r', [42]);
+      const pr = result.get(42);
+      expect(pr?.state).toBe('merged');
+      // Cold-bootstrap path: headSha becomes the freeze, observedLive=false.
+      expect(pr?.mergeTimeHeadSha).toBe('post-merge-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses to grant observedLive=true when the live observation was evicted before the merged fetch', async () => {
+    // Regression test for round-8 CX-F5: `liveObservations` Set membership
+    // alone is insufficient. If a PR is observed non-merged in-process,
+    // the cache fills past maxSize and FIFO-trims the entry, and a later
+    // fetch finds the PR merged — `priorInCache` is undefined (evicted)
+    // but the Set still has the key. Without the AND guard, setPrCacheEntry
+    // would fire branch 2 and trust the (possibly post-merge-advanced)
+    // headSha. The AND of (priorInCache non-merged) && (Set membership)
+    // forces branch 3 so post-eviction fetches fail closed.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // In-process observation of PR 42 as open: Set populated, cache has entry.
+      graphqlMock.mockResolvedValueOnce({
+        repository: {
+          p42: {
+            number: 42,
+            title: 'PR 42',
+            state: 'OPEN',
+            merged: false,
+            mergedAt: null,
+            mergeCommit: null,
+            headRefName: 'feat/42',
+            headRefOid: 'open-tip',
+            url: 'https://github.com/o/r/pull/42',
+            isDraft: false,
+            mergeable: 'MERGEABLE',
+            reviewDecision: null,
+            commits: { nodes: [] },
+          },
+        },
+      });
+      await batchFetchPRs('o', 'r', [42]);
+
+      // Simulate FIFO trim dropping PR 42 while leaving liveObservations intact.
+      _simulateCacheEvictionForTests('o/r#42');
+
+      // Advance past TTL and refetch: PR is now merged, live head may be
+      // post-merge-advanced.
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const result = await batchFetchPRs('o', 'r', [42]);
+      const pr = result.get(42);
+      expect(pr?.state).toBe('merged');
+      // Fail-closed: no priorInCache to corroborate the in-process witness.
+      expect(pr?.mergeTimeHeadSha).toBe('post-merge-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does NOT set mergeTimeHeadSha for open PRs', async () => {
+    graphqlMock.mockResolvedValueOnce({
+      repository: {
+        p42: {
+          number: 42,
+          title: 'Open PR',
+          state: 'OPEN',
+          merged: false,
+          mergedAt: null,
+          mergeCommit: null,
+          headRefName: 'feat/42',
+          headRefOid: 'open-tip',
+          url: 'https://github.com/o/r/pull/42',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          reviewDecision: null,
+          commits: { nodes: [] },
+        },
+      },
+    });
+    const result = await batchFetchPRs('o', 'r', [42]);
+    const pr = result.get(42);
+    expect(pr?.state).toBe('open');
+    expect(pr?.headSha).toBe('open-tip');
+    expect(pr?.mergeTimeHeadSha).toBeUndefined();
+  });
+});
+
 describe('hydratePrCache: on-disk TTL for open PRs', () => {
   beforeEach(() => {
     _clearPrCacheForTests();
@@ -233,6 +607,36 @@ describe('hydratePrCache: on-disk TTL for open PRs', () => {
     const keys = _getPrCacheKeysForTests();
     expect(keys).toContain('o/r#3');
   });
+
+  it('enforces maxSize after bulk hydrate from disk (round-7 UF-2)', async () => {
+    // setWithTimestamp intentionally skips the FIFO trim (cacheUtils.ts:57)
+    // so bulk loaders can insert without per-entry overhead, but that left
+    // the `maxSize: 500` cap on prCache unenforced on the restart path: a
+    // persisted cache of thousands of merged-PR entries would hydrate in
+    // full and only shrink back to 500 after several subsequent set() calls.
+    // hydratePrCache now calls trim() once after the bulk load.
+    const now = Date.now();
+    const entries: Record<string, { at: number; pr: unknown }> = {};
+    for (let i = 0; i < 750; i++) {
+      entries[`o/r#${i}`] = {
+        at: now - 60 * 60 * 1000,
+        pr: {
+          number: i,
+          title: `PR ${i}`,
+          state: 'merged',
+          mergeCommitSha: `merge-${i}`,
+          headRef: `feat/${i}`,
+          headSha: `tip-${i}`,
+          url: `https://github.com/o/r/pull/${i}`,
+        },
+      };
+    }
+    readPrCacheFileMock.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, entries }),
+    );
+    await hydratePrCache();
+    expect(_getPrCacheKeysForTests().length).toBeLessThanOrEqual(500);
+  });
 });
 
 describe('invalidatePrCacheForRepo', () => {
@@ -242,7 +646,11 @@ describe('invalidatePrCacheForRepo', () => {
     initGithub('test-token');
   });
 
-  it('drops only the entries for the named repo', async () => {
+  it('soft-expires only the entries for the named repo (other repos unaffected)', async () => {
+    // Soft-mark-stale semantics: entries for the named repo have their TTL
+    // forced to 0 so `getPR()` misses and refetches, but they remain in the
+    // map so `getStale()` can preserve `mergeTimeHeadSha` for the refetch.
+    // Entries for OTHER repos are untouched.
     const now = Date.now();
     const blob = JSON.stringify({
       version: 1,
@@ -271,7 +679,43 @@ describe('invalidatePrCacheForRepo', () => {
 
     invalidatePrCacheForRepo('owner1', 'repoA');
 
-    expect(_getPrCacheKeysForTests()).toEqual(['owner2/repoB#1']);
+    // All keys still present (entries remain for getStale fallback).
+    expect(_getPrCacheKeysForTests().sort()).toEqual([
+      'owner1/repoA#1',
+      'owner1/repoA#2',
+      'owner2/repoB#1',
+    ]);
+    // But a batchFetchPRs for the invalidated repo triggers a GraphQL call —
+    // proves the soft-expire worked (cached entries miss on `get()`).
+    graphqlMock.mockResolvedValueOnce({
+      repository: {
+        p1: {
+          number: 1,
+          title: 'a1-refetched',
+          state: 'OPEN',
+          merged: false,
+          mergedAt: null,
+          mergeCommit: null,
+          headRefName: 'feat/a1',
+          headRefOid: 'fresh-tip',
+          url: '',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          reviewDecision: null,
+          commits: { nodes: [] },
+        },
+      },
+    });
+    const refetched = await batchFetchPRs('owner1', 'repoA', [1]);
+    expect(refetched.get(1)?.title).toBe('a1-refetched');
+    expect(graphqlMock).toHaveBeenCalledTimes(1);
+
+    // Conversely, the other repo's cache entry is still fresh — no network
+    // call needed.
+    graphqlMock.mockReset();
+    const unaffected = await batchFetchPRs('owner2', 'repoB', [1]);
+    expect(unaffected.get(1)?.title).toBe('b1');
+    expect(graphqlMock).not.toHaveBeenCalled();
   });
 
   it('is a no-op (and skips the disk write) when the repo has no entries', async () => {
