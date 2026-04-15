@@ -110,14 +110,20 @@ export function BranchesView() {
         try {
           if (deletesLocal && b.hasLocal) {
             // Tag-then-delete: tag FIRST so the archive points at the live tip,
-            // but only if the branch actually looks deletable. For non-squash,
-            // non-merged branches we'd otherwise create an orphan archive tag
-            // (delete fails → tag remains pointing at a still-live branch).
-            // squash-merged branches are expected to fail -d and route to the
-            // force-delete follow-up dialog, so the tag IS desired in that case.
+            // but only for branches whose `git -d` will succeed directly here.
+            // Split rationale:
+            //   - merged-normally / direct-merged: git -d succeeds, so pre-tagging
+            //     is safe (tag + delete happen back-to-back in this block).
+            //   - squash-merged: git -d ALWAYS refuses → routes to the force-delete
+            //     dialog. Pre-tagging here would orphan the tag if the user cancels
+            //     that dialog (tag points at a still-live branch). Defer the tag to
+            //     performForceDelete so it only lands right before the destructive op.
+            //   - unmerged / stale under archive-and-delete: likewise routes to the
+            //     force-delete dialog; performForceDelete tags those too so the
+            //     user's archive intent isn't silently dropped.
             const shouldTag =
               mode === 'archive-and-delete' &&
-              (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'squash-merged' || b.mergeStatus === 'direct-merged');
+              (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'direct-merged');
             if (shouldTag) {
               await tagBranch(repo.path, b.name, archiveTagNameFor(b.name));
             }
@@ -147,9 +153,11 @@ export function BranchesView() {
               }
             }
           }
-          // The remote side runs regardless of whether the local delete was deferred
-          // to the force-delete follow-up — otherwise `both`/`archive-and-delete` strand
-          // the remote ref for the user to clean up manually.
+          // When the local delete was deferred to the force-delete dialog
+          // (`localDeferredToForce === true`), we also defer the remote delete to
+          // performForceDelete. Deleting the remote here would leave the local ref
+          // stranded if the user cancels the force dialog; the remote is re-issued
+          // on confirm via `wantsRemote` in performForceDelete.
           if (deletesRemote && b.hasRemote && !localDeferredToForce) {
             await deleteRemoteBranch(repo.path, 'origin', b.name);
           }
@@ -178,6 +186,22 @@ export function BranchesView() {
       for (const item of rejected) {
         try {
           if (item.branch.hasLocal) {
+            // Tag FIRST, still — just moved here from performDelete so the tag
+            // only lands when the user actually confirms the force-delete.
+            // Covers every deferred archive-and-delete item regardless of
+            // mergeStatus (squash-merged, unmerged, stale, other), so the
+            // user's archive intent is honored even for unmerged/stale
+            // branches. A tag-creation failure (e.g. tag already exists from
+            // a prior retry) is collected into `errors` like any other
+            // per-item failure rather than aborting the loop.
+            if (item.mode === 'archive-and-delete') {
+              try {
+                await tagBranch(repo.path, item.branch.name, archiveTagNameFor(item.branch.name));
+              } catch (e: any) {
+                errors.push(`${item.branch.name}: ${e?.message ?? e}`);
+                continue;
+              }
+            }
             await deleteLocalBranch(repo.path, item.branch.name, true);
           }
           // Honor the original mode: if the user picked `both` or `archive-and-delete`,

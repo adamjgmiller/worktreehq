@@ -42,7 +42,10 @@ export function ForceDeleteRejectedDialog({
   // on the branch and the user should see the strong warning.
   const hasUnmerged = rejected.some((r) => r.reason === 'unmerged' || r.reason === 'other');
   const noun = rejected.length === 1 ? 'branch' : 'branches';
-  const title = hasUnmerged ? 'Force delete unmerged branches?' : 'Force delete squash-merged?';
+  const subject = rejected.length === 1 ? 'it' : 'they';
+  const verbHave = rejected.length === 1 ? 'has' : 'have';
+  const verbDo = rejected.length === 1 ? "doesn't" : "don't";
+  const title = hasUnmerged ? `Force delete unmerged ${noun}?` : `Force delete squash-merged ${noun}?`;
 
   return (
     <Dialog
@@ -62,15 +65,15 @@ export function ForceDeleteRejectedDialog({
       <p className="text-sm text-wt-fg-2 mb-3">
         {hasUnmerged ? (
           <>
-            Git refused to delete {rejected.length} {noun} because they have commits not on{' '}
-            <code className="font-mono text-xs">{defaultBranch}</code>. Force deleting will{' '}
+            Git refused to delete {rejected.length} {noun} because {subject} {verbHave} commits
+            not on <code className="font-mono text-xs">{defaultBranch}</code>. Force deleting will{' '}
             <strong>lose those commits permanently</strong>.
           </>
         ) : (
           <>
-            Git refused to delete {rejected.length} {noun} because they don&apos;t look merged
-            from git&apos;s perspective. WorktreeHQ detected them as squash-merged via the PR
-            merge commit. Force delete?
+            Git refused to delete {rejected.length} {noun} because {subject} {verbDo} look
+            merged from git&apos;s perspective. WorktreeHQ detected them as squash-merged via the
+            PR merge commit. Force delete?
           </>
         )}
       </p>
