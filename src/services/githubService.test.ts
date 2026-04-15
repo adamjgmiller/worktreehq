@@ -202,6 +202,27 @@ describe('batchFetchPRs: mergeTimeHeadSha freeze on merged state', () => {
     }
   });
 
+  it('preserves mergeTimeHeadSha across user-initiated invalidation + re-fetch', async () => {
+    // invalidatePrCacheForRepo is called on every user-initiated refresh
+    // (refreshLoop.ts). It fully deletes cache entries — without the side-
+    // channel stash, a follow-up fetch would re-bootstrap mergeTimeHeadSha
+    // from the current live headSha, defeating the freeze on the most
+    // common refresh path.
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'initial-tip'));
+    await batchFetchPRs('o', 'r', [42]);
+
+    // User clicks Refresh → repo cache invalidated.
+    invalidatePrCacheForRepo('o', 'r');
+
+    // Author pushed post-merge; live tip advanced.
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+    const result = await batchFetchPRs('o', 'r', [42]);
+    const pr = result.get(42);
+    expect(pr?.headSha).toBe('post-merge-tip');
+    // Freeze survived the invalidation via the side-channel stash.
+    expect(pr?.mergeTimeHeadSha).toBe('initial-tip');
+  });
+
   it('does NOT set mergeTimeHeadSha for open PRs', async () => {
     graphqlMock.mockResolvedValueOnce({
       repository: {

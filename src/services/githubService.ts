@@ -175,31 +175,70 @@ function cacheKey(owner: string, repo: string, n: number) {
  *
  * Strategy: on first observation of `state === 'merged'`, freeze the
  * current `headSha` into `mergeTimeHeadSha`. On subsequent observations,
- * preserve the existing frozen value. If we ever see a merged PR without a
- * prior cache entry (typical first-fetch case), we bootstrap
- * `mergeTimeHeadSha` from the current `headSha` — imperfect for PRs merged
- * long before this code shipped AND pushed-to post-merge, but correct for
- * the overwhelming majority where author didn't touch the branch after
- * merge. See issue #TBD for the rare-case follow-up.
+ * preserve the existing frozen value. Reads prior state via
+ * `prCache.getStale` (works for TTL-expired entries) AND from
+ * `invalidatedMergeFreezes` (works across user-initiated refreshes that
+ * fully wipe merged entries from the main cache — see
+ * `invalidatePrCacheForRepo`).
+ *
+ * If no prior freeze exists (typical first-fetch case), we bootstrap
+ * `mergeTimeHeadSha` from the current `headSha` — imperfect for PRs
+ * merged before this code shipped AND pushed-to post-merge, but correct
+ * for the overwhelming majority where the author didn't touch the
+ * branch after merge. Returns the stored PRInfo (with `mergeTimeHeadSha`
+ * populated when applicable) so callers can surface the freeze back to
+ * downstream consumers without re-reading the cache.
  */
-function setPrCacheEntry(key: string, pr: PRInfo | null): void {
+function setPrCacheEntry(key: string, pr: PRInfo | null): PRInfo | null {
   if (pr && pr.state === 'merged') {
-    // getStale returns the entry even if TTL-expired — we want the frozen
-    // SHA regardless of whether the cached entry is technically stale.
-    const prior = prCache.getStale(key);
-    const frozen = prior?.mergeTimeHeadSha ?? pr.headSha ?? null;
+    // Try three sources for the frozen value, in order of trust:
+    //   1. Prior cache entry (may be TTL-expired but present — getStale
+    //      ignores TTL).
+    //   2. Stash from a prior invalidation (see invalidatePrCacheForRepo)
+    //      — covers the user-initiated-refresh path which fully deletes
+    //      cache entries before refetch.
+    //   3. Bootstrap from current live headSha (first-observation case).
+    const priorInCache = prCache.getStale(key);
+    const priorInStash = invalidatedMergeFreezes.get(key);
+    const frozen =
+      priorInCache?.mergeTimeHeadSha ?? priorInStash ?? pr.headSha ?? null;
     pr = { ...pr, mergeTimeHeadSha: frozen };
+    // Stash is single-use — once we've restored into the main cache, drop
+    // it so the map doesn't grow unboundedly across invalidation cycles.
+    invalidatedMergeFreezes.delete(key);
   }
   prCache.set(key, pr);
+  return pr;
 }
+
+/**
+ * Side-channel for `mergeTimeHeadSha` values extracted just before
+ * `invalidatePrCacheForRepo` deletes a merged-PR cache entry. Next
+ * `setPrCacheEntry` call for the same key restores the freeze from here
+ * and clears the entry. Bounded by the pending-refetch window (small in
+ * practice — invalidation is always followed by an immediate refetch in
+ * the refreshLoop flow).
+ */
+const invalidatedMergeFreezes = new Map<string, string>();
 
 export function _clearPrCacheForTests() {
   prCache.clear();
+  invalidatedMergeFreezes.clear();
   hydratePromise = null;
 }
 
 export function invalidatePrCacheForRepo(owner: string, repo: string): void {
   const prefix = `${owner}/${repo}#`;
+  // Before deleting, stash mergeTimeHeadSha freezes from merged PRs so a
+  // follow-up refetch doesn't re-bootstrap them from the current (possibly
+  // post-merge-advanced) live headSha. See setPrCacheEntry's "source 2"
+  // for the restore path.
+  for (const [k, entry] of prCache.entries()) {
+    if (!k.startsWith(prefix)) continue;
+    if (entry.value?.state === 'merged' && entry.value.mergeTimeHeadSha) {
+      invalidatedMergeFreezes.set(k, entry.value.mergeTimeHeadSha);
+    }
+  }
   const removed = prCache.deleteWhere((k) => k.startsWith(prefix));
   if (removed > 0) schedulePersist();
 }
@@ -218,9 +257,9 @@ export async function getPR(owner: string, repo: string, number: number): Promis
   if (!transport) return null;
   try {
     const pr = await transport.getPullRequest(owner, repo, number);
-    setPrCacheEntry(key, pr);
+    const stored = setPrCacheEntry(key, pr);
     schedulePersist();
-    return pr;
+    return stored;
   } catch {
     // Both transports return null (not throw) for 404s, so they are
     // negative-cached in the try block above. Any error reaching here is
@@ -259,12 +298,11 @@ export async function batchFetchPRs(
     try {
       const chunkOut = await transport.batchGetPullRequests(owner, repo, chunk);
       for (const [n, pr] of chunkOut) {
-        const k = cacheKey(owner, repo, n);
-        setPrCacheEntry(k, pr);
-        // Echo back the PR as stored (with mergeTimeHeadSha merged in) so
-        // callers see the same shape the cache will return next time.
-        const stored = prCache.get(k);
-        out.set(n, stored ?? pr);
+        // setPrCacheEntry returns the stored PRInfo (with mergeTimeHeadSha
+        // merged in for merged PRs), so callers see the same shape the
+        // cache will return next time.
+        const stored = setPrCacheEntry(cacheKey(owner, repo, n), pr);
+        if (stored) out.set(n, stored);
       }
       // Negative-cache only after a successful fetch — a missing key means the
       // API confirmed the PR doesn't exist, not that the request failed.
