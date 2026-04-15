@@ -114,6 +114,33 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       }
       prByBranch.set(sourceBranch, pr);
     }
+
+    // Supplementary pass: local branches named `pr-<N>` are created by
+    // `gh pr checkout N` when the PR is from a fork OR when the upstream
+    // branch name would conflict. `pr.headRef` is the fork's branch name
+    // (e.g. `feature/multi-users`), so the loop above never tagged the
+    // local `pr-N` ref. Catch it here by name. Re-uses the already-fetched
+    // prMap, so no extra network I/O. The `mainShaSet` check mirrors the
+    // `isLikelySquash` guard above — we only tag when the PR's merge commit
+    // actually appears on main's first-parent history.
+    const mainShaSet = new Set(mainCommits.map((c) => c.sha));
+    for (const b of branchIndex.values()) {
+      if (b.mergeStatus !== 'unmerged') continue;
+      const m = b.name.match(/^pr-(\d+)$/);
+      if (!m) continue;
+      const pr = prMap.get(parseInt(m[1], 10));
+      if (!pr) continue;
+      if (pr.state !== 'merged' || !pr.mergeCommitSha) continue;
+      if (!mainShaSet.has(pr.mergeCommitSha)) continue;
+      if (b.pr?.state === 'open') continue;
+      b.mergeStatus = 'squash-merged';
+      // Safe to attach unconditionally — the open-PR guard above already
+      // `continue`d if there was one we'd risk clobbering.
+      b.pr = pr;
+      // Intentionally not emitting a new SquashMapping: the archaeology view
+      // represents the PR merge event (one per PR), not the local ref. Pass 1
+      // already emitted the mapping keyed at pr.headRef.
+    }
   }
 
   // Fallback: cherry-based patch-id check for remaining unmerged. Parallelized

@@ -4,18 +4,23 @@ import type { DeleteMode } from './ConfirmDeleteDialog';
 import { AlertTriangle } from 'lucide-react';
 import { Dialog, DialogHeader, DialogFooter } from '../common/Dialog';
 
-export interface RejectedSquash {
+export type RejectReason = 'squash-merged' | 'unmerged' | 'other';
+
+export interface RejectedDelete {
   branch: Branch;
   mode: DeleteMode;
+  reason: RejectReason;
 }
 
-export function ForceDeleteSquashDialog({
+export function ForceDeleteRejectedDialog({
   rejected,
+  defaultBranch,
   submitting = false,
   onCancel,
   onConfirm,
 }: {
-  rejected: RejectedSquash[];
+  rejected: RejectedDelete[];
+  defaultBranch: string;
   submitting?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -28,26 +33,46 @@ export function ForceDeleteSquashDialog({
     cancelRef.current?.focus();
   }, []);
 
+  // Mixed cohorts get the stronger unmerged wording: the user is about to
+  // force-delete at least one branch that git believes has commits not on
+  // the default branch, which is the real blast-radius signal regardless
+  // of what other branches in the batch look like. `'other'` (detector
+  // classified as merged-normally/direct-merged/empty but git -d still
+  // refused) also routes here — if git refuses, something unexpected is
+  // on the branch and the user should see the strong warning.
+  const hasUnmerged = rejected.some((r) => r.reason === 'unmerged' || r.reason === 'other');
+  const noun = rejected.length === 1 ? 'branch' : 'branches';
+  const title = hasUnmerged ? 'Force delete unmerged branches?' : 'Force delete squash-merged?';
+
   return (
     <Dialog
       onClose={onCancel}
       disabled={submitting}
-      ariaLabelledBy="force-delete-squash-title"
+      ariaLabelledBy="force-delete-rejected-title"
       className="max-h-[80vh] flex flex-col"
     >
       <DialogHeader
-        title="Force delete squash-merged?"
-        titleId="force-delete-squash-title"
+        title={title}
+        titleId="force-delete-rejected-title"
         icon={<AlertTriangle className="w-5 h-5" />}
         titleClassName="text-wt-conflict"
         onClose={onCancel}
         disabled={submitting}
       />
       <p className="text-sm text-wt-fg-2 mb-3">
-        Git refused to delete {rejected.length}{' '}
-        {rejected.length === 1 ? 'branch' : 'branches'} because they don't look merged from
-        git's perspective. WorktreeHQ detected them as squash-merged via the PR merge commit.
-        Force delete?
+        {hasUnmerged ? (
+          <>
+            Git refused to delete {rejected.length} {noun} because they have commits not on{' '}
+            <code className="font-mono text-xs">{defaultBranch}</code>. Force deleting will{' '}
+            <strong>lose those commits permanently</strong>.
+          </>
+        ) : (
+          <>
+            Git refused to delete {rejected.length} {noun} because they don&apos;t look merged
+            from git&apos;s perspective. WorktreeHQ detected them as squash-merged via the PR
+            merge commit. Force delete?
+          </>
+        )}
       </p>
       <div className="border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4 max-h-48 overflow-auto">
         {rejected.map(({ branch, mode }) => (
@@ -64,7 +89,9 @@ export function ForceDeleteSquashDialog({
           Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
         </label>
         <p className="text-xs text-wt-muted mt-1">
-          If WorktreeHQ's detection is wrong, the commits on these branches will be unrecoverable.
+          {hasUnmerged
+            ? 'These commits will be unrecoverable after deletion.'
+            : "If WorktreeHQ's detection is wrong, the commits on these branches will be unrecoverable."}
         </p>
         <input
           value={typed}

@@ -4,7 +4,11 @@ import { FilterBar } from './FilterBar';
 import { BranchTable } from './BranchTable';
 import { BulkActionBar } from './BulkActionBar';
 import { ConfirmDeleteDialog, type DeleteMode } from './ConfirmDeleteDialog';
-import { ForceDeleteSquashDialog, type RejectedSquash } from './ForceDeleteSquashDialog';
+import {
+  ForceDeleteRejectedDialog,
+  type RejectedDelete,
+  type RejectReason,
+} from './ForceDeleteRejectedDialog';
 import { applyPreset, filterMine, searchBranches, type FilterPreset } from '../../lib/filters';
 import {
   deleteLocalBranch,
@@ -28,8 +32,8 @@ export function BranchesView() {
   // Local error slot — setError on the store gets clobbered by refreshOnce's `setError(null)`,
   // so bulk-delete errors need their own home where refreshes don't touch them.
   const [deleteErrors, setDeleteErrors] = useState<string[]>([]);
-  const [rejectedSquash, setRejectedSquash] = useState<RejectedSquash[] | null>(null);
-  // In-flight guard for performDelete and performForceDeleteSquash. Both are
+  const [rejected, setRejected] = useState<RejectedDelete[] | null>(null);
+  // In-flight guard for performDelete and performForceDelete. Both are
   // bound to dialogs whose primary buttons used to remain clickable while the
   // async work was running, so a double-click could fire two parallel delete
   // loops against the same selection. The dialogs read this prop to disable
@@ -95,14 +99,14 @@ export function BranchesView() {
     // visible above the fresh result and the user can't tell what came from
     // which run.
     setDeleteErrors([]);
-    const rejected: RejectedSquash[] = [];
+    const rejectedItems: RejectedDelete[] = [];
     const errors: string[] = [];
     const deletesLocal = mode !== 'remote';
     const deletesRemote = mode !== 'local';
 
     try {
       for (const b of selectedBranches) {
-        let localRejectedAsSquash = false;
+        let localDeferredToForce = false;
         try {
           if (deletesLocal && b.hasLocal) {
             // Tag-then-delete: tag FIRST so the archive points at the live tip,
@@ -119,14 +123,26 @@ export function BranchesView() {
             }
             try {
               // Never auto-force: git -d refuses unmerged branches and that's a feature.
-              // Squash-merged rejections route to the force-delete follow-up dialog.
+              // "not fully merged" rejections route to ForceDeleteRejectedDialog,
+              // which gates a force-delete behind a typed confirmation. Any OTHER
+              // -d failure (branch currently checked out, invalid ref, permission
+              // errors) goes to the banner — `-D` wouldn't fix those and the
+              // prompt would lie. LC_ALL=C in git_exec keeps the stderr string
+              // stable English.
               await deleteLocalBranch(repo.path, b.name, false);
             } catch (e: any) {
-              if (b.mergeStatus === 'squash-merged') {
-                rejected.push({ branch: b, mode });
-                localRejectedAsSquash = true;
+              const msg = String(e?.message ?? e);
+              if (/is not fully merged/.test(msg)) {
+                const reason: RejectReason =
+                  b.mergeStatus === 'squash-merged'
+                    ? 'squash-merged'
+                    : b.mergeStatus === 'unmerged' || b.mergeStatus === 'stale'
+                      ? 'unmerged'
+                      : 'other';
+                rejectedItems.push({ branch: b, mode, reason });
+                localDeferredToForce = true;
               } else {
-                errors.push(`${b.name}: ${e?.message ?? e}`);
+                errors.push(`${b.name}: ${msg}`);
                 continue;
               }
             }
@@ -134,7 +150,7 @@ export function BranchesView() {
           // The remote side runs regardless of whether the local delete was deferred
           // to the force-delete follow-up — otherwise `both`/`archive-and-delete` strand
           // the remote ref for the user to clean up manually.
-          if (deletesRemote && b.hasRemote && !localRejectedAsSquash) {
+          if (deletesRemote && b.hasRemote && !localDeferredToForce) {
             await deleteRemoteBranch(repo.path, 'origin', b.name);
           }
         } catch (e: any) {
@@ -145,8 +161,8 @@ export function BranchesView() {
       setSelection(new Set());
       setConfirm(null);
       setDeleteErrors(errors);
-      if (rejected.length > 0) {
-        setRejectedSquash(rejected);
+      if (rejectedItems.length > 0) {
+        setRejected(rejectedItems);
       }
       await refreshOnce({ userInitiated: true });
     } finally {
@@ -154,12 +170,12 @@ export function BranchesView() {
     }
   }
 
-  async function performForceDeleteSquash() {
-    if (!repo || !rejectedSquash || deleting) return;
+  async function performForceDelete() {
+    if (!repo || !rejected || deleting) return;
     setDeleting(true);
     try {
       const errors: string[] = [];
-      for (const item of rejectedSquash) {
+      for (const item of rejected) {
         try {
           if (item.branch.hasLocal) {
             await deleteLocalBranch(repo.path, item.branch.name, true);
@@ -175,7 +191,7 @@ export function BranchesView() {
           errors.push(`${item.branch.name}: ${e?.message ?? e}`);
         }
       }
-      setRejectedSquash(null);
+      setRejected(null);
       if (errors.length > 0) {
         setDeleteErrors((prev) => [...prev, ...errors]);
       }
@@ -222,12 +238,13 @@ export function BranchesView() {
           onConfirm={() => performDelete(confirm)}
         />
       )}
-      {rejectedSquash && rejectedSquash.length > 0 && (
-        <ForceDeleteSquashDialog
-          rejected={rejectedSquash}
+      {rejected && rejected.length > 0 && repo && (
+        <ForceDeleteRejectedDialog
+          rejected={rejected}
+          defaultBranch={repo.defaultBranch}
           submitting={deleting}
-          onCancel={() => setRejectedSquash(null)}
-          onConfirm={performForceDeleteSquash}
+          onCancel={() => setRejected(null)}
+          onConfirm={performForceDelete}
         />
       )}
     </div>
