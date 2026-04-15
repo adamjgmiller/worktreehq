@@ -274,7 +274,7 @@ export function BranchesView() {
     <div className="flex flex-col h-full">
       <FilterBar value={preset} onChange={setPreset} mine={mine} onMineChange={setMine} search={search} onSearch={setSearch} />
       {deleteErrors.length > 0 && (
-        <div className="px-4 py-2 bg-wt-conflict/10 border-b border-wt-conflict/40 text-xs text-wt-conflict font-mono flex items-start gap-3">
+        <div role="alert" aria-live="assertive" className="px-4 py-2 bg-wt-conflict/10 border-b border-wt-conflict/40 text-xs text-wt-conflict font-mono flex items-start gap-3">
           <div className="flex-1 whitespace-pre-wrap">{deleteErrors.join('\n')}</div>
           <button
             onClick={() => setDeleteErrors([])}
