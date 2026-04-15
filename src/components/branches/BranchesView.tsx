@@ -286,7 +286,7 @@ export function BranchesView() {
         </div>
       )}
       {deleteInfo.length > 0 && (
-        <div className="px-4 py-2 bg-wt-info/10 border-b border-wt-info/40 text-xs text-wt-info font-mono flex items-start gap-3">
+        <div role="status" aria-live="polite" className="px-4 py-2 bg-wt-info/10 border-b border-wt-info/40 text-xs text-wt-info font-mono flex items-start gap-3">
           <div className="flex-1 whitespace-pre-wrap">{deleteInfo.join('\n')}</div>
           <button
             onClick={() => setDeleteInfo([])}
