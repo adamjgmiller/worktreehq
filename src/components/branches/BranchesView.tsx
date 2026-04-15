@@ -224,7 +224,7 @@ export function BranchesView() {
                   ]);
                   if (tagSha !== branchSha) {
                     errors.push(
-                      `${item.branch.name}: archive tag ${tagName} already exists but points to a different commit; aborting force-delete to avoid losing commits`,
+                      `${item.branch.name}: archive tag ${tagName} already exists but points to a different commit (tag=${tagSha.slice(0, 7)}, branch=${branchSha.slice(0, 7)}); aborting force-delete to avoid losing commits`,
                     );
                     continue;
                   }
