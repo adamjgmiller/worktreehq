@@ -66,6 +66,15 @@ export interface PRInfo {
    *  has since advanced. Absent for PRs first observed as open/closed
    *  (they'll pick it up on the merge-transition). */
   mergeTimeHeadSha?: string | null;
+  /** True when `mergeTimeHeadSha` was captured from a live non-merged →
+   *  merged transition this code witnessed during a single process lifetime
+   *  (or preserved across one via the cache/getStale path). False when
+   *  bootstrapped from the current live `pr.headSha` on a cold cache —
+   *  which can be a post-merge-advanced tip if the author pushed commits
+   *  after merging. The supplementary `pr-<N>` detector pass requires
+   *  `true` to tag a branch `squash-merged`; cold bootstraps fall through
+   *  to the cherry-check fallback or stay `unmerged` (fail-closed). */
+  mergeTimeHeadShaObservedLive?: boolean;
   mergeMethod?: 'merge' | 'squash' | 'rebase';
   url: string;
   isDraft?: boolean;

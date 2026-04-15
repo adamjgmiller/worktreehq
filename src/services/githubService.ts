@@ -102,7 +102,15 @@ export async function validateToken(): Promise<'missing' | 'valid' | 'invalid'> 
 
 // ── PR cache ───────────────────────────────────────────────────────────
 
-const prCache = new TTLCache<string, PRInfo | null>({ ttlMs: 5 * 60 * 1000 });
+// maxSize caps memory growth now that invalidation is soft-mark-stale
+// (expired entries stay in the map so `getStale()` can preserve the
+// `mergeTimeHeadSha` freeze across refetches). The FIFO trim drops the
+// oldest 25% when the cap is hit. 500 entries ≈ the largest real-world
+// PR-count-times-repo-count we'd expect on one machine.
+const prCache = new TTLCache<string, PRInfo | null>({
+  ttlMs: 5 * 60 * 1000,
+  maxSize: 500,
+});
 
 interface PersistedCacheEntry {
   at: number;
@@ -173,74 +181,74 @@ function cacheKey(owner: string, repo: string, n: number) {
  * user with a local `pr-N` following those post-merge commits would get
  * their unmerged work silently classified squash-merged.
  *
- * Strategy: on first observation of `state === 'merged'`, freeze the
- * current `headSha` into `mergeTimeHeadSha`. On subsequent observations,
- * preserve the existing frozen value. Reads prior state via
- * `prCache.getStale` (works for TTL-expired entries) AND from
- * `invalidatedMergeFreezes` (works across user-initiated refreshes that
- * fully wipe merged entries from the main cache — see
- * `invalidatePrCacheForRepo`).
+ * Freeze strategy and observed-live flag:
+ *   - Prior cache entry has a freeze (live or bootstrapped): preserve both
+ *     the frozen SHA and the observed-live flag.
+ *   - Prior entry was non-merged, now is merged: we witnessed the
+ *     transition — freeze from current `pr.headSha`, set observedLive=true.
+ *   - No prior entry at all (cold bootstrap of an already-merged PR):
+ *     freeze from current `pr.headSha` (imperfect if the author pushed
+ *     post-merge before we ever saw this PR), set observedLive=false.
+ *     The `pr-<N>` detector pass requires observedLive=true to tag, so
+ *     cold bootstraps fail closed there.
  *
- * If no prior freeze exists (typical first-fetch case), we bootstrap
- * `mergeTimeHeadSha` from the current `headSha` — imperfect for PRs
- * merged before this code shipped AND pushed-to post-merge, but correct
- * for the overwhelming majority where the author didn't touch the
- * branch after merge. Returns the stored PRInfo (with `mergeTimeHeadSha`
- * populated when applicable) so callers can surface the freeze back to
- * downstream consumers without re-reading the cache.
+ * Cross-invalidation preservation is handled by `invalidatePrCacheForRepo`
+ * soft-expiring entries rather than deleting them — `prCache.getStale()`
+ * still returns the prior state via the first branch here.
  */
 function setPrCacheEntry(key: string, pr: PRInfo | null): PRInfo | null {
   if (pr && pr.state === 'merged') {
-    // Try three sources for the frozen value, in order of trust:
-    //   1. Prior cache entry (may be TTL-expired but present — getStale
-    //      ignores TTL).
-    //   2. Stash from a prior invalidation (see invalidatePrCacheForRepo)
-    //      — covers the user-initiated-refresh path which fully deletes
-    //      cache entries before refetch.
-    //   3. Bootstrap from current live headSha (first-observation case).
     const priorInCache = prCache.getStale(key);
-    const priorInStash = invalidatedMergeFreezes.get(key);
-    const frozen =
-      priorInCache?.mergeTimeHeadSha ?? priorInStash ?? pr.headSha ?? null;
-    pr = { ...pr, mergeTimeHeadSha: frozen };
-    // Stash is single-use — once we've restored into the main cache, drop
-    // it so the map doesn't grow unboundedly across invalidation cycles.
-    invalidatedMergeFreezes.delete(key);
+    let frozen: string | null | undefined;
+    let observedLive: boolean;
+    if (priorInCache?.mergeTimeHeadSha) {
+      // Prior freeze wins — preserves across refetch and across soft-
+      // invalidation (entry still accessible via getStale even when
+      // `get()` returns undefined after `expire`).
+      frozen = priorInCache.mergeTimeHeadSha;
+      observedLive = priorInCache.mergeTimeHeadShaObservedLive ?? false;
+    } else if (priorInCache && priorInCache.state !== 'merged') {
+      // We saw this PR before as non-merged; now it's merged — we
+      // witnessed the transition and `pr.headSha` is the actual
+      // merge-time tip.
+      frozen = pr.headSha;
+      observedLive = true;
+    } else {
+      // Cold bootstrap: first-ever observation of an already-merged PR.
+      // `pr.headSha` may be post-merge-advanced; flag it so the detector
+      // fails closed on pass 1b.
+      frozen = pr.headSha;
+      observedLive = false;
+    }
+    pr = { ...pr, mergeTimeHeadSha: frozen, mergeTimeHeadShaObservedLive: observedLive };
   }
   prCache.set(key, pr);
   return pr;
 }
 
-/**
- * Side-channel for `mergeTimeHeadSha` values extracted just before
- * `invalidatePrCacheForRepo` deletes a merged-PR cache entry. Next
- * `setPrCacheEntry` call for the same key restores the freeze from here
- * and clears the entry. Bounded by the pending-refetch window (small in
- * practice — invalidation is always followed by an immediate refetch in
- * the refreshLoop flow).
- */
-const invalidatedMergeFreezes = new Map<string, string>();
-
 export function _clearPrCacheForTests() {
   prCache.clear();
-  invalidatedMergeFreezes.clear();
   hydratePromise = null;
 }
 
+/**
+ * Soft-invalidate all cache entries for a repo: force TTL expiry so
+ * subsequent `get()` calls return undefined (triggering a refetch), but
+ * keep the entry values reachable via `getStale()` so `setPrCacheEntry`'s
+ * fallback chain can preserve `mergeTimeHeadSha` + `observedLive` across
+ * the refetch. Replaces a prior hard-delete design that required a
+ * side-channel stash for freeze preservation; soft-expiry also survives
+ * app crash between invalidate and refetch because expired entries still
+ * persist to disk and rehydrate on boot.
+ */
 export function invalidatePrCacheForRepo(owner: string, repo: string): void {
   const prefix = `${owner}/${repo}#`;
-  // Before deleting, stash mergeTimeHeadSha freezes from merged PRs so a
-  // follow-up refetch doesn't re-bootstrap them from the current (possibly
-  // post-merge-advanced) live headSha. See setPrCacheEntry's "source 2"
-  // for the restore path.
-  for (const [k, entry] of prCache.entries()) {
+  let expired = 0;
+  for (const [k] of Array.from(prCache.entries())) {
     if (!k.startsWith(prefix)) continue;
-    if (entry.value?.state === 'merged' && entry.value.mergeTimeHeadSha) {
-      invalidatedMergeFreezes.set(k, entry.value.mergeTimeHeadSha);
-    }
+    if (prCache.expire(k)) expired++;
   }
-  const removed = prCache.deleteWhere((k) => k.startsWith(prefix));
-  if (removed > 0) schedulePersist();
+  if (expired > 0) schedulePersist();
 }
 
 export function _getPrCacheKeysForTests(): string[] {

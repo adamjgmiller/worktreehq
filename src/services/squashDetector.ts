@@ -143,6 +143,14 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
     //     PRInfo (cache entries from before this field existed lack it)
     //     so the guard fails closed — no mergeTimeHeadSha means we refuse
     //     to tag, and the first cache refresh will bootstrap it.
+    //   - `mergeTimeHeadShaObservedLive` distinguishes freezes captured
+    //     from a non-merged → merged transition this code witnessed
+    //     (trusted) from cold-bootstrap freezes taken from live
+    //     `pr.headSha` on first-ever observation of an already-merged PR
+    //     (untrusted — the live head may already be post-merge-advanced).
+    //     Fail closed when false: pre-existing merged PRs seen for the
+    //     first time on this install fall through to the cherry-check
+    //     pass or stay `unmerged`.
     const mainShaSet = new Set(mainCommits.map((c) => c.sha));
     for (const b of branchIndex.values()) {
       if (b.mergeStatus !== 'unmerged') continue;
@@ -157,7 +165,8 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       if (!pr) continue;
       if (pr.state !== 'merged' || !pr.mergeCommitSha) continue;
       if (!mainShaSet.has(pr.mergeCommitSha)) continue;
-      if (!pr.mergeTimeHeadSha || b.lastCommitSha !== pr.mergeTimeHeadSha) continue;
+      if (!pr.mergeTimeHeadSha || !pr.mergeTimeHeadShaObservedLive) continue;
+      if (b.lastCommitSha !== pr.mergeTimeHeadSha) continue;
       if (b.pr?.state === 'open') continue;
       b.mergeStatus = 'squash-merged';
       // Attach the merged PR. The open-PR guard above already skipped any

@@ -451,6 +451,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             headRef: 'feature/multi-users',
             headSha: 'branch-sha',
             mergeTimeHeadSha: 'branch-sha',
+            mergeTimeHeadShaObservedLive: true,
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -496,6 +497,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             headRef: 'feature/multi-users',
             headSha: 'branch-sha-b',
             mergeTimeHeadSha: 'branch-sha-b',
+            mergeTimeHeadShaObservedLive: true,
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -671,6 +673,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             headRef: 'feature/multi-users',
             headSha: 'pr-head-sha',
             mergeTimeHeadSha: 'pr-head-sha',
+            mergeTimeHeadShaObservedLive: true,
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -719,6 +722,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             // Live head has advanced past the merge-time tip.
             headSha: 'post-merge-tip',
             mergeTimeHeadSha: 'merge-time-tip',
+            mergeTimeHeadShaObservedLive: true,
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -737,6 +741,54 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             // User's local pr-108 follows the live head (post-merge commits).
             lastCommitSha: 'post-merge-tip',
             aheadOfMain: 3,
+            behindMain: 0,
+            mergeStatus: 'unmerged',
+          } as Branch,
+        ],
+      }),
+    );
+
+    expect(result.updatedBranches.find((b) => b.name === 'pr-108')!.mergeStatus).toBe('unmerged');
+  });
+
+  it('leaves pr-108 unmerged when cold-bootstrap freeze has observedLive=false', async () => {
+    // A PR merged before this install ever ran — `setPrCacheEntry` had no
+    // prior observation, so it bootstraps `mergeTimeHeadSha` from the live
+    // `pr.headSha` and sets `mergeTimeHeadShaObservedLive=false`. The live
+    // head may already be post-merge-advanced and thus match a `pr-<N>`
+    // local tip that actually contains unmerged work. Pass 1b must fail
+    // closed here and let the cherry-check pass (or the stale rule)
+    // decide the branch's final classification.
+    batchFetchPRsMock.mockResolvedValue(
+      new Map([
+        [
+          108,
+          {
+            number: 108,
+            title: 'Multi-user DAO',
+            state: 'merged' as const,
+            mergeCommitSha: 'merge-sha-1',
+            headRef: 'feature/multi-users',
+            headSha: 'branch-sha',
+            mergeTimeHeadSha: 'branch-sha',
+            mergeTimeHeadShaObservedLive: false,
+            url: 'https://github.com/o/r/pull/108',
+          },
+        ],
+      ]),
+    );
+    cherryCheckMock.mockResolvedValue(false);
+
+    const result = await detectSquashMerges(
+      baseInput({
+        branches: [
+          {
+            name: 'pr-108',
+            hasLocal: true,
+            hasRemote: false,
+            lastCommitDate: new Date().toISOString(),
+            lastCommitSha: 'branch-sha',
+            aheadOfMain: 2,
             behindMain: 0,
             mergeStatus: 'unmerged',
           } as Branch,
@@ -810,6 +862,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             headRef: 'feature/multi-users',
             headSha: 'branch-sha',
             mergeTimeHeadSha: 'branch-sha',
+            mergeTimeHeadShaObservedLive: true,
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -856,6 +909,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             headRef: 'feature/multi-users',
             headSha: 'branch-sha',
             mergeTimeHeadSha: 'branch-sha',
+            mergeTimeHeadShaObservedLive: true,
             url: 'https://github.com/o/r/pull/108',
           },
         ],

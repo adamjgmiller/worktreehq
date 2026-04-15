@@ -57,6 +57,18 @@ export class TTLCache<K, V> {
     // Skip trim on hydration — caller can trim once after bulk load.
   }
 
+  /** Force TTL expiry on an entry without removing it — subsequent `get()`
+   *  calls return undefined (triggering refetch), but `getStale()` still
+   *  returns the prior value. Used for soft-invalidation where the caller
+   *  wants to trigger a refetch while preserving state for stale-while-
+   *  revalidate paths. No-op when the key is not present. */
+  expire(key: K): boolean {
+    const entry = this.map.get(key);
+    if (!entry) return false;
+    this.map.set(key, { value: entry.value, at: 0 });
+    return true;
+  }
+
   /** Get the raw entry including timestamp (for persistence). */
   getRaw(key: K): { value: V; at: number } | undefined {
     return this.map.get(key);
