@@ -32,19 +32,34 @@ export function ForceDeleteRejectedDialog({
     cancelRef.current?.focus();
   }, []);
 
-  // Mixed cohorts get the stronger unmerged wording: the user is about to
-  // force-delete at least one branch that git believes has commits not yet
-  // merged upstream, which is the real blast-radius signal regardless of
-  // what other branches in the batch look like. `'other'` (detector
-  // classified as merged-normally/direct-merged/empty but git -d still
-  // refused) also routes here — if git refuses, something unexpected is
-  // on the branch and the user should see the strong warning.
-  const hasUnmerged = rejected.some((r) => r.reason === 'unmerged' || r.reason === 'other');
+  // Three cohort variants:
+  //   - squash-merged: every reject is squash-merged. Detector + PR merge commit
+  //     confirm merged; force-deleting is safe if detection is correct.
+  //   - other: every reject is 'other' (detector classified merged-normally /
+  //     direct-merged / empty but git -d still refused). Uses neutral "git
+  //     refused unexpectedly" wording; risk framing is the same conditional-
+  //     loss as the squash-merged cohort.
+  //   - unmerged: at least one reject is 'unmerged'/'stale', OR the cohort is
+  //     mixed (e.g. squash + other). Mixed cohorts get the strong warning
+  //     because at least one branch's real state is uncertain and we'd rather
+  //     over-warn than under-warn.
+  const cohort: 'squash-merged' | 'other' | 'unmerged' = rejected.every(
+    (r) => r.reason === 'squash-merged',
+  )
+    ? 'squash-merged'
+    : rejected.every((r) => r.reason === 'other')
+      ? 'other'
+      : 'unmerged';
   const noun = rejected.length === 1 ? 'branch' : 'branches';
   const subject = rejected.length === 1 ? 'it' : 'they';
   const verbHave = rejected.length === 1 ? 'has' : 'have';
   const verbDo = rejected.length === 1 ? "doesn't" : "don't";
-  const title = hasUnmerged ? `Force delete unmerged ${noun}?` : `Force delete squash-merged ${noun}?`;
+  const title =
+    cohort === 'squash-merged'
+      ? `Force delete squash-merged ${noun}?`
+      : cohort === 'other'
+        ? `Git refused — force delete ${noun}?`
+        : `Force delete unmerged ${noun}?`;
 
   return (
     <Dialog
@@ -62,11 +77,17 @@ export function ForceDeleteRejectedDialog({
         disabled={submitting}
       />
       <p className="text-sm text-wt-fg-2 mb-3">
-        {hasUnmerged ? (
+        {cohort === 'unmerged' ? (
           <>
             Git refused to delete {rejected.length} {noun} because {subject} {verbHave} commits
             that aren&apos;t yet merged upstream. Force deleting will{' '}
             <strong>lose those commits permanently</strong>.
+          </>
+        ) : cohort === 'other' ? (
+          <>
+            Git refused to delete {rejected.length} {noun} even though WorktreeHQ detected{' '}
+            {subject} as merged. If the detection is right, force deleting is safe; if it&apos;s
+            wrong, those commits will be unrecoverable.
           </>
         ) : (
           <>
@@ -92,7 +113,7 @@ export function ForceDeleteRejectedDialog({
           Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
         </label>
         <p className="text-xs text-wt-muted mt-1">
-          {hasUnmerged
+          {cohort === 'unmerged'
             ? 'These commits will be unrecoverable after deletion.'
             : `If WorktreeHQ's detection is wrong, the commits on ${rejected.length === 1 ? 'this branch' : 'these branches'} will be unrecoverable.`}
         </p>
