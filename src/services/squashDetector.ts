@@ -115,20 +115,29 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       prByBranch.set(sourceBranch, pr);
     }
 
-    // Supplementary pass: local branches named `pr-<N>` are created by
-    // `gh pr checkout N` when the PR is from a fork OR when the upstream
-    // branch name would conflict. `pr.headRef` is the fork's branch name
-    // (e.g. `feature/multi-users`), so the loop above never tagged the
-    // local `pr-N` ref. Catch it here by name. Re-uses the already-fetched
-    // prMap, so no extra network I/O. The `mainShaSet` check mirrors the
-    // `isLikelySquash` guard above — we only tag when the PR's merge commit
-    // actually appears on main's first-parent history. The `headSha` check
-    // pins the tag to *content* equality: the local ref must still point at
-    // the PR's head commit as it existed when merged. Without this, a user
-    // who ran `gh pr checkout N` and then added local commits would get
-    // their unmerged work silently classified squash-merged. `headSha` is
-    // optional on PRInfo (older on-disk cache entries lack it) so the guard
-    // fails closed — no headSha means we refuse to tag.
+    // Supplementary pass for the narrow `pr-<N>` fallback name.
+    //
+    // `gh pr checkout N` normally names the local branch after the PR's
+    // `HeadRefName` (e.g. `patch-2`, `feature/multi-users`) — the common
+    // case is already covered by pass 1 above, which matches on
+    // `pr.headRef === sourceBranch`. gh only falls back to `pr-<N>` in a
+    // narrow cross-repo case where the head ref name would collide (most
+    // notably when a fork's head ref equals the target repo's default
+    // branch). Pass 1 can't catch that fallback because `pr.headRef` on
+    // GitHub is still the fork's branch name, not `pr-<N>` — so match it
+    // here by local name. Re-uses the already-fetched prMap, so no extra
+    // network I/O.
+    //
+    // Guards:
+    //   - `mainShaSet` mirrors pass 1's `isLikelySquash` — only tag when the
+    //     PR's merge commit actually appears on main's first-parent history.
+    //   - `headSha` pins the tag to *content* equality: the local ref must
+    //     still point at the PR's head commit as it existed when merged.
+    //     Without this, a user who ran `gh pr checkout N` and then added
+    //     local commits would get their unmerged work silently classified
+    //     squash-merged. `headSha` is optional on PRInfo (older on-disk
+    //     cache entries lack it) so the guard fails closed — no headSha
+    //     means we refuse to tag.
     const mainShaSet = new Set(mainCommits.map((c) => c.sha));
     for (const b of branchIndex.values()) {
       if (b.mergeStatus !== 'unmerged') continue;

@@ -343,6 +343,68 @@ describe('detectSquashMerges: PR-tag pass does not ghost-tag empty branches', ()
   });
 });
 
+describe('detectSquashMerges: PR-tag pass handles gh-pr-checkout head-ref names', () => {
+  beforeEach(() => {
+    _clearCherryCacheForTests();
+    cherryCheckMock.mockReset();
+    batchFetchPRsMock.mockReset();
+  });
+
+  // Regression guard for the "common case" of `gh pr checkout N`: by default
+  // gh names the local branch after the PR's `HeadRefName` (e.g. `patch-2`),
+  // not `pr-<N>`. That case must be caught by pass 1's `pr.headRef ===
+  // sourceBranch` match, NOT by the supplementary pr-<N> pass below. If this
+  // test regresses, pass 1 stopped tagging head-ref-named branches and the
+  // pr-<N> fallback alone would silently leave most gh-checkout'd branches
+  // classified unmerged.
+  it('tags a branch named after pr.headRef (e.g. patch-2) squash-merged', async () => {
+    batchFetchPRsMock.mockResolvedValue(
+      new Map([
+        [
+          42,
+          {
+            number: 42,
+            title: 'Tweak README',
+            state: 'merged' as const,
+            mergeCommitSha: 'merge-sha-42',
+            headRef: 'patch-2',
+            headSha: 'patch-2-sha',
+            url: 'https://github.com/o/r/pull/42',
+          },
+        ],
+      ]),
+    );
+    cherryCheckMock.mockResolvedValue(false);
+
+    const result = await detectSquashMerges({
+      repoPath: '/repo',
+      defaultBranch: 'main',
+      mainCommits: [
+        { sha: 'merge-sha-42', subject: 'Tweak README (#42)', date: new Date().toISOString(), prNumber: 42 },
+      ],
+      branches: [
+        {
+          name: 'patch-2',
+          hasLocal: true,
+          hasRemote: false,
+          lastCommitDate: new Date().toISOString(),
+          lastCommitSha: 'patch-2-sha',
+          aheadOfMain: 1,
+          behindMain: 0,
+          mergeStatus: 'unmerged',
+        } as Branch,
+      ],
+      tags: [],
+      owner: 'o',
+      name: 'r',
+    });
+
+    const branch = result.updatedBranches.find((b) => b.name === 'patch-2')!;
+    expect(branch.mergeStatus).toBe('squash-merged');
+    expect(branch.pr?.number).toBe(42);
+  });
+});
+
 describe('detectSquashMerges: pr-N local branch heuristic', () => {
   beforeEach(() => {
     _clearCherryCacheForTests();

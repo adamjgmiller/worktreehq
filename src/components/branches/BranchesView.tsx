@@ -107,6 +107,7 @@ export function BranchesView() {
     setDeleteInfo([]);
     const rejectedItems: RejectedDelete[] = [];
     const errors: string[] = [];
+    const infos: string[] = [];
     const deletesLocal = mode !== 'remote';
     const deletesRemote = mode !== 'local';
 
@@ -115,24 +116,33 @@ export function BranchesView() {
         let localDeferredToForce = false;
         try {
           if (deletesLocal && b.hasLocal) {
-            // Tag-then-delete: tag FIRST so the archive points at the live tip,
-            // but only for branches whose `git -d` will succeed directly here.
-            // Split rationale:
-            //   - merged-normally / direct-merged: git -d succeeds, so pre-tagging
-            //     is safe (tag + delete happen back-to-back in this block).
-            //   - squash-merged: git -d ALWAYS refuses → routes to the force-delete
-            //     dialog. Pre-tagging here would orphan the tag if the user cancels
-            //     that dialog (tag points at a still-live branch). Defer the tag to
-            //     performForceDelete so it only lands right before the destructive op.
-            //   - unmerged / stale under archive-and-delete: likewise routes to the
-            //     force-delete dialog; performForceDelete tags those too so the
-            //     user's archive intent isn't silently dropped.
-            const shouldTag =
+            // Capture-then-delete-then-tag: resolve the branch tip SHA BEFORE
+            // `git -d` so we can create archive/<name> AFTER the delete
+            // succeeds, pointing at the captured SHA.
+            //
+            // Why not tag first: if `-d` is refused (detector-vs-git
+            // disagreement — e.g. a `merged-normally` branch whose local main
+            // hasn't been fast-forwarded to the merge commit yet — routes to
+            // the 'other' cohort in the force dialog), and the user cancels
+            // that dialog, a pre-created archive tag would be orphaned
+            // against a still-live branch.
+            //
+            // Delete-then-tag keeps archive-tag creation on the `-d`-
+            // succeeded path only. Refused items flow into
+            // performForceDelete, which does its own tag-then-force-delete
+            // arc with idempotent "tag already exists at same SHA" handling.
+            //
+            // Only merged-normally / direct-merged pre-resolve the SHA here:
+            //   - squash-merged: `git -d` ALWAYS refuses → tag handled by
+            //     performForceDelete.
+            //   - unmerged / stale under archive-and-delete: likewise routes
+            //     to the force dialog; performForceDelete tags those too.
+            const shouldArchive =
               mode === 'archive-and-delete' &&
               (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'direct-merged');
-            if (shouldTag) {
-              await tagBranch(repo.path, b.name, archiveTagNameFor(b.name));
-            }
+            const archiveSha = shouldArchive
+              ? await resolveCommitSha(repo.path, b.name)
+              : undefined;
             try {
               // Never auto-force: git -d refuses unmerged branches and that's a feature.
               // "not fully merged" rejections route to ForceDeleteRejectedDialog,
@@ -144,6 +154,46 @@ export function BranchesView() {
               // and the prompt would lie. LC_ALL=C in git_exec keeps the stderr
               // string stable English.
               await deleteLocalBranch(repo.path, b.name, false);
+              if (archiveSha) {
+                // Tag the captured SHA (not the branch name — the ref is
+                // gone now). `tagBranch` passes its 2nd arg straight to
+                // `git tag <name> <commit-ish>`, and a SHA is a commit-ish.
+                //
+                // Idempotent tag-already-exists handling: mirrors the same
+                // shape performForceDelete uses. If the tag name is already
+                // taken (e.g. branch-name reuse after a prior archive+delete,
+                // or an interrupted retry), compare the existing tag's commit
+                // to `archiveSha` (the tip we captured before deleting). Same
+                // SHA = the earlier archive already covers this state; surface
+                // as info. Different SHA = the old archive points elsewhere,
+                // and the branch is already gone, so the new tip is now only
+                // reachable via reflog — push a clear error naming both short
+                // SHAs so the user can recover with `git tag` manually.
+                const tagName = archiveTagNameFor(b.name);
+                try {
+                  await tagBranch(repo.path, archiveSha, tagName);
+                } catch (tagErr: any) {
+                  const tagMsg = String(tagErr?.message ?? tagErr);
+                  if (!/already exists/.test(tagMsg)) {
+                    errors.push(`${b.name}: ${tagMsg}`);
+                    continue;
+                  }
+                  try {
+                    const existingTagSha = await resolveCommitSha(repo.path, tagName);
+                    if (existingTagSha === archiveSha) {
+                      infos.push(
+                        `${b.name}: archive tag ${tagName} already existed at this tip — reused`,
+                      );
+                    } else {
+                      errors.push(
+                        `${b.name}: branch deleted but archive tag ${tagName} already exists at a different commit (existing=${existingTagSha.slice(0, 7)}, wanted=${archiveSha.slice(0, 7)}) — use \`git tag <new-name> ${archiveSha.slice(0, 7)}\` to preserve the deleted tip`,
+                      );
+                    }
+                  } catch (cmpErr: any) {
+                    errors.push(`${b.name}: ${cmpErr?.message ?? cmpErr}`);
+                  }
+                }
+              }
             } catch (e: any) {
               const msg = String(e?.message ?? e);
               if (/is not fully merged/.test(msg)) {
@@ -177,6 +227,7 @@ export function BranchesView() {
       setSelection(new Set());
       setConfirm(null);
       setDeleteErrors(errors);
+      setDeleteInfo(infos);
       if (rejectedItems.length > 0) {
         setRejected(rejectedItems);
       }
