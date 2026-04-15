@@ -387,6 +387,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             state: 'merged' as const,
             mergeCommitSha: 'merge-sha-1',
             headRef: 'feature/multi-users',
+            headSha: 'branch-sha',
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -430,6 +431,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             state: 'merged' as const,
             mergeCommitSha: 'merge-sha-1',
             headRef: 'feature/multi-users',
+            headSha: 'branch-sha-b',
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -586,5 +588,90 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
     );
 
     expect(result.updatedBranches.find((b) => b.name === 'pr-108')!.mergeStatus).toBe('empty');
+  });
+
+  it('leaves pr-108 unmerged when local branch has diverged from PR head', async () => {
+    // User ran `gh pr checkout 108`, then added local commits. The branch now
+    // points at `local-divergent-sha`, not `pr.headSha`. Without the content
+    // check, those unmerged commits would be silently classified squash-merged
+    // and routed through the safe-to-delete filter.
+    batchFetchPRsMock.mockResolvedValue(
+      new Map([
+        [
+          108,
+          {
+            number: 108,
+            title: 'Multi-user DAO',
+            state: 'merged' as const,
+            mergeCommitSha: 'merge-sha-1',
+            headRef: 'feature/multi-users',
+            headSha: 'pr-head-sha',
+            url: 'https://github.com/o/r/pull/108',
+          },
+        ],
+      ]),
+    );
+    cherryCheckMock.mockResolvedValue(false);
+
+    const result = await detectSquashMerges(
+      baseInput({
+        branches: [
+          {
+            name: 'pr-108',
+            hasLocal: true,
+            hasRemote: false,
+            lastCommitDate: new Date().toISOString(),
+            lastCommitSha: 'local-divergent-sha',
+            aheadOfMain: 3,
+            behindMain: 0,
+            mergeStatus: 'unmerged',
+          } as Branch,
+        ],
+      }),
+    );
+
+    expect(result.updatedBranches.find((b) => b.name === 'pr-108')!.mergeStatus).toBe('unmerged');
+  });
+
+  it('leaves pr-108 unmerged when PRInfo lacks headSha (older on-disk cache entry)', async () => {
+    // The cached PR was written before `headSha` was added to PRInfo. Fail
+    // closed: without a SHA to verify against, we can't prove content equality,
+    // so the branch must stay `unmerged` until the cache refreshes and brings
+    // headSha with it.
+    batchFetchPRsMock.mockResolvedValue(
+      new Map([
+        [
+          108,
+          {
+            number: 108,
+            title: 'Multi-user DAO',
+            state: 'merged' as const,
+            mergeCommitSha: 'merge-sha-1',
+            headRef: 'feature/multi-users',
+            url: 'https://github.com/o/r/pull/108',
+          },
+        ],
+      ]),
+    );
+    cherryCheckMock.mockResolvedValue(false);
+
+    const result = await detectSquashMerges(
+      baseInput({
+        branches: [
+          {
+            name: 'pr-108',
+            hasLocal: true,
+            hasRemote: false,
+            lastCommitDate: new Date().toISOString(),
+            lastCommitSha: 'branch-sha',
+            aheadOfMain: 2,
+            behindMain: 0,
+            mergeStatus: 'unmerged',
+          } as Branch,
+        ],
+      }),
+    );
+
+    expect(result.updatedBranches.find((b) => b.name === 'pr-108')!.mergeStatus).toBe('unmerged');
   });
 });

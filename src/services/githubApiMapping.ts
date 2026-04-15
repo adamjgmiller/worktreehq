@@ -15,6 +15,7 @@ export function restDataToPRInfo(data: any): PRInfo {
     mergedAt: data.merged_at ?? undefined,
     mergeCommitSha: data.merge_commit_sha ?? undefined,
     headRef: data.head.ref,
+    headSha: data.head?.sha ?? null,
     url: data.html_url,
     isDraft: data.draft ?? false,
     mergeable: data.mergeable ?? null,
@@ -34,6 +35,7 @@ export function buildBatchQuery(numbers: number[]): string {
         mergedAt
         mergeCommit { oid }
         headRefName
+        headRefOid
         url
         isDraft
         mergeable
@@ -75,6 +77,7 @@ export function graphqlNodeToPRInfo(node: any): PRInfo {
     mergedAt: node.mergedAt ?? undefined,
     mergeCommitSha: node.mergeCommit?.oid ?? undefined,
     headRef: node.headRefName,
+    headSha: node.headRefOid ?? null,
     url: node.url,
     isDraft: !!node.isDraft,
     mergeable: mapMergeable(node.mergeable),

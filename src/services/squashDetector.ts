@@ -122,7 +122,13 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
     // local `pr-N` ref. Catch it here by name. Re-uses the already-fetched
     // prMap, so no extra network I/O. The `mainShaSet` check mirrors the
     // `isLikelySquash` guard above — we only tag when the PR's merge commit
-    // actually appears on main's first-parent history.
+    // actually appears on main's first-parent history. The `headSha` check
+    // pins the tag to *content* equality: the local ref must still point at
+    // the PR's head commit as it existed when merged. Without this, a user
+    // who ran `gh pr checkout N` and then added local commits would get
+    // their unmerged work silently classified squash-merged. `headSha` is
+    // optional on PRInfo (older on-disk cache entries lack it) so the guard
+    // fails closed — no headSha means we refuse to tag.
     const mainShaSet = new Set(mainCommits.map((c) => c.sha));
     for (const b of branchIndex.values()) {
       if (b.mergeStatus !== 'unmerged') continue;
@@ -132,6 +138,7 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       if (!pr) continue;
       if (pr.state !== 'merged' || !pr.mergeCommitSha) continue;
       if (!mainShaSet.has(pr.mergeCommitSha)) continue;
+      if (!pr.headSha || b.lastCommitSha !== pr.headSha) continue;
       if (b.pr?.state === 'open') continue;
       b.mergeStatus = 'squash-merged';
       // Safe to attach unconditionally — the open-PR guard above already
