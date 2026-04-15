@@ -16,6 +16,7 @@ import {
   tagBranch,
   archiveTagNameFor,
   getUserEmail,
+  resolveCommitSha,
 } from '../../services/gitService';
 import { refreshOnce } from '../../services/refreshLoop';
 import { EmptyState } from '../common/EmptyState';
@@ -191,20 +192,44 @@ export function BranchesView() {
             // Covers every deferred archive-and-delete item regardless of
             // mergeStatus (squash-merged, unmerged, stale, other), so the
             // user's archive intent is honored even for unmerged/stale
-            // branches. A pre-existing archive tag (from a prior interrupted
-            // retry) means the archive intent is already satisfied — proceed
-            // to the force-delete rather than stranding the user with a tag
-            // error and an undeleted branch. Any OTHER tag-creation failure
-            // (permissions, corrupted refs) aborts this item via `continue`
-            // so we don't silently delete commits the user wanted preserved.
-            // LC_ALL=C in git_exec keeps the stderr string stable English.
+            // branches. A pre-existing archive tag is ONLY treated as
+            // "archive intent already satisfied" when it points at the same
+            // commit as the current branch tip — the interrupted-retry case
+            // (same branch, same tip, tag already created before we crashed).
+            // If the existing tag points at a DIFFERENT commit (branch name
+            // reused after a prior archive, or a manually-created tag), we
+            // abort this item with a clear error rather than force-deleting
+            // commits with no archive ref pointing at them. Any OTHER
+            // tag-creation failure (permissions, corrupted refs) also aborts
+            // via `continue` so we don't silently delete commits the user
+            // wanted preserved. LC_ALL=C in git_exec keeps the stderr string
+            // stable English.
             if (item.mode === 'archive-and-delete') {
+              const tagName = archiveTagNameFor(item.branch.name);
               try {
-                await tagBranch(repo.path, item.branch.name, archiveTagNameFor(item.branch.name));
+                await tagBranch(repo.path, item.branch.name, tagName);
               } catch (e: any) {
                 const msg = String(e?.message ?? e);
                 if (!/already exists/.test(msg)) {
                   errors.push(`${item.branch.name}: ${msg}`);
+                  continue;
+                }
+                // "already exists" — verify the existing tag points at the
+                // same commit as the branch tip before swallowing. If we
+                // can't resolve either ref, abort (resolveCommitSha throws).
+                try {
+                  const [tagSha, branchSha] = await Promise.all([
+                    resolveCommitSha(repo.path, tagName),
+                    resolveCommitSha(repo.path, item.branch.name),
+                  ]);
+                  if (tagSha !== branchSha) {
+                    errors.push(
+                      `${item.branch.name}: archive tag ${tagName} already exists but points to a different commit; aborting force-delete to avoid losing commits`,
+                    );
+                    continue;
+                  }
+                } catch (cmpErr: any) {
+                  errors.push(`${item.branch.name}: ${cmpErr?.message ?? cmpErr}`);
                   continue;
                 }
               }
@@ -272,7 +297,6 @@ export function BranchesView() {
       {rejected && rejected.length > 0 && repo && (
         <ForceDeleteRejectedDialog
           rejected={rejected}
-          defaultBranch={repo.defaultBranch}
           submitting={deleting}
           onCancel={() => setRejected(null)}
           onConfirm={performForceDelete}

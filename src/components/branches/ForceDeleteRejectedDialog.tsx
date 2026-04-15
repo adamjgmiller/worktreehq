@@ -3,6 +3,7 @@ import type { Branch } from '../../types';
 import type { DeleteMode } from './ConfirmDeleteDialog';
 import { AlertTriangle } from 'lucide-react';
 import { Dialog, DialogHeader, DialogFooter } from '../common/Dialog';
+import { archiveTagNameFor } from '../../services/gitService';
 
 export type RejectReason = 'squash-merged' | 'unmerged' | 'other';
 
@@ -14,13 +15,11 @@ export interface RejectedDelete {
 
 export function ForceDeleteRejectedDialog({
   rejected,
-  defaultBranch,
   submitting = false,
   onCancel,
   onConfirm,
 }: {
   rejected: RejectedDelete[];
-  defaultBranch: string;
   submitting?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -34,9 +33,9 @@ export function ForceDeleteRejectedDialog({
   }, []);
 
   // Mixed cohorts get the stronger unmerged wording: the user is about to
-  // force-delete at least one branch that git believes has commits not on
-  // the default branch, which is the real blast-radius signal regardless
-  // of what other branches in the batch look like. `'other'` (detector
+  // force-delete at least one branch that git believes has commits not yet
+  // merged upstream, which is the real blast-radius signal regardless of
+  // what other branches in the batch look like. `'other'` (detector
   // classified as merged-normally/direct-merged/empty but git -d still
   // refused) also routes here — if git refuses, something unexpected is
   // on the branch and the user should see the strong warning.
@@ -66,7 +65,7 @@ export function ForceDeleteRejectedDialog({
         {hasUnmerged ? (
           <>
             Git refused to delete {rejected.length} {noun} because {subject} {verbHave} commits
-            not on <code className="font-mono text-xs">{defaultBranch}</code>. Force deleting will{' '}
+            that aren&apos;t yet merged upstream. Force deleting will{' '}
             <strong>lose those commits permanently</strong>.
           </>
         ) : (
@@ -80,6 +79,7 @@ export function ForceDeleteRejectedDialog({
       <div className="border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4 max-h-48 overflow-auto">
         {rejected.map(({ branch, mode }) => (
           <div key={branch.name}>
+            {mode === 'archive-and-delete' && <div>tag:   {archiveTagNameFor(branch.name)}</div>}
             <div>local:  {branch.name}</div>
             {(mode === 'both' || mode === 'archive-and-delete') && branch.hasRemote && (
               <div>remote: origin/{branch.name}</div>
