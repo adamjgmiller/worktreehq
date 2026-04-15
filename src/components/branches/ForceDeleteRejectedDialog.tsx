@@ -72,8 +72,8 @@ export function ForceDeleteRejectedDialog({
         ) : (
           <>
             Git refused to delete {rejected.length} {noun} because {subject} {verbDo} look
-            merged from git&apos;s perspective. WorktreeHQ detected them as squash-merged via the
-            PR merge commit. Force delete?
+            merged from git&apos;s perspective. WorktreeHQ detected {subject} as squash-merged via
+            the PR merge commit. Force delete?
           </>
         )}
       </p>
@@ -94,7 +94,7 @@ export function ForceDeleteRejectedDialog({
         <p className="text-xs text-wt-muted mt-1">
           {hasUnmerged
             ? 'These commits will be unrecoverable after deletion.'
-            : "If WorktreeHQ's detection is wrong, the commits on these branches will be unrecoverable."}
+            : `If WorktreeHQ's detection is wrong, the commits on ${rejected.length === 1 ? 'this branch' : 'these branches'} will be unrecoverable.`}
         </p>
         <input
           value={typed}
