@@ -55,7 +55,17 @@ export interface PRInfo {
   mergedAt?: string;
   mergeCommitSha?: string;
   headRef: string;
+  /** Live head-ref tip from GitHub — advances if the author pushes commits
+   *  after merge. Do NOT use as a merge-time-content proof; see
+   *  `mergeTimeHeadSha` for that. */
   headSha?: string | null;
+  /** Head-ref tip captured the first time we observed this PR in
+   *  `state === 'merged'` — frozen once set. Used by the supplementary
+   *  `pr-<N>` detector pass to prove a local ref still matches the PR's
+   *  head as it existed when merged, even when GitHub's live `headSha`
+   *  has since advanced. Absent for PRs first observed as open/closed
+   *  (they'll pick it up on the merge-transition). */
+  mergeTimeHeadSha?: string | null;
   mergeMethod?: 'merge' | 'squash' | 'rebase';
   url: string;
   isDraft?: boolean;

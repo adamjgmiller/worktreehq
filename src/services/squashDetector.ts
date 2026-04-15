@@ -131,13 +131,18 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
     // Guards:
     //   - `mainShaSet` mirrors pass 1's `isLikelySquash` — only tag when the
     //     PR's merge commit actually appears on main's first-parent history.
-    //   - `headSha` pins the tag to *content* equality: the local ref must
-    //     still point at the PR's head commit as it existed when merged.
-    //     Without this, a user who ran `gh pr checkout N` and then added
-    //     local commits would get their unmerged work silently classified
-    //     squash-merged. `headSha` is optional on PRInfo (older on-disk
-    //     cache entries lack it) so the guard fails closed — no headSha
-    //     means we refuse to tag.
+    //   - `mergeTimeHeadSha` pins the tag to *merge-time content* equality:
+    //     the local ref must still point at the PR's head commit AS IT
+    //     EXISTED WHEN MERGED, not the PR's current live head. GitHub's
+    //     `pr.headSha` advances if the author pushes commits after merge,
+    //     so using it directly would let post-merge pushes silently
+    //     classify a `pr-<N>` branch (with matching live tip) as
+    //     squash-merged even though the new commits aren't on main.
+    //     `githubService.setPrCacheEntry` freezes this on first
+    //     merged-state observation. `mergeTimeHeadSha` is optional on
+    //     PRInfo (cache entries from before this field existed lack it)
+    //     so the guard fails closed — no mergeTimeHeadSha means we refuse
+    //     to tag, and the first cache refresh will bootstrap it.
     const mainShaSet = new Set(mainCommits.map((c) => c.sha));
     for (const b of branchIndex.values()) {
       if (b.mergeStatus !== 'unmerged') continue;
@@ -152,7 +157,7 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       if (!pr) continue;
       if (pr.state !== 'merged' || !pr.mergeCommitSha) continue;
       if (!mainShaSet.has(pr.mergeCommitSha)) continue;
-      if (!pr.headSha || b.lastCommitSha !== pr.headSha) continue;
+      if (!pr.mergeTimeHeadSha || b.lastCommitSha !== pr.mergeTimeHeadSha) continue;
       if (b.pr?.state === 'open') continue;
       b.mergeStatus = 'squash-merged';
       // Attach the merged PR. The open-PR guard above already skipped any

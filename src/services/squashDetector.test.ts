@@ -450,6 +450,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             mergeCommitSha: 'merge-sha-1',
             headRef: 'feature/multi-users',
             headSha: 'branch-sha',
+            mergeTimeHeadSha: 'branch-sha',
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -494,6 +495,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             mergeCommitSha: 'merge-sha-1',
             headRef: 'feature/multi-users',
             headSha: 'branch-sha-b',
+            mergeTimeHeadSha: 'branch-sha-b',
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -654,9 +656,9 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
 
   it('leaves pr-108 unmerged when local branch has diverged from PR head', async () => {
     // User ran `gh pr checkout 108`, then added local commits. The branch now
-    // points at `local-divergent-sha`, not `pr.headSha`. Without the content
-    // check, those unmerged commits would be silently classified squash-merged
-    // and routed through the safe-to-delete filter.
+    // points at `local-divergent-sha`, not `pr.mergeTimeHeadSha`. Without the
+    // content check, those unmerged commits would be silently classified
+    // squash-merged and routed through the safe-to-delete filter.
     batchFetchPRsMock.mockResolvedValue(
       new Map([
         [
@@ -668,6 +670,7 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
             mergeCommitSha: 'merge-sha-1',
             headRef: 'feature/multi-users',
             headSha: 'pr-head-sha',
+            mergeTimeHeadSha: 'pr-head-sha',
             url: 'https://github.com/o/r/pull/108',
           },
         ],
@@ -695,11 +698,61 @@ describe('detectSquashMerges: pr-N local branch heuristic', () => {
     expect(result.updatedBranches.find((b) => b.name === 'pr-108')!.mergeStatus).toBe('unmerged');
   });
 
-  it('leaves pr-108 unmerged when PRInfo lacks headSha (older on-disk cache entry)', async () => {
-    // The cached PR was written before `headSha` was added to PRInfo. Fail
-    // closed: without a SHA to verify against, we can't prove content equality,
-    // so the branch must stay `unmerged` until the cache refreshes and brings
-    // headSha with it.
+  it('leaves pr-108 unmerged when PR head advanced after merge (live headSha != mergeTimeHeadSha)', async () => {
+    // The author pushed more commits to the head branch on GitHub after the
+    // PR merged. `pr.headSha` now reflects the post-merge tip; the user
+    // pulled those commits into their local `pr-108`. Only `mergeTimeHeadSha`
+    // — frozen at first-observed-merged — proves the local tip still matches
+    // the content that was actually merged. Without this guard, the branch
+    // would get tagged squash-merged and routed through the click-to-confirm
+    // safe-delete filter despite carrying commits that aren't on main.
+    batchFetchPRsMock.mockResolvedValue(
+      new Map([
+        [
+          108,
+          {
+            number: 108,
+            title: 'Multi-user DAO',
+            state: 'merged' as const,
+            mergeCommitSha: 'merge-sha-1',
+            headRef: 'feature/multi-users',
+            // Live head has advanced past the merge-time tip.
+            headSha: 'post-merge-tip',
+            mergeTimeHeadSha: 'merge-time-tip',
+            url: 'https://github.com/o/r/pull/108',
+          },
+        ],
+      ]),
+    );
+    cherryCheckMock.mockResolvedValue(false);
+
+    const result = await detectSquashMerges(
+      baseInput({
+        branches: [
+          {
+            name: 'pr-108',
+            hasLocal: true,
+            hasRemote: false,
+            lastCommitDate: new Date().toISOString(),
+            // User's local pr-108 follows the live head (post-merge commits).
+            lastCommitSha: 'post-merge-tip',
+            aheadOfMain: 3,
+            behindMain: 0,
+            mergeStatus: 'unmerged',
+          } as Branch,
+        ],
+      }),
+    );
+
+    expect(result.updatedBranches.find((b) => b.name === 'pr-108')!.mergeStatus).toBe('unmerged');
+  });
+
+  it('leaves pr-108 unmerged when PRInfo lacks mergeTimeHeadSha (older on-disk cache entry)', async () => {
+    // The cached PR was written before `mergeTimeHeadSha` was added to PRInfo.
+    // Fail closed: without a frozen merge-time SHA to verify against, we can't
+    // prove content equality, so the branch must stay `unmerged` until the
+    // cache refreshes and brings mergeTimeHeadSha with it via
+    // `setPrCacheEntry` in githubService.
     batchFetchPRsMock.mockResolvedValue(
       new Map([
         [

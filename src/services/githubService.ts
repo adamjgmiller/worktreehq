@@ -162,6 +162,37 @@ function cacheKey(owner: string, repo: string, n: number) {
   return `${owner}/${repo}#${n}`;
 }
 
+/**
+ * Cache a freshly-fetched PR while preserving `mergeTimeHeadSha` across
+ * updates. Use this instead of `prCache.set()` for positive cache writes.
+ *
+ * Rationale: `pr.headSha` from GitHub is the LIVE head-ref tip. For merged
+ * PRs, the author (or automation) can push commits after the merge, which
+ * advances `headSha` past the merged content. The supplementary `pr-<N>`
+ * detector pass needs a stable "head at merge time" anchor — otherwise a
+ * user with a local `pr-N` following those post-merge commits would get
+ * their unmerged work silently classified squash-merged.
+ *
+ * Strategy: on first observation of `state === 'merged'`, freeze the
+ * current `headSha` into `mergeTimeHeadSha`. On subsequent observations,
+ * preserve the existing frozen value. If we ever see a merged PR without a
+ * prior cache entry (typical first-fetch case), we bootstrap
+ * `mergeTimeHeadSha` from the current `headSha` — imperfect for PRs merged
+ * long before this code shipped AND pushed-to post-merge, but correct for
+ * the overwhelming majority where author didn't touch the branch after
+ * merge. See issue #TBD for the rare-case follow-up.
+ */
+function setPrCacheEntry(key: string, pr: PRInfo | null): void {
+  if (pr && pr.state === 'merged') {
+    // getStale returns the entry even if TTL-expired — we want the frozen
+    // SHA regardless of whether the cached entry is technically stale.
+    const prior = prCache.getStale(key);
+    const frozen = prior?.mergeTimeHeadSha ?? pr.headSha ?? null;
+    pr = { ...pr, mergeTimeHeadSha: frozen };
+  }
+  prCache.set(key, pr);
+}
+
 export function _clearPrCacheForTests() {
   prCache.clear();
   hydratePromise = null;
@@ -187,7 +218,7 @@ export async function getPR(owner: string, repo: string, number: number): Promis
   if (!transport) return null;
   try {
     const pr = await transport.getPullRequest(owner, repo, number);
-    prCache.set(key, pr);
+    setPrCacheEntry(key, pr);
     schedulePersist();
     return pr;
   } catch {
@@ -228,8 +259,12 @@ export async function batchFetchPRs(
     try {
       const chunkOut = await transport.batchGetPullRequests(owner, repo, chunk);
       for (const [n, pr] of chunkOut) {
-        out.set(n, pr);
-        prCache.set(cacheKey(owner, repo, n), pr);
+        const k = cacheKey(owner, repo, n);
+        setPrCacheEntry(k, pr);
+        // Echo back the PR as stored (with mergeTimeHeadSha merged in) so
+        // callers see the same shape the cache will return next time.
+        const stored = prCache.get(k);
+        out.set(n, stored ?? pr);
       }
       // Negative-cache only after a successful fetch — a missing key means the
       // API confirmed the PR doesn't exist, not that the request failed.

@@ -141,6 +141,95 @@ describe('batchFetchPRs: chunking', () => {
   });
 });
 
+describe('batchFetchPRs: mergeTimeHeadSha freeze on merged state', () => {
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    initGithub('test-token');
+  });
+
+  const mergedPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  it('bootstraps mergeTimeHeadSha from live headSha on first fetch of a merged PR', async () => {
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'initial-tip'));
+    const result = await batchFetchPRs('o', 'r', [42]);
+    const pr = result.get(42);
+    expect(pr?.headSha).toBe('initial-tip');
+    expect(pr?.mergeTimeHeadSha).toBe('initial-tip');
+  });
+
+  it('preserves mergeTimeHeadSha across re-fetches when live headSha advances', async () => {
+    // Advance Date.now() past the 5-min in-memory TTL between fetches so the
+    // second call actually hits the network (the first entry stays present
+    // for getStale but is treated as expired by prCache.get). This exercises
+    // the real production path: author pushes to head branch post-merge, the
+    // app re-fetches on next refresh, and setPrCacheEntry must preserve the
+    // originally-frozen merge-time tip.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'initial-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+
+      // Advance past the 5-min TTL.
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const result = await batchFetchPRs('o', 'r', [42]);
+      const pr = result.get(42);
+      expect(pr?.headSha).toBe('post-merge-tip');
+      // Frozen from first observation — not overwritten by the advanced tip.
+      expect(pr?.mergeTimeHeadSha).toBe('initial-tip');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does NOT set mergeTimeHeadSha for open PRs', async () => {
+    graphqlMock.mockResolvedValueOnce({
+      repository: {
+        p42: {
+          number: 42,
+          title: 'Open PR',
+          state: 'OPEN',
+          merged: false,
+          mergedAt: null,
+          mergeCommit: null,
+          headRefName: 'feat/42',
+          headRefOid: 'open-tip',
+          url: 'https://github.com/o/r/pull/42',
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          reviewDecision: null,
+          commits: { nodes: [] },
+        },
+      },
+    });
+    const result = await batchFetchPRs('o', 'r', [42]);
+    const pr = result.get(42);
+    expect(pr?.state).toBe('open');
+    expect(pr?.headSha).toBe('open-tip');
+    expect(pr?.mergeTimeHeadSha).toBeUndefined();
+  });
+});
+
 describe('hydratePrCache: on-disk TTL for open PRs', () => {
   beforeEach(() => {
     _clearPrCacheForTests();
