@@ -136,11 +136,13 @@ export function BranchesView() {
             try {
               // Never auto-force: git -d refuses unmerged branches and that's a feature.
               // "not fully merged" rejections route to ForceDeleteRejectedDialog,
-              // which gates a force-delete behind a typed confirmation. Any OTHER
-              // -d failure (branch currently checked out, invalid ref, permission
-              // errors) goes to the banner — `-D` wouldn't fix those and the
-              // prompt would lie. LC_ALL=C in git_exec keeps the stderr string
-              // stable English.
+              // which tiers the force-delete confirmation by cohort — squash-merged
+              // rejects are click-to-confirm (detector is the safety check), while
+              // unmerged and 'other' (detector-vs-git disagreement) cohorts require
+              // typing. Any OTHER -d failure (branch currently checked out, invalid
+              // ref, permission errors) goes to the banner — `-D` wouldn't fix those
+              // and the prompt would lie. LC_ALL=C in git_exec keeps the stderr
+              // string stable English.
               await deleteLocalBranch(repo.path, b.name, false);
             } catch (e: any) {
               const msg = String(e?.message ?? e);
@@ -187,6 +189,12 @@ export function BranchesView() {
   async function performForceDelete() {
     if (!repo || !rejected || deleting) return;
     setDeleting(true);
+    // Mirror performDelete's defensive clear at entry so a retry can't leave
+    // stale banner content from a prior force-delete run. performDelete always
+    // clears first in the normal flow, but the symmetry closes a latent hazard
+    // if that invariant ever changes.
+    setDeleteErrors([]);
+    setDeleteInfo([]);
     try {
       const errors: string[] = [];
       const infos: string[] = [];

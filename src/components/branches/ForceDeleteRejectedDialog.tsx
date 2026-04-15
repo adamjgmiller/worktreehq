@@ -49,12 +49,14 @@ export function ForceDeleteRejectedDialog({
     : rejected.every((r) => r.reason === 'other')
       ? 'other'
       : 'unmerged';
-  // Per CLAUDE.md tier: force-deletes (`git -D`) of branches the app has
-  // classified as squash-merged are click-to-confirm — the content-verified
-  // detector is the safety check. The 'other' cohort (detector said merged
-  // but git -d still refused) and 'unmerged'/mixed cohort keep the typed
-  // gate because the detector-vs-git disagreement or unmerged commits mean
-  // we can't vouch for safety on our own.
+  // Cohort-based tiering: squash-merged is click-to-confirm because the
+  // content-verified detector is an independent safety check. 'other' and
+  // 'unmerged'/mixed cohorts require typing — CLAUDE.md's tier would allow
+  // click-to-confirm for merged-normally/direct-merged/empty (the 'other'
+  // cohort's source classifications), but the detector-vs-git disagreement
+  // here is new information: git actively refused the delete despite the
+  // detector saying merged, so we can no longer vouch for safety on our own.
+  // The stricter gate is a deliberate departure from the generic tier rule.
   const requiresTyping = cohort !== 'squash-merged';
   const canConfirm = !submitting && (!requiresTyping || typed === 'delete');
   const noun = rejected.length === 1 ? 'branch' : 'branches';
@@ -107,7 +109,7 @@ export function ForceDeleteRejectedDialog({
       <div className="border border-wt-border rounded p-3 bg-wt-bg font-mono text-xs space-y-1 mb-4 max-h-48 overflow-auto">
         {rejected.map(({ branch, mode }) => (
           <div key={branch.name}>
-            {mode === 'archive-and-delete' && <div>tag:   {archiveTagNameFor(branch.name)}</div>}
+            {mode === 'archive-and-delete' && <div>tag:    {archiveTagNameFor(branch.name)}</div>}
             <div>local:  {branch.name}</div>
             {(mode === 'both' || mode === 'archive-and-delete') && branch.hasRemote && (
               <div>remote: origin/{branch.name}</div>

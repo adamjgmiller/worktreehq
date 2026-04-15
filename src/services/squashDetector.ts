@@ -132,6 +132,11 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
     const mainShaSet = new Set(mainCommits.map((c) => c.sha));
     for (const b of branchIndex.values()) {
       if (b.mergeStatus !== 'unmerged') continue;
+      // Only consider local pr-<N> refs: the `gh pr checkout N` flow this
+      // pass is compensating for creates a local ref. Remote-only `origin/pr-N`
+      // names are rare but possible and the headSha/mainSha guards would still
+      // let them through without this gate.
+      if (!b.hasLocal) continue;
       const m = b.name.match(/^pr-(\d+)$/);
       if (!m) continue;
       const pr = prMap.get(parseInt(m[1], 10));
@@ -141,8 +146,12 @@ export async function detectSquashMerges(input: DetectInput): Promise<DetectResu
       if (!pr.headSha || b.lastCommitSha !== pr.headSha) continue;
       if (b.pr?.state === 'open') continue;
       b.mergeStatus = 'squash-merged';
-      // Safe to attach unconditionally — the open-PR guard above already
-      // `continue`d if there was one we'd risk clobbering.
+      // Attach the merged PR. The open-PR guard above already skipped any
+      // branch that currently carries an open PR, so we won't clobber a live
+      // one. A closed or merged PR already on `b` (e.g. from the on-disk PR
+      // cache of a prior run) may be overwritten by the freshly-fetched
+      // prMap entry — benign because both describe the same terminal PR
+      // state but sourced from the newer fetch.
       b.pr = pr;
       // Intentionally not emitting a new SquashMapping: the archaeology view
       // represents the PR merge event (one per PR), not the local ref. Pass 1

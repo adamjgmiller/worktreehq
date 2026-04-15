@@ -29,8 +29,10 @@ export function ConfirmDeleteDialog({
   // Tier confirmation to blast radius: local-only deletes use `git -d` which
   // refuses unmerged branches, so git itself prevents data loss — no need to
   // gate behind typing. Remote-touching modes (remote, both, archive-and-delete)
-  // are team-visible and stay behind the typed confirmation. Squash-merged
-  // rejections route to ForceDeleteRejectedDialog, which always requires typing.
+  // are team-visible and stay behind the typed confirmation. `-d` rejections
+  // route to ForceDeleteRejectedDialog, which tiers by cohort: squash-merged
+  // cohort is click-to-confirm (detector is the safety check), while unmerged
+  // and 'other' cohorts require typing.
   const requiresTyping = mode !== 'local';
   const canConfirm = !submitting && (!requiresTyping || typed === 'delete');
   const cancelRef = useRef<HTMLButtonElement | null>(null);
