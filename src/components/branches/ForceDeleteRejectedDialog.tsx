@@ -25,7 +25,6 @@ export function ForceDeleteRejectedDialog({
   onConfirm: () => void;
 }) {
   const [typed, setTyped] = useState('');
-  const canConfirm = !submitting && typed === 'delete';
   const cancelRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -50,6 +49,14 @@ export function ForceDeleteRejectedDialog({
     : rejected.every((r) => r.reason === 'other')
       ? 'other'
       : 'unmerged';
+  // Per CLAUDE.md tier: force-deletes (`git -D`) of branches the app has
+  // classified as squash-merged are click-to-confirm — the content-verified
+  // detector is the safety check. The 'other' cohort (detector said merged
+  // but git -d still refused) and 'unmerged'/mixed cohort keep the typed
+  // gate because the detector-vs-git disagreement or unmerged commits mean
+  // we can't vouch for safety on our own.
+  const requiresTyping = cohort !== 'squash-merged';
+  const canConfirm = !submitting && (!requiresTyping || typed === 'delete');
   const noun = rejected.length === 1 ? 'branch' : 'branches';
   const subject = rejected.length === 1 ? 'it' : 'they';
   const verbHave = rejected.length === 1 ? 'has' : 'have';
@@ -108,27 +115,29 @@ export function ForceDeleteRejectedDialog({
           </div>
         ))}
       </div>
-      <div className="mb-3">
-        <label htmlFor="force-delete-confirm" className="text-xs text-wt-fg-2">
-          Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
-        </label>
-        <p className="text-xs text-wt-muted mt-1">
-          {cohort === 'unmerged'
-            ? 'These commits will be unrecoverable after deletion.'
-            : `If WorktreeHQ's detection is wrong, the commits on ${rejected.length === 1 ? 'this branch' : 'these branches'} will be unrecoverable.`}
-        </p>
-        <input
-          id="force-delete-confirm"
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-          disabled={submitting}
-          autoCapitalize="off"
-          autoCorrect="off"
-          autoComplete="off"
-          spellCheck={false}
-          className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
-        />
-      </div>
+      {requiresTyping && (
+        <div className="mb-3">
+          <label htmlFor="force-delete-confirm" className="text-xs text-wt-fg-2">
+            Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
+          </label>
+          <p className="text-xs text-wt-muted mt-1">
+            {cohort === 'unmerged'
+              ? 'These commits will be unrecoverable after deletion.'
+              : `If WorktreeHQ's detection is wrong, the commits on ${rejected.length === 1 ? 'this branch' : 'these branches'} will be unrecoverable.`}
+          </p>
+          <input
+            id="force-delete-confirm"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={submitting}
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="mt-1 w-full bg-wt-bg border border-wt-border rounded px-2 py-1 font-mono text-sm disabled:opacity-50"
+          />
+        </div>
+      )}
       <DialogFooter>
         <button
           ref={cancelRef}
