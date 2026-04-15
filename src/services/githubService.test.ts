@@ -41,6 +41,7 @@ import {
   validateToken,
   _clearPrCacheForTests,
   _getPrCacheKeysForTests,
+  _simulateCacheEvictionForTests,
 } from './githubService';
 
 describe('mapChecksStatus', () => {
@@ -427,6 +428,58 @@ describe('batchFetchPRs: mergeTimeHeadSha freeze on merged state', () => {
       const pr = result.get(42);
       expect(pr?.state).toBe('merged');
       // Cold-bootstrap path: headSha becomes the freeze, observedLive=false.
+      expect(pr?.mergeTimeHeadSha).toBe('post-merge-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses to grant observedLive=true when the live observation was evicted before the merged fetch', async () => {
+    // Regression test for round-8 CX-F5: `liveObservations` Set membership
+    // alone is insufficient. If a PR is observed non-merged in-process,
+    // the cache fills past maxSize and FIFO-trims the entry, and a later
+    // fetch finds the PR merged — `priorInCache` is undefined (evicted)
+    // but the Set still has the key. Without the AND guard, setPrCacheEntry
+    // would fire branch 2 and trust the (possibly post-merge-advanced)
+    // headSha. The AND of (priorInCache non-merged) && (Set membership)
+    // forces branch 3 so post-eviction fetches fail closed.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // In-process observation of PR 42 as open: Set populated, cache has entry.
+      graphqlMock.mockResolvedValueOnce({
+        repository: {
+          p42: {
+            number: 42,
+            title: 'PR 42',
+            state: 'OPEN',
+            merged: false,
+            mergedAt: null,
+            mergeCommit: null,
+            headRefName: 'feat/42',
+            headRefOid: 'open-tip',
+            url: 'https://github.com/o/r/pull/42',
+            isDraft: false,
+            mergeable: 'MERGEABLE',
+            reviewDecision: null,
+            commits: { nodes: [] },
+          },
+        },
+      });
+      await batchFetchPRs('o', 'r', [42]);
+
+      // Simulate FIFO trim dropping PR 42 while leaving liveObservations intact.
+      _simulateCacheEvictionForTests('o/r#42');
+
+      // Advance past TTL and refetch: PR is now merged, live head may be
+      // post-merge-advanced.
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const result = await batchFetchPRs('o', 'r', [42]);
+      const pr = result.get(42);
+      expect(pr?.state).toBe('merged');
+      // Fail-closed: no priorInCache to corroborate the in-process witness.
       expect(pr?.mergeTimeHeadSha).toBe('post-merge-tip');
       expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
     } finally {

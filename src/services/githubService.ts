@@ -126,12 +126,16 @@ let hydratePromise: Promise<void> | null = null;
 let persistDebounce: ReturnType<typeof setTimeout> | null = null;
 
 // Keys observed with state !== 'merged' during the current process lifetime.
-// Gates `setPrCacheEntry`'s live-transition branch — the prior proxy of
-// `priorInCache.state !== 'merged'` misfired after app restart because
-// `hydratePrCache` rehydrates persisted open entries that look identical to
-// live observations. Not persisted: cold-bootstrap-after-restart must fail
-// closed (observedLive=false, pass 1b refuses to tag). Cleared in lockstep
-// with `prCache` on auth switch and in test teardown.
+// One of two required signals for `setPrCacheEntry`'s live-transition branch
+// (the other is a still-present non-merged prior via `getStale()`). Membership
+// alone is insufficient — FIFO eviction can strand the Set entry past the
+// cache entry, and a later merged fetch would then spuriously freeze a
+// potentially post-merge-advanced headSha. The AND of both signals catches
+// the cache-evicted case (no priorInCache) and the rehydrated-open case
+// (no Set membership because the rehydrated entry didn't go through
+// `setPrCacheEntry`). Not persisted: cold-bootstrap-after-restart must fail
+// closed. Cleared in lockstep with `prCache` on auth switch and in test
+// teardown.
 const liveObservations = new Set<string>();
 
 const STALE_OPEN_PR_MS = 7 * 24 * 60 * 60 * 1000;
@@ -198,22 +202,28 @@ function cacheKey(owner: string, repo: string, n: number) {
  * Freeze strategy and observed-live flag:
  *   - Prior cache entry has a freeze (live or bootstrapped): preserve both
  *     the frozen SHA and the observed-live flag.
- *   - We observed this key as non-merged in-process (tracked via the
- *     module-local `liveObservations` Set): freeze from current
+ *   - We observed this key as non-merged in-process AND the prior entry is
+ *     still reachable as non-merged via `getStale()`: freeze from current
  *     `pr.headSha`, set observedLive=true.
- *   - Otherwise (no prior freeze AND no in-process live observation — cold
- *     bootstrap, or first post-restart fetch with only a rehydrated prior):
- *     freeze from current `pr.headSha` (imperfect if the author pushed
- *     post-merge before we ever saw this PR live), set observedLive=false.
- *     The `pr-<N>` detector pass requires observedLive=true to tag, so
- *     cold bootstraps fail closed there.
+ *   - Otherwise (no prior freeze, or the prior entry is missing/merged, or
+ *     no in-process live observation): freeze from current `pr.headSha`
+ *     (imperfect if the author pushed post-merge before we ever saw this
+ *     PR live), set observedLive=false. The `pr-<N>` detector pass
+ *     requires observedLive=true to tag, so these cases fail closed.
  *
- * Why the in-memory Set instead of `priorInCache.state !== 'merged'`:
- * rehydrated persisted open entries look identical to live observations
- * under that proxy, so an app restart followed by a refetch that finds the
- * PR merged would falsely flag observedLive=true. The Set is not persisted,
- * so it dies with the process and the first post-restart observation falls
- * through to the cold-bootstrap branch.
+ * Why BOTH conditions (Set ∩ getStale) gate the live-transition branch:
+ *   - The Set alone: an entry observed live and then evicted by FIFO trim
+ *     leaves the Set membership behind. A later merged fetch would
+ *     spuriously freeze a potentially post-merge-advanced `pr.headSha` and
+ *     claim observedLive=true.
+ *   - `getStale()` alone (the pre-fix proxy): rehydrated persisted open
+ *     entries look identical to live observations. An app restart followed
+ *     by a refetch that finds the PR merged would falsely flag
+ *     observedLive=true.
+ * The AND covers all three cases: cache-evicted live observation, app-
+ * restart rehydrate, and genuine in-process transition. The Set is not
+ * persisted, so it dies with the process; both are cleared in lockstep on
+ * auth switch and in test teardown.
  *
  * Cross-invalidation preservation is handled by `invalidatePrCacheForRepo`
  * soft-expiring entries rather than deleting them — `prCache.getStale()`
@@ -233,16 +243,18 @@ function setPrCacheEntry(key: string, pr: PRInfo | null): PRInfo | null {
       // `get()` returns undefined after `expire`).
       frozen = priorInCache.mergeTimeHeadSha;
       observedLive = priorInCache.mergeTimeHeadShaObservedLive ?? false;
-    } else if (liveObservations.has(key)) {
-      // Witnessed the open→merged transition in-process: we saw this key
-      // as non-merged earlier in this session, so `pr.headSha` is the
-      // actual merge-time tip.
+    } else if (priorInCache && priorInCache.state !== 'merged' && liveObservations.has(key)) {
+      // Witnessed the open→merged transition in-process AND the prior
+      // non-merged entry is still in the cache (so we didn't just observe
+      // live and then get evicted). Both signals required — see docblock.
       frozen = pr.headSha;
       observedLive = true;
     } else {
-      // Cold bootstrap OR first post-restart observation: no in-process
-      // witness of a non-merged state, so `pr.headSha` may already be
-      // post-merge-advanced. Flag so the detector fails closed on pass 1b.
+      // Cold bootstrap, first post-restart observation with rehydrated
+      // prior, or post-eviction refetch: we cannot prove we witnessed
+      // the non-merged state in this cache generation, so `pr.headSha`
+      // may already be post-merge-advanced. Flag so the detector fails
+      // closed on pass 1b.
       frozen = pr.headSha;
       observedLive = false;
     }
@@ -280,6 +292,15 @@ export function invalidatePrCacheForRepo(owner: string, repo: string): void {
 
 export function _getPrCacheKeysForTests(): string[] {
   return Array.from(prCache.entries()).map(([k]) => k);
+}
+
+/** Test-only: simulate FIFO eviction of a single key by removing it from
+ *  prCache without touching liveObservations. Used to exercise the
+ *  post-eviction branch of setPrCacheEntry — production code evicts via
+ *  TTLCache.trim(), but that drops chunks based on insertion order and is
+ *  awkward to reproduce surgically in a unit test. */
+export function _simulateCacheEvictionForTests(key: string): boolean {
+  return prCache.delete(key);
 }
 
 // ── Single PR fetch ────────────────────────────────────────────────────
