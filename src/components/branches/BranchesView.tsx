@@ -189,12 +189,14 @@ export function BranchesView() {
   async function performForceDelete() {
     if (!repo || !rejected || deleting) return;
     setDeleting(true);
-    // Mirror performDelete's defensive clear at entry so a retry can't leave
-    // stale banner content from a prior force-delete run. performDelete always
-    // clears first in the normal flow, but the symmetry closes a latent hazard
-    // if that invariant ever changes.
-    setDeleteErrors([]);
-    setDeleteInfo([]);
+    // Intentionally do NOT clear deleteErrors / deleteInfo at entry: this is a
+    // CONTINUATION of the batch started by performDelete, not a fresh run.
+    // performDelete may have set non-rejection errors (e.g. branch currently
+    // checked out, permission denied) that were stashed to the banner just
+    // before the force-delete dialog opened; those errors belong to siblings
+    // of the rejected items and must survive the force-delete cycle.
+    // Append-only via the functional-update form at the end of this function
+    // is how both banners accumulate correctly across the perform→force arc.
     try {
       const errors: string[] = [];
       const infos: string[] = [];
