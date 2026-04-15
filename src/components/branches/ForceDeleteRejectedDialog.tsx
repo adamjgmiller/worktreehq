@@ -122,13 +122,14 @@ export function ForceDeleteRejectedDialog({
           <label htmlFor="force-delete-confirm" className="text-xs text-wt-fg-2">
             Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
           </label>
-          <p className="text-xs text-wt-muted mt-1">
+          <p id="force-delete-confirm-hazard" className="text-xs text-wt-muted mt-1">
             {cohort === 'unmerged'
               ? 'These commits will be unrecoverable after deletion.'
               : `If WorktreeHQ's detection is wrong, the commits on ${rejected.length === 1 ? 'this branch' : 'these branches'} will be unrecoverable.`}
           </p>
           <input
             id="force-delete-confirm"
+            aria-describedby="force-delete-confirm-hazard"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             disabled={submitting}

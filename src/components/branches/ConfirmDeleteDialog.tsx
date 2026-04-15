@@ -78,11 +78,12 @@ export function ConfirmDeleteDialog({
           <label htmlFor="confirm-delete-typed" className="text-xs text-wt-fg-2">
             Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
           </label>
-          <p className="text-xs text-wt-muted mt-1">
+          <p id="confirm-delete-typed-hazard" className="text-xs text-wt-muted mt-1">
             The remote branch is shared with collaborators; deleting it removes it for everyone.
           </p>
           <input
             id="confirm-delete-typed"
+            aria-describedby="confirm-delete-typed-hazard"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             disabled={submitting}
