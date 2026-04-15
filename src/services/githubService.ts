@@ -87,6 +87,7 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
   if (prevToken !== currentToken || prevMethod !== method) {
     prCache.clear();
     openPrListCache.clear();
+    liveObservations.clear();
   }
 }
 
@@ -124,6 +125,15 @@ interface PersistedCache {
 let hydratePromise: Promise<void> | null = null;
 let persistDebounce: ReturnType<typeof setTimeout> | null = null;
 
+// Keys observed with state !== 'merged' during the current process lifetime.
+// Gates `setPrCacheEntry`'s live-transition branch — the prior proxy of
+// `priorInCache.state !== 'merged'` misfired after app restart because
+// `hydratePrCache` rehydrates persisted open entries that look identical to
+// live observations. Not persisted: cold-bootstrap-after-restart must fail
+// closed (observedLive=false, pass 1b refuses to tag). Cleared in lockstep
+// with `prCache` on auth switch and in test teardown.
+const liveObservations = new Set<string>();
+
 const STALE_OPEN_PR_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function hydratePrCache(): Promise<void> {
@@ -147,6 +157,10 @@ export function hydratePrCache(): Promise<void> {
         if (isOpen && now - v.at > STALE_OPEN_PR_MS) continue;
         prCache.setWithTimestamp(k, v.pr, v.at);
       }
+      // setWithTimestamp intentionally skips the FIFO trim (cacheUtils.ts:57)
+      // so callers can bulk-load without per-entry overhead. Trim once here
+      // to enforce `maxSize` from the moment the cache becomes usable.
+      prCache.trim();
     } catch {
       /* corrupt cache: ignore and start fresh */
     }
@@ -184,19 +198,31 @@ function cacheKey(owner: string, repo: string, n: number) {
  * Freeze strategy and observed-live flag:
  *   - Prior cache entry has a freeze (live or bootstrapped): preserve both
  *     the frozen SHA and the observed-live flag.
- *   - Prior entry was non-merged, now is merged: we witnessed the
- *     transition — freeze from current `pr.headSha`, set observedLive=true.
- *   - No prior entry at all (cold bootstrap of an already-merged PR):
+ *   - We observed this key as non-merged in-process (tracked via the
+ *     module-local `liveObservations` Set): freeze from current
+ *     `pr.headSha`, set observedLive=true.
+ *   - Otherwise (no prior freeze AND no in-process live observation — cold
+ *     bootstrap, or first post-restart fetch with only a rehydrated prior):
  *     freeze from current `pr.headSha` (imperfect if the author pushed
- *     post-merge before we ever saw this PR), set observedLive=false.
+ *     post-merge before we ever saw this PR live), set observedLive=false.
  *     The `pr-<N>` detector pass requires observedLive=true to tag, so
  *     cold bootstraps fail closed there.
+ *
+ * Why the in-memory Set instead of `priorInCache.state !== 'merged'`:
+ * rehydrated persisted open entries look identical to live observations
+ * under that proxy, so an app restart followed by a refetch that finds the
+ * PR merged would falsely flag observedLive=true. The Set is not persisted,
+ * so it dies with the process and the first post-restart observation falls
+ * through to the cold-bootstrap branch.
  *
  * Cross-invalidation preservation is handled by `invalidatePrCacheForRepo`
  * soft-expiring entries rather than deleting them — `prCache.getStale()`
  * still returns the prior state via the first branch here.
  */
 function setPrCacheEntry(key: string, pr: PRInfo | null): PRInfo | null {
+  if (pr && pr.state !== 'merged') {
+    liveObservations.add(key);
+  }
   if (pr && pr.state === 'merged') {
     const priorInCache = prCache.getStale(key);
     let frozen: string | null | undefined;
@@ -207,16 +233,16 @@ function setPrCacheEntry(key: string, pr: PRInfo | null): PRInfo | null {
       // `get()` returns undefined after `expire`).
       frozen = priorInCache.mergeTimeHeadSha;
       observedLive = priorInCache.mergeTimeHeadShaObservedLive ?? false;
-    } else if (priorInCache && priorInCache.state !== 'merged') {
-      // We saw this PR before as non-merged; now it's merged — we
-      // witnessed the transition and `pr.headSha` is the actual
-      // merge-time tip.
+    } else if (liveObservations.has(key)) {
+      // Witnessed the open→merged transition in-process: we saw this key
+      // as non-merged earlier in this session, so `pr.headSha` is the
+      // actual merge-time tip.
       frozen = pr.headSha;
       observedLive = true;
     } else {
-      // Cold bootstrap: first-ever observation of an already-merged PR.
-      // `pr.headSha` may be post-merge-advanced; flag it so the detector
-      // fails closed on pass 1b.
+      // Cold bootstrap OR first post-restart observation: no in-process
+      // witness of a non-merged state, so `pr.headSha` may already be
+      // post-merge-advanced. Flag so the detector fails closed on pass 1b.
       frozen = pr.headSha;
       observedLive = false;
     }
@@ -228,6 +254,7 @@ function setPrCacheEntry(key: string, pr: PRInfo | null): PRInfo | null {
 
 export function _clearPrCacheForTests() {
   prCache.clear();
+  liveObservations.clear();
   hydratePromise = null;
 }
 

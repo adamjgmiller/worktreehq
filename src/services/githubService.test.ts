@@ -381,6 +381,59 @@ describe('batchFetchPRs: mergeTimeHeadSha freeze on merged state', () => {
     }
   });
 
+  it('refuses to grant observedLive=true when the only prior non-merged observation came from disk (rehydrated open entry)', async () => {
+    // Regression test for round-7 UF-1: setPrCacheEntry previously used
+    // `priorInCache.state !== 'merged'` as a proxy for "witnessed the
+    // transition in-process". That proxy misfires after app restart —
+    // hydratePrCache rehydrates persisted open entries, so the first post-
+    // restart fetch that finds the PR merged would see a rehydrated open
+    // prior and incorrectly flag observedLive=true. If post-merge commits
+    // were pushed during the offline window, the frozen mergeTimeHeadSha
+    // would then point PAST the actual merge, and pass 1b could classify
+    // a pr-<N> with real un-upstreamed work as squash-merged.
+    //
+    // Fix: track live observations via an in-memory Set that doesn't
+    // persist. Rehydrated entries don't populate it, so the first post-
+    // restart observation falls through to the cold-bootstrap branch.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Persist an open entry with an `at` that's within STALE_OPEN_PR_MS
+      // (so hydrate keeps it) but past the 5-min in-memory TTL (so the
+      // next get() misses and the fetch hits the network).
+      const persistedBlob = JSON.stringify({
+        version: 1,
+        entries: {
+          'o/r#42': {
+            at: Date.now() - 60 * 60 * 1000, // 1 hour old
+            pr: {
+              number: 42,
+              title: 'PR 42',
+              state: 'open',
+              headRef: 'feat/42',
+              headSha: 'pre-merge-tip',
+              url: 'https://github.com/o/r/pull/42',
+            },
+          },
+        },
+      });
+      readPrCacheFileMock.mockResolvedValueOnce(persistedBlob);
+      await hydratePrCache();
+
+      // First post-restart fetch returns the PR as merged with a live
+      // headSha that is already past the actual merge tip.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const result = await batchFetchPRs('o', 'r', [42]);
+      const pr = result.get(42);
+      expect(pr?.state).toBe('merged');
+      // Cold-bootstrap path: headSha becomes the freeze, observedLive=false.
+      expect(pr?.mergeTimeHeadSha).toBe('post-merge-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does NOT set mergeTimeHeadSha for open PRs', async () => {
     graphqlMock.mockResolvedValueOnce({
       repository: {
@@ -500,6 +553,36 @@ describe('hydratePrCache: on-disk TTL for open PRs', () => {
     await hydratePrCache();
     const keys = _getPrCacheKeysForTests();
     expect(keys).toContain('o/r#3');
+  });
+
+  it('enforces maxSize after bulk hydrate from disk (round-7 UF-2)', async () => {
+    // setWithTimestamp intentionally skips the FIFO trim (cacheUtils.ts:57)
+    // so bulk loaders can insert without per-entry overhead, but that left
+    // the `maxSize: 500` cap on prCache unenforced on the restart path: a
+    // persisted cache of thousands of merged-PR entries would hydrate in
+    // full and only shrink back to 500 after several subsequent set() calls.
+    // hydratePrCache now calls trim() once after the bulk load.
+    const now = Date.now();
+    const entries: Record<string, { at: number; pr: unknown }> = {};
+    for (let i = 0; i < 750; i++) {
+      entries[`o/r#${i}`] = {
+        at: now - 60 * 60 * 1000,
+        pr: {
+          number: i,
+          title: `PR ${i}`,
+          state: 'merged',
+          mergeCommitSha: `merge-${i}`,
+          headRef: `feat/${i}`,
+          headSha: `tip-${i}`,
+          url: `https://github.com/o/r/pull/${i}`,
+        },
+      };
+    }
+    readPrCacheFileMock.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, entries }),
+    );
+    await hydratePrCache();
+    expect(_getPrCacheKeysForTests().length).toBeLessThanOrEqual(500);
   });
 });
 
