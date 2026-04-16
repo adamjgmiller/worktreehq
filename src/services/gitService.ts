@@ -833,6 +833,7 @@ export async function createWorktree(
   path: string,
   branch: string,
   newBranch: boolean,
+  detached = false,
 ): Promise<void> {
   // `git worktree add <path>` creates the leaf directory but NOT intermediate
   // parents. With the new default of `<repo>/.claude/worktrees/<branch>`, a
@@ -842,9 +843,13 @@ export async function createWorktree(
   if (parent) await ensureDir(parent);
 
   const args = ['worktree', 'add'];
-  if (newBranch) args.push('-b', branch);
-  args.push(path);
-  if (!newBranch) args.push(branch);
+  if (detached) {
+    args.push('--detach', path);
+  } else if (newBranch) {
+    args.push('-b', branch, path);
+  } else {
+    args.push(path, branch);
+  }
   await run(repo, args);
 }
 

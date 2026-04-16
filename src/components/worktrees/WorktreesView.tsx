@@ -16,7 +16,11 @@ import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable';
 import { useRepoStore } from '../../store/useRepoStore';
 import { WorktreeCard } from './WorktreeCard';
 import { EmptyState } from '../common/EmptyState';
-import { CreateWorktreeDialog, type CreateWorktreeValue } from './CreateWorktreeDialog';
+import {
+  CreateWorktreeDialog,
+  type CreateWorktreeValue,
+  type PathPresetId,
+} from './CreateWorktreeDialog';
 import { RemoveWorktreeDialog } from './RemoveWorktreeDialog';
 import { WorktreeFilterBar } from './WorktreeFilterBar';
 import { WorktreeBulkActionBar } from './WorktreeBulkActionBar';
@@ -140,6 +144,7 @@ export function WorktreesView() {
   // the Create dialog opens so edits made in Settings between creations
   // are reflected. The dialog seeds its own editable state from this.
   const [defaultPostCreate, setDefaultPostCreate] = useState('');
+  const [defaultPathPreset, setDefaultPathPreset] = useState<PathPresetId>('claude');
   // Enables framer-motion's layout animation on the card shell. Kept OFF by
   // default so refresh ticks don't pay the per-card getBoundingClientRect
   // cost. Flipped ON just before an explicit reorder (sort-mode change) via
@@ -424,8 +429,19 @@ export function WorktreesView() {
   // there's no perceptible delay between click and dialog appearing.
   async function openCreate() {
     try {
-      const cfg = await invoke<{ post_create_commands?: string }>('read_config');
+      const cfg = await invoke<{
+        post_create_commands?: string;
+        worktree_path_preset?: string;
+      }>('read_config');
       setDefaultPostCreate(cfg.post_create_commands ?? '');
+      // Only accept known preset ids; unknown values (from older configs or
+      // manual edits) fall back to the Claude Code default.
+      const preset = cfg.worktree_path_preset;
+      if (preset === 'claude' || preset === 'dotworktrees' || preset === 'sibling') {
+        setDefaultPathPreset(preset);
+      } else {
+        setDefaultPathPreset('claude');
+      }
     } catch {
       /* leave previous value in place — better a stale default than no dialog */
     }
@@ -448,7 +464,7 @@ export function WorktreesView() {
     async (v: CreateWorktreeValue) => {
       if (!repo) return;
       try {
-        await createWorktree(repo.path, v.path, v.branch, v.newBranch);
+        await createWorktree(repo.path, v.path, v.branch, v.newBranch, v.detached);
         // Close the dialog as soon as the worktree exists — the push, refresh,
         // and post-create script all run after. Keeping it open through a slow
         // push or `npm install` would be confusing UX, and a push failure
@@ -889,6 +905,7 @@ export function WorktreesView() {
           branches={branches}
           defaultBranch={repo.defaultBranch}
           defaultPostCreateCommands={defaultPostCreate}
+          defaultPathPreset={defaultPathPreset}
           onCancel={() => setCreateOpen(false)}
           onConfirm={handleCreate}
           onPickDirectory={pickDirectory}

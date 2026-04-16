@@ -10,6 +10,10 @@ import { startRefreshLoop, stopRefreshLoop } from '../../services/refreshLoop';
 import { useRepoStore } from '../../store/useRepoStore';
 import { Terminal, Key, ShieldOff } from 'lucide-react';
 import { Dialog, DialogHeader, DialogFooter } from './Dialog';
+import {
+  PATH_PRESETS,
+  type PathPresetId,
+} from '../worktrees/CreateWorktreeDialog';
 
 const REFRESH_PRESETS: { ms: number; label: string }[] = [
   { ms: 5_000,   label: '5 seconds' },
@@ -39,6 +43,7 @@ type AppConfigShape = Record<string, unknown> & {
   auth_method?: AuthMethod;
   post_create_commands?: string;
   refresh_interval_ms?: number;
+  worktree_path_preset?: string;
 };
 
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -49,6 +54,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [selectedMethod, setSelectedMethod] = useState<AuthMethod>('none');
   const [token, setToken] = useState('');
   const [postCreateCommands, setPostCreateCommands] = useState('');
+  const [pathPreset, setPathPreset] = useState<PathPresetId>('claude');
   const [refreshIntervalMs, setRefreshIntervalMsLocal] = useState<number>(15_000);
   const [refreshTouched, setRefreshTouched] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -79,6 +85,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         setGhDetected(gh);
         setGhChecking(false);
         setPostCreateCommands((cfg.post_create_commands as string | undefined) ?? '');
+
+        const cfgPreset = cfg.worktree_path_preset as string | undefined;
+        setPathPreset(
+          cfgPreset === 'claude' || cfgPreset === 'dotworktrees' || cfgPreset === 'sibling'
+            ? cfgPreset
+            : 'claude',
+        );
 
         const cfgInterval =
           typeof cfg.refresh_interval_ms === 'number' && cfg.refresh_interval_ms > 0
@@ -177,6 +190,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         github_token: '',
         auth_method: selectedMethod,
         post_create_commands: postCreateCommands,
+        worktree_path_preset: pathPreset,
         ...(refreshTouched ? { refresh_interval_ms: refreshIntervalMs } : {}),
       });
 
@@ -363,6 +377,26 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             spellCheck={false}
             className="w-full bg-wt-bg border border-wt-border rounded px-3 py-2 font-mono text-xs resize-y disabled:opacity-50"
           />
+        </div>
+
+        {/* ── Default worktree path convention ── */}
+        <div className="pt-4 border-t border-wt-border mt-4">
+          <h3 className="text-sm font-semibold mb-1">Default worktree path convention</h3>
+          <p className="text-xs text-wt-fg-2 mb-2">
+            Default layout for new worktrees created from the Create dialog.
+            Match this to the tool you use most (Claude Code, Codex, etc.).
+            You can still override the path per-creation.
+          </p>
+          <select
+            value={pathPreset}
+            onChange={(e) => setPathPreset(e.target.value as PathPresetId)}
+            disabled={loading || saving}
+            className="bg-wt-bg border border-wt-border rounded px-2 py-1.5 text-sm disabled:opacity-50"
+          >
+            {PATH_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
         </div>
 
         {/* ── Auto-refresh interval ── */}

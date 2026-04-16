@@ -71,6 +71,26 @@ WorktreeHQ is a desktop dashboard for both. It detects squash-merged branches vi
 
 - SVG-rendered first-parent timeline of `main` with fork markers colored by branch merge status
 
+## Multi-tool compatibility
+
+WorktreeHQ discovers worktrees via `git worktree list`, so **any worktree created by any tool** — Claude Code, Cursor, Codex, Cline, workmux, or plain `git worktree add` — appears in the dashboard automatically with full dirty/clean state, ahead/behind tracking, and branch hygiene analysis.
+
+**Claude Code** has first-class integration: the app detects live/idle/recent Claude sessions per worktree, auto-seeds notepads from your first prompt, and defaults the create-worktree path to Claude Code's `.claude/worktrees/` convention.
+
+Other tools get the full worktree and branch monitoring experience without session-level awareness. Known tool conventions the app handles:
+
+| Tool | Typical worktree location | Branch style |
+|------|--------------------------|--------------|
+| Claude Code | `<repo>/.claude/worktrees/<branch>` | Named branch (new or existing) |
+| Cursor | `~/.cursor/worktrees/<repo>/<id>/` | Often detached HEAD or auto-named |
+| Codex CLI | `$CODEX_HOME/worktrees/` | Detached HEAD by default |
+| Cline | User-configured | `cline/<name>` branches |
+| Copilot (cloud) | Remote (not local) | `copilot/<name>` branches on origin |
+| workmux | `<repo>__worktrees/<branch>` | Named branch |
+| Manual git | Wherever you put it | Whatever you name it |
+
+Squash-merge detection works on all branches regardless of which tool created them — if a tool pushed a branch and it was squash-merged on GitHub, WorktreeHQ will correctly identify it as merged and offer safe cleanup.
+
 ## Install
 
 WorktreeHQ is a [Tauri v2](https://tauri.app) desktop app. Pre-built binaries are not yet provided — for now, you build from source.

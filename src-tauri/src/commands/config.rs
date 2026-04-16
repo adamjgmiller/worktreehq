@@ -52,6 +52,13 @@ pub struct AppConfig {
     // Create Worktree dialog; this field is the saved default.
     #[serde(default)]
     pub post_create_commands: String,
+    // Default path convention for new worktrees. One of "claude", "dotworktrees",
+    // or "sibling" (maps to templates defined in the Create Worktree dialog).
+    // Unknown values fall back to "claude" on the frontend read. Default
+    // "claude" matches the prior hardcoded behavior so existing users see no
+    // change after upgrade.
+    #[serde(default = "default_worktree_path_preset")]
+    pub worktree_path_preset: String,
 }
 
 // 15s default. The filesystem watcher (scoped to .git/) covers the immediacy
@@ -74,6 +81,10 @@ fn default_zoom_level() -> f64 {
 
 fn default_theme() -> String {
     "dark".to_string()
+}
+
+fn default_worktree_path_preset() -> String {
+    "claude".to_string()
 }
 
 const ZOOM_MIN: f64 = 0.5;
