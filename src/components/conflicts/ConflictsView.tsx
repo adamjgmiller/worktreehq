@@ -22,7 +22,6 @@ export function ConflictsView() {
       !w.isPrimary &&
       !w.prunable &&
       w.branch &&
-      w.branch !== 'HEAD' &&
       w.branch !== '(detached)' &&
       !mergedBranches.has(w.branch),
   );

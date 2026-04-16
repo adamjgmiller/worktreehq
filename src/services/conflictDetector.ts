@@ -148,15 +148,12 @@ export async function detectCrossWorktreeConflicts(
 
   // ── Filter candidates ──────────────────────────────────────────────
   // Skip: primary worktree (IS the default branch), prunable/orphaned,
-  // detached HEADs (branch is empty, "HEAD", or the "(detached)" sentinel
-  // set by parseWorktreeList in gitService.ts).
+  // and detached HEADs. parseWorktreeList in gitService.ts emits the
+  // "(detached)" sentinel for detached checkouts; the empty-string guard
+  // is defensive for rare porcelain entries (e.g. bare worktree rows)
+  // where no branch name is produced.
   const candidates = worktrees.filter(
-    (w) =>
-      !w.isPrimary &&
-      !w.prunable &&
-      w.branch &&
-      w.branch !== 'HEAD' &&
-      w.branch !== '(detached)',
+    (w) => !w.isPrimary && !w.prunable && w.branch && w.branch !== '(detached)',
   );
 
   // Resolve the baseline `origin/<defaultBranch>` SHA up front. This is part

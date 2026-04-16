@@ -400,7 +400,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           <p className="mt-1 text-[11px] text-wt-fg-2 font-mono">
             e.g. {PATH_PRESETS.find((p) => p.id === pathPreset)?.template
               .replace('{repo}', '<repo>')
-              .replace('{name}', '<branch>')}
+              .replace('{name}', '<name>')}
           </p>
         </div>
 
