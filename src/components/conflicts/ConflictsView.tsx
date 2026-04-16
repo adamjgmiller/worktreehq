@@ -18,7 +18,13 @@ export function ConflictsView() {
       .map((b) => b.name),
   );
   const candidates = worktrees.filter(
-    (w) => !w.isPrimary && !w.prunable && w.branch && w.branch !== 'HEAD' && !mergedBranches.has(w.branch),
+    (w) =>
+      !w.isPrimary &&
+      !w.prunable &&
+      w.branch &&
+      w.branch !== 'HEAD' &&
+      w.branch !== '(detached)' &&
+      !mergedBranches.has(w.branch),
   );
   if (candidates.length < 2) {
     return (

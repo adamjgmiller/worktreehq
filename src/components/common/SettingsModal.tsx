@@ -397,6 +397,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               <option key={p.id} value={p.id}>{p.label}</option>
             ))}
           </select>
+          <p className="mt-1 text-[11px] text-wt-fg-2 font-mono">
+            e.g. {PATH_PRESETS.find((p) => p.id === pathPreset)?.template
+              .replace('{repo}', '<repo>')
+              .replace('{name}', '<branch>')}
+          </p>
         </div>
 
         {/* ── Auto-refresh interval ── */}

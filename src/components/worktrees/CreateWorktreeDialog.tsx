@@ -125,10 +125,6 @@ export function CreateWorktreeDialog({
       setError('Branch is required');
       return;
     }
-    if (isDetached && !detachedName.trim()) {
-      setError('Name is required');
-      return;
-    }
     setSubmitting(true);
     try {
       // Pre-check: git worktree add will reject an existing directory anyway,
@@ -236,7 +232,6 @@ export function CreateWorktreeDialog({
                 value={pathPreset}
                 onChange={(e) => {
                   setPathPreset(e.target.value as PathPresetId);
-                  setPathTouched(false);
                 }}
                 className="bg-wt-bg border border-wt-border rounded px-2 py-0.5 text-[11px] text-wt-fg-2"
               >
