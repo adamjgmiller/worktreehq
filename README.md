@@ -89,6 +89,8 @@ Other tools get the full worktree and branch monitoring experience without sessi
 | workmux | `<repo>__worktrees/<branch>` | Named branch |
 | Manual git | Wherever you put it | Whatever you name it |
 
+Discovery is automatic for every tool in the table above — if `git worktree list` sees it, WorktreeHQ shows it. The Create Worktree dialog ships three path presets out of the box (Claude Code's `.claude/worktrees/`, generic `.worktrees/`, and a workmux-style sibling directory); any other layout works too, just type a custom path.
+
 Squash-merge detection works on all branches regardless of which tool created them — if a tool pushed a branch and it was squash-merged on GitHub, WorktreeHQ will correctly identify it as merged and offer safe cleanup.
 
 ## Install
