@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FolderOpen } from 'lucide-react';
 import type { Branch } from '../../types';
 import { pathExists } from '../../services/tauriBridge';
 import { Dialog, DialogHeader, DialogFooter } from '../common/Dialog';
 
-// Built-in path presets for different tool conventions.
+// Built-in path presets for different tool conventions. Exported for Settings,
+// which only offers these three as saved defaults — "Custom" is a runtime mode,
+// not a persistable default.
 export const PATH_PRESETS = [
   { id: 'claude', label: 'Claude Code (.claude/worktrees/)', template: '{repo}/.claude/worktrees/{name}' },
   { id: 'dotworktrees', label: 'Generic (.worktrees/)', template: '{repo}/.worktrees/{name}' },
@@ -12,6 +14,16 @@ export const PATH_PRESETS = [
 ] as const;
 
 export type PathPresetId = (typeof PATH_PRESETS)[number]['id'];
+
+// Dialog-local preset list adds a "Custom path…" entry so users can see the
+// escape hatch directly in the dropdown rather than having to intuit that the
+// path input is freely editable. `template: null` signals "no template — the
+// user-entered path is authoritative."
+type DialogPresetId = PathPresetId | 'custom';
+const DIALOG_PRESETS: Array<{ id: DialogPresetId; label: string; template: string | null }> = [
+  ...PATH_PRESETS,
+  { id: 'custom', label: 'Custom path…', template: null },
+];
 
 export interface CreateWorktreeValue {
   path: string;
@@ -56,7 +68,8 @@ export function CreateWorktreeDialog({
   const [newBranchName, setNewBranchName] = useState('');
   const [detachedName, setDetachedName] = useState('');
   const [pushToRemote, setPushToRemote] = useState(true);
-  const [pathPreset, setPathPreset] = useState<PathPresetId>(defaultPathPreset);
+  const [pathPreset, setPathPreset] = useState<DialogPresetId>(defaultPathPreset);
+  const pathInputRef = useRef<HTMLInputElement>(null);
   // Seeded from the saved default but live-editable before submit. A user
   // might keep `npm install` as the default but, for this particular
   // creation, also want `cp ../main/.env .env`. The parent re-reads config
@@ -98,11 +111,13 @@ export function CreateWorktreeDialog({
         ? newBranchName.trim()
         : existingBranch;
 
-  // Compute suggested path from the selected preset template.
+  // Compute suggested path from the selected preset template. In "custom"
+  // mode there's no template — the user's typed path is authoritative, so
+  // suggestedPath is empty and the auto-fill effect no-ops.
   const activeTemplate =
-    PATH_PRESETS.find((p) => p.id === pathPreset)?.template ?? PATH_PRESETS[0].template;
+    DIALOG_PRESETS.find((p) => p.id === pathPreset)?.template ?? null;
   const suggestedPath =
-    repoPath && currentName
+    activeTemplate && repoPath && currentName
       ? activeTemplate
           .replace('{repo}', repoPath)
           .replace('{name}', currentName.replace(/\//g, '-'))
@@ -122,6 +137,9 @@ export function CreateWorktreeDialog({
     if (picked) {
       setPath(picked);
       setPathTouched(true);
+      // A user-picked directory is by definition a custom path — keep the
+      // dropdown honest so it reflects what's actually in the input.
+      setPathPreset('custom');
     }
   };
 
@@ -243,21 +261,38 @@ export function CreateWorktreeDialog({
               <select
                 value={pathPreset}
                 onChange={(e) => {
-                  setPathPreset(e.target.value as PathPresetId);
+                  const next = e.target.value as DialogPresetId;
+                  setPathPreset(next);
+                  if (next === 'custom') {
+                    // Explicit opt-in to custom mode: clear any preset-driven
+                    // value and put focus on the input so the user can just
+                    // start typing.
+                    setPath('');
+                    setPathTouched(true);
+                    setTimeout(() => pathInputRef.current?.focus(), 0);
+                  } else {
+                    // Switching back to a real preset re-enables auto-fill.
+                    setPathTouched(false);
+                  }
                 }}
                 className="bg-wt-bg border border-wt-border rounded px-2 py-0.5 text-[11px] text-wt-fg-2"
               >
-                {PATH_PRESETS.map((p) => (
+                {DIALOG_PRESETS.map((p) => (
                   <option key={p.id} value={p.id}>{p.label}</option>
                 ))}
               </select>
             </div>
             <div className="flex gap-2">
               <input
+                ref={pathInputRef}
                 value={path}
                 onChange={(e) => {
                   setPath(e.target.value);
                   setPathTouched(true);
+                  // Typing anything makes the input authoritative — reflect
+                  // that in the dropdown so it doesn't claim a preset the
+                  // path no longer matches.
+                  setPathPreset('custom');
                 }}
                 placeholder={suggestedPath || '/path/to/new-worktree'}
                 autoCapitalize="off"
@@ -275,7 +310,7 @@ export function CreateWorktreeDialog({
                 <FolderOpen className="w-4 h-4" />
               </button>
             </div>
-            {!pathTouched && !currentName && repoPath && (
+            {!pathTouched && !currentName && repoPath && activeTemplate && (
               <p className="mt-1 text-[11px] text-wt-fg-2">
                 Will create at:{' '}
                 <span className="font-mono">
