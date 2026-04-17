@@ -107,6 +107,7 @@ pub fn read_config() -> AppResult<AppConfig> {
             fetch_interval_ms: default_fetch_interval(),
             zoom_level: default_zoom_level(),
             theme: default_theme(),
+            worktree_path_preset: default_worktree_path_preset(),
             ..Default::default()
         });
     }
