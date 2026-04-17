@@ -263,6 +263,16 @@ export function CreateWorktreeDialog({
                 <FolderOpen className="w-4 h-4" />
               </button>
             </div>
+            {!pathTouched && !currentName && repoPath && (
+              <p className="mt-1 text-[11px] text-wt-fg-2">
+                Will create at:{' '}
+                <span className="font-mono">
+                  {activeTemplate
+                    .replace('{repo}', repoPath)
+                    .replace('{name}', mode === 'detached' ? '<name>' : '<branch>')}
+                </span>
+              </p>
+            )}
           </div>
           <div>
             <div className="flex items-baseline justify-between">
