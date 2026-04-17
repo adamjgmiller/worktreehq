@@ -54,9 +54,9 @@ pub struct AppConfig {
     pub post_create_commands: String,
     // Default path convention for new worktrees. One of "claude", "dotworktrees",
     // or "sibling" (maps to templates defined in the Create Worktree dialog).
-    // Unknown values fall back to "claude" on the frontend read. Default
-    // "claude" matches the prior hardcoded behavior so existing users see no
-    // change after upgrade.
+    // Unknown values are coerced back to "claude" on read (here and on the
+    // frontend, defense in depth). Default "claude" matches the prior
+    // hardcoded behavior so existing users see no change after upgrade.
     #[serde(default = "default_worktree_path_preset")]
     pub worktree_path_preset: String,
 }
@@ -136,6 +136,12 @@ pub fn read_config() -> AppResult<AppConfig> {
     // a typo in a hand-edited config can't leave the UI in a wedged state.
     if !matches!(cfg.theme.as_str(), "light" | "dark" | "system") {
         cfg.theme = default_theme();
+    }
+    if !matches!(
+        cfg.worktree_path_preset.as_str(),
+        "claude" | "dotworktrees" | "sibling"
+    ) {
+        cfg.worktree_path_preset = default_worktree_path_preset();
     }
     Ok(cfg)
 }
