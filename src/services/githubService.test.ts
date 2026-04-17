@@ -32,6 +32,8 @@ import {
   mapMergeable,
   mapReviewDecision,
   batchFetchPRs,
+  expireOpenPrEntries,
+  expirePrEntriesByNumbers,
   initGithub,
   hydratePrCache,
   getPR,
@@ -833,5 +835,236 @@ describe('validateToken', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(await validateToken()).toBe('valid');
     warnSpy.mockRestore();
+  });
+});
+
+describe('expirePrEntriesByNumbers', () => {
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    initGithub('test-token');
+  });
+
+  const openPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'OPEN',
+        merged: false,
+        mergedAt: null,
+        mergeCommit: null,
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  const mergedPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  it('soft-expires only the specified PR numbers, leaving siblings warm', async () => {
+    // Cache three PRs from one repo and one from another. Calling
+    // expirePrEntriesByNumbers([42, 43]) should make 42/43's next get()
+    // miss (forcing refetch) while 44 and the cross-repo entry stay warm.
+    graphqlMock.mockResolvedValueOnce({
+      repository: {
+        ...openPRResponse(42, 'tip-42').repository,
+        ...openPRResponse(43, 'tip-43').repository,
+        ...openPRResponse(44, 'tip-44').repository,
+      },
+    });
+    await batchFetchPRs('o', 'r', [42, 43, 44]);
+    graphqlMock.mockResolvedValueOnce(openPRResponse(99, 'tip-99'));
+    await batchFetchPRs('other', 'repo', [99]);
+
+    expirePrEntriesByNumbers('o', 'r', [42, 43]);
+
+    // Refetch all four; expect 42 and 43 to hit the network (one merged
+    // call covering both), and 44 + cross-repo 99 to be served from cache
+    // (no graphql call).
+    graphqlMock.mockResolvedValueOnce({
+      repository: {
+        ...mergedPRResponse(42, 'tip-42').repository,
+        ...mergedPRResponse(43, 'tip-43').repository,
+      },
+    });
+    graphqlMock.mockClear();
+    const refetched = await batchFetchPRs('o', 'r', [42, 43, 44]);
+    expect(graphqlMock).toHaveBeenCalledTimes(1);
+    expect(refetched.get(42)?.state).toBe('merged');
+    expect(refetched.get(43)?.state).toBe('merged');
+    expect(refetched.get(44)?.state).toBe('open');
+
+    graphqlMock.mockClear();
+    const crossRepo = await batchFetchPRs('other', 'repo', [99]);
+    expect(graphqlMock).not.toHaveBeenCalled();
+    expect(crossRepo.get(99)?.state).toBe('open');
+  });
+
+  it('preserves mergeTimeHeadSha + observedLive across the soft-expire + refetch path', async () => {
+    // The same freeze-preservation guarantee that invalidatePrCacheForRepo
+    // gives us — verified for the targeted helper too. This is the load-
+    // bearing property that lets the background-tick path use soft-expire
+    // safely without dropping observedLive=true. Uses fake timers to step
+    // past the 5-min TTL between observations (matches the open→merged
+    // transition test at line ~213).
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      graphqlMock.mockResolvedValueOnce(openPRResponse(42, 'open-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+
+      // Soft-expire mid-window — the next get() misses, getStale() still
+      // returns the merged entry so setPrCacheEntry preserves the freeze.
+      expirePrEntriesByNumbers('o', 'r', [42]);
+
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const refetched = await batchFetchPRs('o', 'r', [42]);
+      const pr = refetched.get(42);
+      expect(pr?.headSha).toBe('post-merge-tip');
+      expect(pr?.mergeTimeHeadSha).toBe('merge-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is a no-op for an empty number list', () => {
+    expirePrEntriesByNumbers('o', 'r', []);
+    // No throw, no state changes — function should return early without
+    // iterating the cache.
+    expect(_getPrCacheKeysForTests()).toEqual([]);
+  });
+
+  it('skips numbers with no cache entry', async () => {
+    graphqlMock.mockResolvedValueOnce(openPRResponse(42, 'tip-42'));
+    await batchFetchPRs('o', 'r', [42]);
+    // 999 isn't cached — expire() returns false for it and we skip the
+    // schedulePersist path. 42's entry should still be expired.
+    expirePrEntriesByNumbers('o', 'r', [42, 999]);
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'tip-42'));
+    const refetched = await batchFetchPRs('o', 'r', [42]);
+    expect(refetched.get(42)?.state).toBe('merged');
+  });
+});
+
+describe('expireOpenPrEntries', () => {
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    initGithub('test-token');
+  });
+
+  const openPRResponse = (num: number) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'OPEN',
+        merged: false,
+        mergedAt: null,
+        mergeCommit: null,
+        headRefName: `feat/${num}`,
+        headRefOid: `tip-${num}`,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  const mergedPRResponse = (num: number) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: `tip-${num}`,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  it('expires only entries whose state is open; leaves merged + closed warm', async () => {
+    // Seed the cache: open PR 1, merged PR 2, plus a cross-repo open PR 3.
+    // After expireOpenPrEntries, only 1 and 3 should refetch on next read.
+    graphqlMock.mockResolvedValueOnce(openPRResponse(1));
+    await batchFetchPRs('o', 'r', [1]);
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(2));
+    await batchFetchPRs('o', 'r', [2]);
+    graphqlMock.mockResolvedValueOnce(openPRResponse(3));
+    await batchFetchPRs('other', 'repo', [3]);
+
+    expireOpenPrEntries();
+
+    // Open PR 1 — refetched (now merged).
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(1));
+    graphqlMock.mockClear();
+    const r1 = await batchFetchPRs('o', 'r', [1]);
+    expect(graphqlMock).toHaveBeenCalledTimes(1);
+    expect(r1.get(1)?.state).toBe('merged');
+
+    // Merged PR 2 — served from cache (no graphql call).
+    graphqlMock.mockClear();
+    const r2 = await batchFetchPRs('o', 'r', [2]);
+    expect(graphqlMock).not.toHaveBeenCalled();
+    expect(r2.get(2)?.state).toBe('merged');
+
+    // Cross-repo open PR 3 — also refetched (repo-agnostic helper).
+    graphqlMock.mockResolvedValueOnce(openPRResponse(3));
+    graphqlMock.mockClear();
+    const r3 = await batchFetchPRs('other', 'repo', [3]);
+    expect(graphqlMock).toHaveBeenCalledTimes(1);
+    expect(r3.get(3)?.state).toBe('open');
+  });
+
+  it('is a no-op when no open entries are cached', async () => {
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(2));
+    await batchFetchPRs('o', 'r', [2]);
+
+    expireOpenPrEntries();
+
+    // Merged entry stays warm — refetch hits cache.
+    graphqlMock.mockClear();
+    const result = await batchFetchPRs('o', 'r', [2]);
+    expect(graphqlMock).not.toHaveBeenCalled();
+    expect(result.get(2)?.state).toBe('merged');
   });
 });

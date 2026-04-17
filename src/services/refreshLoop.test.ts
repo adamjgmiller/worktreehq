@@ -35,6 +35,7 @@ vi.mock('./githubService', () => ({
   batchFetchPRs: vi.fn(),
   invalidateOpenPrListCache: vi.fn(),
   invalidatePrCacheForRepo: vi.fn(),
+  expirePrEntriesByNumbers: vi.fn(),
 }));
 
 vi.mock('./claudeAwarenessService', () => ({
@@ -1189,5 +1190,110 @@ describe('merge-status ratchet', () => {
     await refreshOnce();
     // stale is not ratcheted — the transition to empty is allowed.
     expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
+  });
+});
+
+describe('targeted PR cache invalidation on background ticks', () => {
+  // The background fetch loop deliberately doesn't drop the per-PR cache
+  // (5min TTL — see refreshLoop.ts:619 comment). Without targeted help,
+  // a PR that gets squash-merged on github.com is brought into origin/main
+  // by the next 60s fetch but the cached PRInfo still says state:'open',
+  // so detectSquashMerges' batchFetchPRs serves stale data and the squash
+  // classification doesn't land for up to 5min on auto-refresh. The diff
+  // injected into runRefreshOnce soft-expires only the PR entries whose
+  // (#N) tag is newly present in mainCommits — preserves the cost of the
+  // 5min TTL elsewhere while plugging the squash-detection gap.
+
+  function makeMainCommit(sha: string, prNumber?: number) {
+    const subject = prNumber !== undefined ? `do thing (#${prNumber})` : 'no pr';
+    return { sha, subject, date: '2026-01-01T00:00:00Z', prNumber };
+  }
+
+  it('invalidates only the newly-appeared PR numbers when origin/main advances', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('c', 102), makeMainCommit('b', 101), makeMainCommit('a', 100)],
+      total: 3,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledTimes(1);
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102, 101]);
+  });
+
+  it('does NOT invalidate when mainCommits is unchanged', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('a', 100)],
+      total: 1,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT invalidate on the first refresh of a session (empty prevMainCommits)', async () => {
+    // Cold boot — store.mainCommits is []. We can't diff so we skip.
+    // The bootstrap's expireOpenPrEntries() covers this case via a
+    // different mechanism (rehydrated cache state).
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('a', 100)],
+      total: 1,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT invalidate when the repo has no GitHub remote', async () => {
+    // Non-github remotes won't have owner/name, and there's no PR cache
+    // to invalidate anyway. Skip the diff entirely.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('b', 101), makeMainCommit('a', 100)],
+      total: 2,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).not.toHaveBeenCalled();
+  });
+
+  it('skips main commits with no (#N) PR tag', async () => {
+    // First-parent commits without a PR-style suffix (e.g. local merge
+    // commits, manual fast-forwards) carry no prNumber and contribute
+    // nothing to the diff.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [
+        makeMainCommit('c', 102),
+        makeMainCommit('b'), // no PR tag
+        makeMainCommit('a', 100),
+      ],
+      total: 3,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102]);
   });
 });

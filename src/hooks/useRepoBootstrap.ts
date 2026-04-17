@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useRepoStore } from '../store/useRepoStore';
 import { invoke, isTauri, keychainRead, setGitAuthMethod, updateConfig } from '../services/tauriBridge';
 import {
+  expireOpenPrEntries,
   hydratePrCache,
   initGithub,
   detectGhCli,
@@ -252,6 +253,16 @@ export function useRepoBootstrap() {
         // older config so the list is non-empty for upgraders.
         setRecentRepoPaths(cfg.recent_repo_paths ?? []);
         await hydratePrCache();
+        // Soft-expire any rehydrated PR entries still in `state: 'open'`.
+        // The cache is persisted with original timestamps, so anything
+        // cached more than 5 min before quit auto-expires on first read,
+        // but entries cached within the 5-min TTL window come back warm-
+        // and-stale. A PR that was open when we quit but merged on
+        // github.com before relaunch would otherwise serve cached
+        // `state: 'open'` to detectSquashMerges and the squash-merged
+        // classification would lag until the TTL caught up. Terminal
+        // states (`merged`, `closed`) never transition — leave them.
+        expireOpenPrEntries();
 
         // Prefer the head of the MRU list; fall back to last_repo_path for
         // safety in case a hand-edited config has them out of sync.

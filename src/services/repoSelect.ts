@@ -8,7 +8,8 @@
 import { useRepoStore } from '../store/useRepoStore';
 import { invoke, updateConfig } from './tauriBridge';
 import { checkGitAvailable, setGitVersion, getDefaultBranch, getRemoteUrl } from './gitService';
-import { setRepoAndRefresh } from './refreshLoop';
+import { runFetchOnce } from './refreshLoop';
+import { invalidatePrCacheForRepo } from './githubService';
 import { readWorktreeOrder } from './worktreeOrderService';
 
 interface RepoInfo {
@@ -116,17 +117,32 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     } catch {
       setWorktreeOrder([]);
     }
-    // setRepoAndRefresh couples the store write to the follow-up refresh.
-    // runRefreshOnce's repo-switch early return leaks `loading: true` on
-    // purpose; the new repo's refresh is what clears it. A bare setRepo()
-    // here would leave the shimmer pinned if the refresh call were ever
-    // forgotten. See the CONTRACT comment in refreshLoop.ts.
-    setRepoAndRefresh({
+    // Soft-expire any cached PR entries for the destination repo BEFORE
+    // we flip `repo` and kick the refresh chain. Re-entering a previously-
+    // visited repo would otherwise serve last-visit's cached
+    // `state: 'open'` PRInfo to detectSquashMerges, missing any squash
+    // merge that landed remotely while we were away. Soft-expire (not
+    // hard-delete) preserves `mergeTimeHeadSha` + `observedLive` via
+    // `setPrCacheEntry`'s getStale() fallback chain.
+    if (remote.owner && remote.name) {
+      invalidatePrCacheForRepo(remote.owner, remote.name);
+    }
+    // Flip the store, then kick a user-initiated fetch. This replaces the
+    // prior `setRepoAndRefresh` (refresh-only) so re-entering a repo also
+    // pulls remote refs — without it, a squash that landed on the remote
+    // while we were on a different repo wouldn't appear in `mainCommits`
+    // until the next 60s background fetch tick. `runFetchOnce` with
+    // `userInitiated: true` fires its own immediate optimistic
+    // refreshOnce (refreshLoop.ts:552) which preserves the synchronous-
+    // follow-up contract that runRefreshOnce's repo-switch early return
+    // relies on (see the CONTRACT comment in refreshLoop.ts).
+    useRepoStore.getState().setRepo({
       path: info.path,
       defaultBranch,
       owner: remote.owner,
       name: remote.name,
     });
+    void runFetchOnce({ userInitiated: true });
     setError(null);
     // Update the in-memory MRU list immediately so the dropdown re-renders
     // before the config write resolves. The store is the source of truth

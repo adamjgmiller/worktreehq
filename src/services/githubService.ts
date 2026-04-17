@@ -290,6 +290,45 @@ export function invalidatePrCacheForRepo(owner: string, repo: string): void {
   if (expired > 0) schedulePersist();
 }
 
+/**
+ * Soft-expire a specific list of PR cache entries. Used by the background
+ * fetch path in `runRefreshOnce` when new `(#N)` PR-tags appear on
+ * `origin/<defaultBranch>` — only those PRs need a refetch to flip their
+ * cached `state: 'open'` to `'merged'` so squash detection can catch them
+ * on the same tick rather than waiting up to the 5-min TTL. Soft-expire
+ * (vs hard-delete) preserves `mergeTimeHeadSha` + `observedLive` via
+ * `setPrCacheEntry`'s `getStale()` fallback chain.
+ */
+export function expirePrEntriesByNumbers(
+  owner: string,
+  repo: string,
+  numbers: number[],
+): void {
+  if (numbers.length === 0) return;
+  let expired = 0;
+  for (const n of numbers) {
+    if (prCache.expire(cacheKey(owner, repo, n))) expired++;
+  }
+  if (expired > 0) schedulePersist();
+}
+
+/**
+ * Soft-expire every cached PR currently in `state: 'open'`. Called once
+ * after `hydratePrCache()` resolves at app boot so a PR that was open when
+ * we quit but merged on github.com before relaunch gets refetched on the
+ * first refresh. Terminal states (`merged`, `closed`) are left alone — they
+ * never transition, so refetching them would be wasted network.
+ */
+export function expireOpenPrEntries(): void {
+  let expired = 0;
+  for (const [k, entry] of Array.from(prCache.entries())) {
+    if (entry.value?.state === 'open') {
+      if (prCache.expire(k)) expired++;
+    }
+  }
+  if (expired > 0) schedulePersist();
+}
+
 export function _getPrCacheKeysForTests(): string[] {
   return Array.from(prCache.entries()).map(([k]) => k);
 }

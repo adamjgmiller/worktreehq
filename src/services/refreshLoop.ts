@@ -10,6 +10,7 @@ import {
 import { detectSquashMerges } from './squashDetector';
 import {
   batchFetchPRs,
+  expirePrEntriesByNumbers,
   invalidateOpenPrListCache,
   invalidatePrCacheForRepo,
   listOpenPRsForBranches,
@@ -181,6 +182,38 @@ async function runRefreshOnce(): Promise<void> {
     ]);
     const { commits: mainCommits, total: mainCommitsTotal } = mainCommitsResult;
     const remote = { owner: repo.owner, name: repo.name };
+
+    // Targeted PR cache invalidation. When `origin/<defaultBranch>` brings
+    // new (#N) tagged commits since our last snapshot, soft-expire just
+    // those PR cache entries so detectSquashMerges' batchFetchPRs (and the
+    // openPRs fetch below) refetch fresh data on this same tick. Without
+    // this, a background fetch tick brings in the squash commit but the
+    // detector still serves the cached `state: 'open'` PRInfo (5min TTL),
+    // and the squash-merged classification doesn't land until a manual
+    // Refresh invalidates the cache (refreshLoop.ts:619) or the TTL
+    // expires. Read prevMainCommits fresh — another tick may have
+    // committed during the awaits above. Skip when prevMainCommits is
+    // empty: that's either a first-refresh-of-session or a recovery from
+    // a failed prior tick, and the bootstrap's `expireOpenPrEntries()`
+    // already covers the boot case.
+    if (remote.owner && remote.name) {
+      const prevMainCommits = useRepoStore.getState().mainCommits;
+      if (prevMainCommits.length > 0) {
+        const prevPrSet = new Set<number>();
+        for (const c of prevMainCommits) {
+          if (c.prNumber !== undefined) prevPrSet.add(c.prNumber);
+        }
+        const newNumbers: number[] = [];
+        for (const c of mainCommits) {
+          if (c.prNumber !== undefined && !prevPrSet.has(c.prNumber)) {
+            newNumbers.push(c.prNumber);
+          }
+        }
+        if (newNumbers.length > 0) {
+          expirePrEntriesByNumbers(remote.owner, remote.name, newNumbers);
+        }
+      }
+    }
 
     // Attach worktree paths to branches. Build new objects rather than
     // mutating the entries returned by listBranches so that any future
