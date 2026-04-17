@@ -77,6 +77,18 @@ export function CreateWorktreeDialog({
       });
   }, [branches]);
 
+  // Keep existingBranch in sync with the list. If the current value isn't
+  // in the list (seeded defaultBranch filtered out, or a branch deleted
+  // mid-dialog), snap to the first item — otherwise the <select> silently
+  // falls back to displaying the first option while state stays stale,
+  // and the path input auto-fills from the stale state.
+  useEffect(() => {
+    if (existingBranches.length === 0) return;
+    if (!existingBranches.some((b) => b.name === existingBranch)) {
+      setExistingBranch(existingBranches[0].name);
+    }
+  }, [existingBranches, existingBranch]);
+
   // The name that drives the suggested path. In branch modes this is the
   // branch; in detached mode it's the user-typed session name.
   const currentName =
