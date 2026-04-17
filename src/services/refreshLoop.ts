@@ -185,17 +185,23 @@ async function runRefreshOnce(): Promise<void> {
 
     // Targeted PR cache invalidation. When `origin/<defaultBranch>` brings
     // new (#N) tagged commits since our last snapshot, soft-expire just
-    // those PR cache entries so detectSquashMerges' batchFetchPRs (and the
-    // openPRs fetch below) refetch fresh data on this same tick. Without
-    // this, a background fetch tick brings in the squash commit but the
-    // detector still serves the cached `state: 'open'` PRInfo (5min TTL),
-    // and the squash-merged classification doesn't land until a manual
-    // Refresh invalidates the cache (refreshLoop.ts:619) or the TTL
-    // expires. Read prevMainCommits fresh — another tick may have
-    // committed during the awaits above. Skip when prevMainCommits is
-    // empty: that's either a first-refresh-of-session or a recovery from
-    // a failed prior tick, and the bootstrap's `expireOpenPrEntries()`
-    // already covers the boot case.
+    // those per-PR cache entries AND hard-clear the open-PR list cache so
+    // detectSquashMerges' batchFetchPRs and the openPRs fetch below both
+    // refetch fresh data on this same tick. Without per-PR expiry, a
+    // background fetch brings in the squash commit but the detector still
+    // serves the cached `state: 'open'` PRInfo (5min TTL); without
+    // open-list invalidation, `listOpenPRsForBranches` returns the just-
+    // merged PR as still-open (60s TTL) and the `state: rest.state` clamp
+    // below stamps it back to `'open'`, defeating the per-PR refresh —
+    // detectSquashMerges then skips squash-tagging because the PR looks
+    // open. So both caches must drop together.
+    // Read prevMainCommits fresh: `loadRepoAtPath` (in repoSelect.ts)
+    // calls `setMainCommits([])` directly during a repo switch and can
+    // race the awaits above. `refreshInFlight` dedupe rules out another
+    // refresh tick committing here, but not a different-writer reset.
+    // Skip when prevMainCommits is empty: that's either a first-refresh-
+    // of-session or a recovery from a failed prior tick, and the
+    // bootstrap's `expireOpenPrEntries()` already covers the boot case.
     if (remote.owner && remote.name) {
       const prevMainCommits = useRepoStore.getState().mainCommits;
       if (prevMainCommits.length > 0) {
@@ -210,6 +216,7 @@ async function runRefreshOnce(): Promise<void> {
           }
         }
         if (newNumbers.length > 0) {
+          invalidateOpenPrListCache(remote.owner, remote.name);
           expirePrEntriesByNumbers(remote.owner, remote.name, newNumbers);
         }
       }

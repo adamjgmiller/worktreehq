@@ -1223,6 +1223,11 @@ describe('targeted PR cache invalidation on background ticks', () => {
 
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledTimes(1);
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102, 101]);
+    // openPrListCache also dropped — without this, listOpenPRsForBranches
+    // returns the just-merged PR as still-open and the `state: rest.state`
+    // clamp re-stamps it 'open', defeating the per-PR refresh and causing
+    // detectSquashMerges to skip squash-tagging.
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
   });
 
   it('does NOT invalidate when mainCommits is unchanged', async () => {
@@ -1238,6 +1243,7 @@ describe('targeted PR cache invalidation on background ticks', () => {
     await refreshOnce();
 
     expect(asMock(github.expirePrEntriesByNumbers)).not.toHaveBeenCalled();
+    expect(asMock(github.invalidateOpenPrListCache)).not.toHaveBeenCalled();
   });
 
   it('does NOT invalidate on the first refresh of a session (empty prevMainCommits)', async () => {

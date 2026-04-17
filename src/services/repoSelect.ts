@@ -133,9 +133,10 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     // while we were on a different repo wouldn't appear in `mainCommits`
     // until the next 60s background fetch tick. `runFetchOnce` with
     // `userInitiated: true` fires its own immediate optimistic
-    // refreshOnce (refreshLoop.ts:552) which preserves the synchronous-
-    // follow-up contract that runRefreshOnce's repo-switch early return
-    // relies on (see the CONTRACT comment in refreshLoop.ts).
+    // `refreshOnce({ userInitiated: true })` synchronously inside
+    // `runFetchOnce` before the fetch await, which preserves the
+    // synchronous-follow-up contract that runRefreshOnce's repo-switch
+    // early return relies on (see the CONTRACT comment in refreshLoop.ts).
     useRepoStore.getState().setRepo({
       path: info.path,
       defaultBranch,

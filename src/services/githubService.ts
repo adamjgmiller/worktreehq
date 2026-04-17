@@ -292,7 +292,7 @@ export function invalidatePrCacheForRepo(owner: string, repo: string): void {
 
 /**
  * Soft-expire a specific list of PR cache entries. Used by the background
- * fetch path in `runRefreshOnce` when new `(#N)` PR-tags appear on
+ * refresh path in `runRefreshOnce` when new `(#N)` PR-tags appear on
  * `origin/<defaultBranch>` — only those PRs need a refetch to flip their
  * cached `state: 'open'` to `'merged'` so squash detection can catch them
  * on the same tick rather than waiting up to the 5-min TTL. Soft-expire
@@ -305,11 +305,12 @@ export function expirePrEntriesByNumbers(
   numbers: number[],
 ): void {
   if (numbers.length === 0) return;
-  let expired = 0;
   for (const n of numbers) {
-    if (prCache.expire(cacheKey(owner, repo, n))) expired++;
+    prCache.expire(cacheKey(owner, repo, n));
   }
-  if (expired > 0) schedulePersist();
+  // No schedulePersist: expire sets at=0 in-memory; persisting that would
+  // make hydratePrCache drop these entries on next launch as stale-open.
+  // The next refetch persists with a fresh timestamp.
 }
 
 /**
@@ -320,13 +321,13 @@ export function expirePrEntriesByNumbers(
  * never transition, so refetching them would be wasted network.
  */
 export function expireOpenPrEntries(): void {
-  let expired = 0;
   for (const [k, entry] of Array.from(prCache.entries())) {
     if (entry.value?.state === 'open') {
-      if (prCache.expire(k)) expired++;
+      prCache.expire(k);
     }
   }
-  if (expired > 0) schedulePersist();
+  // No schedulePersist: see expirePrEntriesByNumbers — persisting at=0
+  // would cause hydratePrCache to drop these entries on next launch.
 }
 
 export function _getPrCacheKeysForTests(): string[] {
