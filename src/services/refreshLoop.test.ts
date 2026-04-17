@@ -1195,7 +1195,8 @@ describe('merge-status ratchet', () => {
 
 describe('targeted PR cache invalidation on background ticks', () => {
   // The background fetch loop deliberately doesn't drop the per-PR cache
-  // (5min TTL — see refreshLoop.ts:619 comment). Without targeted help,
+  // (5min TTL — see the `if (userInitiated) invalidatePrCacheForRepo(...)`
+  // branch in `runFetchOnce`'s post-fetch block). Without targeted help,
   // a PR that gets squash-merged on github.com is brought into origin/main
   // by the next 60s fetch but the cached PRInfo still says state:'open',
   // so detectSquashMerges' batchFetchPRs serves stale data and the squash
@@ -1279,6 +1280,10 @@ describe('targeted PR cache invalidation on background ticks', () => {
     await refreshOnce();
 
     expect(asMock(github.expirePrEntriesByNumbers)).not.toHaveBeenCalled();
+    // No owner/name → diff block is skipped entirely; the open-PR list
+    // cache must not be dropped either (paired with expirePrEntriesByNumbers
+    // inside the same `if (newNumbers.length > 0)` branch).
+    expect(asMock(github.invalidateOpenPrListCache)).not.toHaveBeenCalled();
   });
 
   it('skips main commits with no (#N) PR tag', async () => {
@@ -1301,5 +1306,8 @@ describe('targeted PR cache invalidation on background ticks', () => {
     await refreshOnce();
 
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102]);
+    // newNumbers is non-empty ([102]) — the no-PR-tag commit is filtered
+    // out but the tagged one still triggers the paired open-PR list drop.
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
   });
 });

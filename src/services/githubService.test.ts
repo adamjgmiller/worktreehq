@@ -784,8 +784,12 @@ describe('listOpenPRsForBranches caching', () => {
 
     await listOpenPRsForBranches('o', 'r', ['feat/a']);
     invalidateOpenPrListCache('o', 'r');
+    // After targeted invalidate (now soft-expire), a failed refetch must
+    // recover the prior list via getStale() rather than collapsing to []
+    // — otherwise a single flaky tick wipes every branch's open-PR data.
     const out = await listOpenPRsForBranches('o', 'r', ['feat/a']);
-    expect(out.size).toBe(0);
+    expect(out.size).toBe(1);
+    expect(out.get('feat/a')?.number).toBe(1);
   });
 });
 
@@ -966,8 +970,8 @@ describe('expirePrEntriesByNumbers', () => {
   it('skips numbers with no cache entry', async () => {
     graphqlMock.mockResolvedValueOnce(openPRResponse(42, 'tip-42'));
     await batchFetchPRs('o', 'r', [42]);
-    // 999 isn't cached — expire() returns false for it and we skip the
-    // schedulePersist path. 42's entry should still be expired.
+    // 999 isn't cached — expire() returns false for it and is a no-op.
+    // 42's entry should still be expired.
     expirePrEntriesByNumbers('o', 'r', [42, 999]);
     graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'tip-42'));
     const refetched = await batchFetchPRs('o', 'r', [42]);

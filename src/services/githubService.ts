@@ -177,6 +177,12 @@ function schedulePersist() {
   persistDebounce = setTimeout(() => {
     const entries: Record<string, PersistedCacheEntry> = {};
     for (const [k, entry] of prCache.entries()) {
+      // Skip soft-expired entries: `expire()` zeroes `at` in-memory as a
+      // refetch trigger, but persisting at:0 would make `hydratePrCache` drop
+      // open entries on next launch (now - 0 > STALE_OPEN_PR_MS) and leave
+      // merged entries with a useless timestamp. The disk's prior valid `at`
+      // should win until a real refetch lands.
+      if (entry.at === 0) continue;
       entries[k] = { at: entry.at, pr: entry.value };
     }
     const payload: PersistedCache = { version: 1, entries };
@@ -425,7 +431,13 @@ function openPrListCacheKey(owner: string, repo: string): string {
 }
 
 export function invalidateOpenPrListCache(owner?: string, repo?: string): void {
-  if (owner && repo) openPrListCache.delete(openPrListCacheKey(owner, repo));
+  // Soft-expire the targeted entry (vs hard-delete) so `listOpenPRsForBranches`'s
+  // catch path can still recover the prior value via `getStale()` on a flaky
+  // network. With `delete()`, a single failed refetch right after invalidate
+  // would wipe every branch's open-PR data for the tick. The bulk variant
+  // (no args) still hard-clears: it's used on auth switch where serving a
+  // stale entry from the previous identity would be wrong.
+  if (owner && repo) openPrListCache.expire(openPrListCacheKey(owner, repo));
   else openPrListCache.clear();
 }
 
