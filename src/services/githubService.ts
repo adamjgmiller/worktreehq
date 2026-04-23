@@ -297,8 +297,9 @@ export function _clearPrCacheForTests() {
  * to disk with their prior valid timestamp and rehydrate on boot with
  * their merged-PR state (including `mergeTimeHeadSha` +
  * `mergeTimeHeadShaObservedLive`) intact. `expireOpenPrEntries` on the
- * next boot re-marks open entries expired so they refetch on the first
- * refresh tick — closed and merged entries remain warm.
+ * next boot re-marks non-terminal (`open` + `closed`) entries expired so
+ * they refetch on the first refresh tick — only `merged` entries, which
+ * GitHub disallows reopening, remain warm.
  */
 export function invalidatePrCacheForRepo(owner: string, repo: string): void {
   const prefix = `${owner}/${repo}#`;
@@ -337,11 +338,22 @@ export function expirePrEntriesByNumbers(
 }
 
 /**
- * Soft-expire every cached PR currently in `state: 'open'`. Called once
- * after `hydratePrCache()` resolves at app boot so a PR that was open when
- * we quit but merged on github.com before relaunch gets refetched on the
- * first refresh. Terminal states (`merged`, `closed`) are left alone — they
- * never transition, so refetching them would be wasted network.
+ * Soft-expire every cached PR in a non-terminal state (`open` or `closed`)
+ * so the first post-boot refresh refetches them. Called once after
+ * `hydratePrCache()` resolves at app boot.
+ *
+ * Why both `open` and `closed`:
+ *   - `open` → might have merged while the app was quit.
+ *   - `closed` → GitHub allows reopening a closed PR and then merging it,
+ *     so a cached `closed` entry can also become `merged` between sessions.
+ * Only `merged` is truly terminal (GitHub disallows reopening a merged PR),
+ * so `merged` entries stay warm to avoid wasted network on the first tick —
+ * which matters because squash detection's PR-tag pass does a targeted
+ * PR lookup per first-parent commit on `main`.
+ *
+ * Name retained as `expireOpenPrEntries` for caller stability (the hook,
+ * tests, and surrounding comments all reference it); "open" here is now
+ * historical and means "non-terminal".
  */
 export function expireOpenPrEntries(): void {
   // Array.from materialises a snapshot of the entries before the loop so
@@ -353,7 +365,8 @@ export function expireOpenPrEntries(): void {
   // different turn of the event loop and sees either the pre- or post-expire
   // state cleanly.
   for (const [k, entry] of Array.from(prCache.entries())) {
-    if (entry.value?.state === 'open') {
+    const state = entry.value?.state;
+    if (state === 'open' || state === 'closed') {
       prCache.expire(k);
     }
   }

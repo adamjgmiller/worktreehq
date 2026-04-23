@@ -1027,15 +1027,39 @@ describe('expireOpenPrEntries', () => {
     },
   });
 
-  it('expires only entries whose state is open; leaves merged + closed warm', async () => {
-    // Seed the cache: open PR 1, merged PR 2, plus a cross-repo open PR 3.
-    // After expireOpenPrEntries, only 1 and 3 should refetch on next read.
+  const closedPRResponse = (num: number) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'CLOSED',
+        merged: false,
+        mergedAt: null,
+        mergeCommit: null,
+        headRefName: `feat/${num}`,
+        headRefOid: `tip-${num}`,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  it('expires non-terminal (open + closed) entries; leaves merged warm', async () => {
+    // Seed the cache: open PR 1, merged PR 2, closed PR 4, plus a cross-repo
+    // open PR 3. After expireOpenPrEntries, 1, 3, and 4 should refetch on
+    // next read (reopen→merge between sessions is possible for closed PRs);
+    // only merged PR 2 stays warm (GitHub disallows reopening a merged PR).
     graphqlMock.mockResolvedValueOnce(openPRResponse(1));
     await batchFetchPRs('o', 'r', [1]);
     graphqlMock.mockResolvedValueOnce(mergedPRResponse(2));
     await batchFetchPRs('o', 'r', [2]);
     graphqlMock.mockResolvedValueOnce(openPRResponse(3));
     await batchFetchPRs('other', 'repo', [3]);
+    graphqlMock.mockResolvedValueOnce(closedPRResponse(4));
+    await batchFetchPRs('o', 'r', [4]);
 
     expireOpenPrEntries();
 
@@ -1058,6 +1082,13 @@ describe('expireOpenPrEntries', () => {
     const r3 = await batchFetchPRs('other', 'repo', [3]);
     expect(graphqlMock).toHaveBeenCalledTimes(1);
     expect(r3.get(3)?.state).toBe('open');
+
+    // Closed PR 4 — refetched (simulates reopen+merge between sessions).
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(4));
+    graphqlMock.mockClear();
+    const r4 = await batchFetchPRs('o', 'r', [4]);
+    expect(graphqlMock).toHaveBeenCalledTimes(1);
+    expect(r4.get(4)?.state).toBe('merged');
   });
 
   it('is a no-op when no open entries are cached', async () => {
