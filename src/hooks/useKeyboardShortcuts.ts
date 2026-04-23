@@ -14,6 +14,22 @@ const TAB_BY_NUMBER: Record<string, TabKey> = {
   '6': 'archive',
 };
 
+// <input> types that do not accept text entry and thus have no native Cmd+A
+// "select all text" action. Used to narrow the Cmd+A guard without losing
+// the bulk-select shortcut when focus is on a row checkbox.
+const NON_TEXT_INPUT_TYPES = new Set([
+  'button',
+  'checkbox',
+  'color',
+  'file',
+  'hidden',
+  'image',
+  'radio',
+  'range',
+  'reset',
+  'submit',
+]);
+
 interface Params {
   tab: TabKey;
   setTab: (t: TabKey) => void;
@@ -40,6 +56,19 @@ export function useKeyboardShortcuts({
           target.tagName === 'TEXTAREA' ||
           target.tagName === 'SELECT' ||
           (target as HTMLElement).isContentEditable);
+
+      // Narrower than `inEditable`: only text-entry controls where Cmd/Ctrl+A
+      // has a native "select all text" action. Excludes <select> and non-text
+      // <input> types (checkbox/radio/etc.) so Cmd+A on a focused row
+      // checkbox still triggers the bulk-select action.
+      const inTextEntry =
+        !!target &&
+        (target.tagName === 'TEXTAREA' ||
+          (target as HTMLElement).isContentEditable ||
+          (target.tagName === 'INPUT' &&
+            !NON_TEXT_INPUT_TYPES.has(
+              ((target as HTMLInputElement).type || 'text').toLowerCase(),
+            )));
 
       const mod = e.metaKey || e.ctrlKey;
 
@@ -75,7 +104,7 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // ── Modifier-prefixed shortcuts (fire even in editable fields) ──
+      // ── Modifier-prefixed shortcuts (fire even in editable fields unless noted) ──
 
       // Cmd/Ctrl+R — refresh (suppress webview reload)
       if (mod && e.key === 'r' && !e.shiftKey && !e.altKey) {
@@ -94,13 +123,30 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // Cmd/Ctrl+A — select all (Branches and Worktrees tabs only)
-      if (mod && e.key === 'a' && !e.shiftKey && !e.altKey && tab === 'branches') {
+      // Cmd/Ctrl+A — select all (Branches and Worktrees tabs only). Skipped
+      // when focus is in a text-entry control so the native "select all text"
+      // action in search bars, the notepad, settings fields, and typed-delete
+      // confirmations still works.
+      if (
+        mod &&
+        e.key === 'a' &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !inTextEntry &&
+        tab === 'branches'
+      ) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('wthq:toggle-all-branches'));
         return;
       }
-      if (mod && e.key === 'a' && !e.shiftKey && !e.altKey && tab === 'worktrees') {
+      if (
+        mod &&
+        e.key === 'a' &&
+        !e.shiftKey &&
+        !e.altKey &&
+        !inTextEntry &&
+        tab === 'worktrees'
+      ) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('wthq:toggle-all-worktrees'));
         return;
