@@ -177,13 +177,20 @@ function schedulePersist() {
   persistDebounce = setTimeout(() => {
     const entries: Record<string, PersistedCacheEntry> = {};
     for (const [k, entry] of prCache.entries()) {
-      // Skip soft-expired entries: `expire()` zeroes `at` in-memory as a
-      // refetch trigger, but persisting at:0 would make `hydratePrCache` drop
-      // open entries on next launch (now - 0 > STALE_OPEN_PR_MS) and leave
-      // merged entries with a useless timestamp. The disk's prior valid `at`
-      // should win until a real refetch lands.
-      if (entry.at === 0) continue;
-      entries[k] = { at: entry.at, pr: entry.value };
+      // Persist soft-expired entries using their preserved pre-expire
+      // timestamp (`expiredAt`). `expire()` zeroes `at` in-memory as a
+      // refetch trigger, but snapshots the prior `at` onto `expiredAt` so
+      // the entry can still round-trip through disk with a valid timestamp.
+      // Without this, a schedulePersist fired while entries are soft-
+      // expired (e.g. after invalidatePrCacheForRepo, or an unrelated
+      // refetch during the 500ms debounce window) would either drop those
+      // entries from disk (breaking mergeTimeHeadSha survival across
+      // crash/restart) or persist them as at:0 (breaking STALE_OPEN_PR_MS
+      // on rehydrate). A truly uninitialised entry (at=0 and expiredAt=null)
+      // is the only case we still skip — it has no real timestamp to write.
+      const persistAt = entry.expiredAt ?? entry.at;
+      if (persistAt === 0) continue;
+      entries[k] = { at: persistAt, pr: entry.value };
     }
     const payload: PersistedCache = { version: 1, entries };
     void writePrCacheFile(JSON.stringify(payload));
@@ -282,9 +289,16 @@ export function _clearPrCacheForTests() {
  * keep the entry values reachable via `getStale()` so `setPrCacheEntry`'s
  * fallback chain can preserve `mergeTimeHeadSha` + `observedLive` across
  * the refetch. Replaces a prior hard-delete design that required a
- * side-channel stash for freeze preservation; soft-expiry also survives
- * app crash between invalidate and refetch because expired entries still
- * persist to disk and rehydrate on boot.
+ * side-channel stash for freeze preservation.
+ *
+ * Soft-expiry also survives app crash between invalidate and refetch:
+ * `expire()` snapshots the pre-expire timestamp onto `expiredAt`, and
+ * `schedulePersist` writes `expiredAt ?? at`, so expired entries persist
+ * to disk with their prior valid timestamp and rehydrate on boot with
+ * their merged-PR state (including `mergeTimeHeadSha` +
+ * `mergeTimeHeadShaObservedLive`) intact. `expireOpenPrEntries` on the
+ * next boot re-marks open entries expired so they refetch on the first
+ * refresh tick — closed and merged entries remain warm.
  */
 export function invalidatePrCacheForRepo(owner: string, repo: string): void {
   const prefix = `${owner}/${repo}#`;
@@ -314,9 +328,12 @@ export function expirePrEntriesByNumbers(
   for (const n of numbers) {
     prCache.expire(cacheKey(owner, repo, n));
   }
-  // No schedulePersist: expire sets at=0 in-memory; persisting that would
-  // make hydratePrCache drop these entries on next launch as stale-open.
-  // The next refetch persists with a fresh timestamp.
+  // No schedulePersist: this is called from the background refresh tick,
+  // which unconditionally fires schedulePersist shortly afterwards via
+  // batchFetchPRs. Adding one here is redundant. Crash-safety is
+  // nevertheless intact: `expire()` preserves the pre-expire timestamp on
+  // `expiredAt`, and the next persist (ours or an unrelated one during the
+  // 500ms debounce) writes it to disk so entries round-trip cleanly.
 }
 
 /**
@@ -340,8 +357,10 @@ export function expireOpenPrEntries(): void {
       prCache.expire(k);
     }
   }
-  // No schedulePersist: see expirePrEntriesByNumbers — persisting at=0
-  // would cause hydratePrCache to drop these entries on next launch.
+  // No schedulePersist: this is called once at boot, and the first refresh
+  // tick that follows will flush via batchFetchPRs. Crash-safety is still
+  // intact (expire() preserves the pre-expire timestamp on expiredAt, so
+  // any later persist round-trips the entry with its real `at`).
 }
 
 export function _getPrCacheKeysForTests(): string[] {

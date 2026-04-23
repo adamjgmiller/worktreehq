@@ -412,13 +412,16 @@ async function runRefreshOnce(): Promise<void> {
     // CONTRACT: every caller that sets the store's `repo` MUST queue a
     // follow-up refreshOnce() synchronously. The new repo's refresh is
     // what drives `loading` back to false when it commits. If you're
-    // adding a new setRepo() call site, prefer `setRepoAndRefresh()`
-    // below — it couples the two steps so the invariant can't be
-    // forgotten. The only exception is the bootstrap path in
-    // `useRepoBootstrap`, which deliberately awaits `runFetchOnce()`
-    // before starting the refresh loop (to avoid a stale-refs flash on
-    // first paint); bootstrap uses raw `setRepo()` with a commented
-    // justification.
+    // adding a new setRepo() call site, prefer the sanctioned wrappers
+    // below — `setRepoAndRefresh()` for the plain case, or
+    // `setRepoAndFetch()` for runtime repo switches that must also pull
+    // remote refs (runFetchOnce fires its own synchronous optimistic
+    // refreshOnce before the fetch await, satisfying the same contract).
+    // Both couple the two steps so the invariant can't be forgotten. The
+    // only exception is the bootstrap path in `useRepoBootstrap`, which
+    // deliberately awaits `runFetchOnce()` before starting the refresh
+    // loop (to avoid a stale-refs flash on first paint); bootstrap uses
+    // raw `setRepo()` with a commented justification.
     if (useRepoStore.getState().repo?.path !== repo.path) return;
 
     // Atomic commit — a single setState triggers exactly one render pass.

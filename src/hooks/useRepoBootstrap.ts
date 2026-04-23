@@ -165,6 +165,12 @@ function validateAndRefresh(
  * i.e. `syncInitAuthFromConfig` returned `false`. Must not be called for
  * explicit-method configs: doing so would re-invoke `initGithub`, which
  * triggers `prCache.clear()` and would wipe just-hydrated entries.
+ *
+ * Caller must AWAIT this before `hydratePrCache()` — detection transitions
+ * `initGithub` from the module-level default 'none' to 'gh-cli' or 'pat'
+ * on first launch, and the method change triggers `prCache.clear()` inside
+ * githubService. A fire-and-forget dispatch would race the hydrate and
+ * wipe entries we just seeded from disk.
  */
 async function autoDetectAndInitAuth(
   setGithubAuthStatus: (s: 'missing' | 'checking' | 'valid' | 'invalid') => void,
@@ -265,25 +271,33 @@ export function useRepoBootstrap() {
         }
         const cfg = await invoke<AppConfig>('read_config');
 
-        // Auth bootstrap, explicit-method branch: handle SYNCHRONOUSLY
-        // before hydratePrCache so that `initGithub` (and any
-        // `prCache.clear()` it triggers on method change) fires before we
-        // seed the in-memory cache from disk. If this ran fire-and-forget
-        // alongside hydratePrCache, a late-resolving initGithub could wipe
-        // just-hydrated (and still-warm) merged PR entries, silently
-        // regressing the PR-cache invalidation work.
+        // Auth bootstrap: handle explicit `auth_method` SYNCHRONOUSLY before
+        // hydratePrCache so that `initGithub` (and any `prCache.clear()` it
+        // triggers on method change) fires before we seed the in-memory
+        // cache from disk. If this ran fire-and-forget alongside
+        // hydratePrCache, a late-resolving initGithub could wipe just-
+        // hydrated (and still-warm) merged PR entries, silently regressing
+        // the PR-cache invalidation work. The auto-detect branch below is
+        // awaited for the same reason.
         const handledSync = await syncInitAuthFromConfig(
           cfg,
           setGithubAuthStatus,
           setAuthMethod,
           cancelledRef,
         );
-        // If no explicit method was configured, kick the async auto-detect
-        // path fire-and-forget — it doesn't block the UI boot, and it
-        // intentionally runs AFTER hydratePrCache so the initial gh-cli/PAT
-        // detection doesn't clear the cache we're about to populate.
+        // If no explicit method was configured, await the async auto-detect
+        // path BEFORE hydratePrCache. `initGithub` in the auto-detect path
+        // transitions from the default 'none' to 'gh-cli' or 'pat' on first
+        // launch, which triggers `prCache.clear()` in githubService — if we
+        // fired this fire-and-forget, a late-resolving detection could wipe
+        // the entries we just hydrated from disk. Awaiting here mirrors the
+        // invariant the explicit-method branch already preserves
+        // (initGithub-before-hydrate). Cost: bounded by detectGhCli's
+        // internal timeout; subsequent launches take the sync path since
+        // auto-detect persists `auth_method` on success.
         if (!handledSync) {
-          void autoDetectAndInitAuth(setGithubAuthStatus, setAuthMethod, cancelledRef);
+          await autoDetectAndInitAuth(setGithubAuthStatus, setAuthMethod, cancelledRef);
+          if (cancelled) return;
         }
 
         // Mirror the Rust default (config.rs default_interval = 15_000) and the
