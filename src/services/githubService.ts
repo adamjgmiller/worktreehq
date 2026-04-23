@@ -327,6 +327,14 @@ export function expirePrEntriesByNumbers(
  * never transition, so refetching them would be wasted network.
  */
 export function expireOpenPrEntries(): void {
+  // Array.from materialises a snapshot of the entries before the loop so
+  // mutation during iteration is impossible. Even so, the mutation below is
+  // iterator-safe on its own: TTLCache.expire() only calls `map.set` on an
+  // existing key (re-writing the same entry with at=0) — it never inserts
+  // or deletes. JS is single-threaded, so there is no concurrent prCache.get
+  // race either: every reader that could fire during this loop is on a
+  // different turn of the event loop and sees either the pre- or post-expire
+  // state cleanly.
   for (const [k, entry] of Array.from(prCache.entries())) {
     if (entry.value?.state === 'open') {
       prCache.expire(k);
@@ -430,15 +438,31 @@ function openPrListCacheKey(owner: string, repo: string): string {
   return `${owner}/${repo}`;
 }
 
-export function invalidateOpenPrListCache(owner?: string, repo?: string): void {
-  // Soft-expire the targeted entry (vs hard-delete) so `listOpenPRsForBranches`'s
-  // catch path can still recover the prior value via `getStale()` on a flaky
-  // network. With `delete()`, a single failed refetch right after invalidate
-  // would wipe every branch's open-PR data for the tick. The bulk variant
-  // (no args) still hard-clears: it's used on auth switch where serving a
-  // stale entry from the previous identity would be wrong.
-  if (owner && repo) openPrListCache.expire(openPrListCacheKey(owner, repo));
-  else openPrListCache.clear();
+export function invalidateOpenPrListCache(
+  owner?: string,
+  repo?: string,
+  opts?: { hard?: boolean },
+): void {
+  // Soft-expire the targeted entry by default (vs hard-delete) so
+  // `listOpenPRsForBranches`'s catch path can still recover the prior value
+  // via `getStale()` on a flaky network. With `delete()`, a single failed
+  // refetch right after invalidate would wipe every branch's open-PR data
+  // for the tick. The bulk variant (no args) still hard-clears: it's used on
+  // auth switch where serving a stale entry from the previous identity would
+  // be wrong.
+  //
+  // `hard: true` forces a delete instead of a soft expire. Callers that have
+  // positive proof the cached list is wrong (e.g. a new (#N) commit on main
+  // proves the referenced PR is merged, not open) MUST pass this — allowing
+  // `getStale()` to serve the pre-merge list back on a transport failure
+  // would re-stamp the merged PR as 'open' and defeat squash detection on
+  // the current tick.
+  if (owner && repo) {
+    if (opts?.hard) openPrListCache.delete(openPrListCacheKey(owner, repo));
+    else openPrListCache.expire(openPrListCacheKey(owner, repo));
+  } else {
+    openPrListCache.clear();
+  }
 }
 
 export function _getOpenPrListCacheKeysForTests(): string[] {

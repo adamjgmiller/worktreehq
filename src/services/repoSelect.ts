@@ -8,8 +8,8 @@
 import { useRepoStore } from '../store/useRepoStore';
 import { invoke, updateConfig } from './tauriBridge';
 import { checkGitAvailable, setGitVersion, getDefaultBranch, getRemoteUrl } from './gitService';
-import { runFetchOnce } from './refreshLoop';
-import { invalidatePrCacheForRepo } from './githubService';
+import { setRepoAndFetch } from './refreshLoop';
+import { invalidateOpenPrListCache, invalidatePrCacheForRepo } from './githubService';
 import { readWorktreeOrder } from './worktreeOrderService';
 
 interface RepoInfo {
@@ -124,8 +124,13 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     // merge that landed remotely while we were away. Soft-expire (not
     // hard-delete) preserves `mergeTimeHeadSha` + `observedLive` via
     // `setPrCacheEntry`'s getStale() fallback chain.
+    // Both caches must drop together — the optimistic refreshOnce in
+    // runFetchOnce (below) would otherwise serve merged PRs as still-open
+    // from the 60s-TTL openPrListCache, blocking squashDetector.hasOpenPR
+    // and the cherry-fallback filter.
     if (remote.owner && remote.name) {
       invalidatePrCacheForRepo(remote.owner, remote.name);
+      invalidateOpenPrListCache(remote.owner, remote.name);
     }
     // Flip the store, then kick a user-initiated fetch. This replaces the
     // prior `setRepoAndRefresh` (refresh-only) so re-entering a repo also
@@ -137,13 +142,12 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     // `runFetchOnce` before the fetch await, which preserves the
     // synchronous-follow-up contract that runRefreshOnce's repo-switch
     // early return relies on (see the CONTRACT comment in refreshLoop.ts).
-    useRepoStore.getState().setRepo({
+    setRepoAndFetch({
       path: info.path,
       defaultBranch,
       owner: remote.owner,
       name: remote.name,
     });
-    void runFetchOnce({ userInitiated: true });
     setError(null);
     // Update the in-memory MRU list immediately so the dropdown re-renders
     // before the config write resolves. The store is the source of truth

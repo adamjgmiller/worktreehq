@@ -52,6 +52,7 @@ import type { AuthMethod } from './githubService';
 import * as squash from './squashDetector';
 import * as claude from './claudeAwarenessService';
 import * as conflicts from './conflictDetector';
+import type { Branch } from '../types';
 
 const asMock = <T extends (...args: any[]) => any>(fn: T) => fn as unknown as Mock;
 
@@ -1303,11 +1304,17 @@ describe('targeted PR cache invalidation on background ticks', () => {
 
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledTimes(1);
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102, 101]);
-    // openPrListCache also dropped — without this, listOpenPRsForBranches
-    // returns the just-merged PR as still-open and the `state: rest.state`
-    // clamp re-stamps it 'open', defeating the per-PR refresh and causing
-    // detectSquashMerges to skip squash-tagging.
-    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+    // openPrListCache also dropped — hard-delete (not soft-expire) because
+    // the (#N) tag is positive proof the cached list is wrong. Without the
+    // hard flag, a transport failure on the refetch would let getStale()
+    // re-serve the pre-merge list and stamp the merged PR as 'open',
+    // defeating the per-PR refresh and causing detectSquashMerges to skip
+    // squash-tagging.
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith(
+      'o',
+      'r',
+      { hard: true },
+    );
   });
 
   it('does NOT invalidate when mainCommits is unchanged', async () => {
@@ -1365,6 +1372,89 @@ describe('targeted PR cache invalidation on background ticks', () => {
     expect(asMock(github.invalidateOpenPrListCache)).not.toHaveBeenCalled();
   });
 
+  it('tags squash-merged when open-list fallback serves stale data but batchFetchPRs returns merged', async () => {
+    // Regression test for F016 + F031. Scenario:
+    //   1. Prior tick cached an open-PR list containing PR #42 as open.
+    //   2. A squash commit (#42) just landed on origin/main.
+    //   3. The targeted invalidation fires, but the refetch transport
+    //      fails — so `listOpenPRsForBranches` serves the pre-merge list
+    //      back via its `getStale()` fallback (unconditionally stamped
+    //      'open'). `batchFetchPRs` returns PR #42 with state: 'merged'
+    //      (authoritative via GraphQL).
+    //
+    // Before the fix, the `{ ...full, state: rest.state }` clamp re-stamped
+    // the PR as 'open', defeating detectSquashMerges' hasOpenPR guard and
+    // leaving the branch as unmerged for up to 5 minutes. After the fix,
+    // the unclobbered 'merged' state flows through and squashDetector tags
+    // the branch squash-merged on the same tick.
+    const branch = {
+      name: 'feat/squash',
+      hasLocal: true,
+      hasRemote: true,
+      lastCommitDate: '2026-01-01T00:00:00Z',
+      lastCommitSha: 'deadbeef',
+      aheadOfMain: 1,
+      behindMain: 0,
+      mergeStatus: 'unmerged' as const,
+    };
+    const stalePrEntry = {
+      number: 42,
+      title: 'Feat: squash me',
+      headRef: 'feat/squash',
+      url: 'https://github.com/o/r/pull/42',
+    };
+    const mergedPrFull = {
+      ...stalePrEntry,
+      state: 'merged' as const,
+      mergeCommitSha: 'squashsha',
+    };
+
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([branch]);
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('squashsha', 42), makeMainCommit('a', 100)],
+      total: 2,
+    });
+    // The open-list transport "failed" upstream: from the refresh loop's
+    // perspective, listOpenPRsForBranches silently returned the stale
+    // entry (state stamped 'open') via getStale(). We mock that here.
+    asMock(github.listOpenPRsForBranches).mockResolvedValueOnce(
+      new Map([['feat/squash', { ...stalePrEntry, state: 'open' }]]),
+    );
+    // batchFetchPRs returns the authoritative merged state.
+    asMock(github.batchFetchPRs).mockResolvedValueOnce(
+      new Map([[42, mergedPrFull]]),
+    );
+    // detectSquashMerges runs after the open-list attachment: if the PR
+    // flows through as merged, the detector can tag the branch. Assert
+    // on the shape it receives.
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }: { branches: Branch[] }) => {
+      const tagged = bs.map((b) =>
+        b.name === 'feat/squash' && b.pr?.state === 'merged'
+          ? { ...b, mergeStatus: 'squash-merged' as const }
+          : b,
+      );
+      return { updatedBranches: tagged, mappings: [] };
+    });
+
+    await refreshOnce();
+
+    // The targeted invalidation still fires for the newly-seen (#42) tag.
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [42]);
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith(
+      'o',
+      'r',
+      { hard: true },
+    );
+
+    const feat = useRepoStore.getState().branches.find((b) => b.name === 'feat/squash');
+    expect(feat?.pr?.state).toBe('merged');
+    expect(feat?.mergeStatus).toBe('squash-merged');
+  });
+
   it('skips main commits with no (#N) PR tag', async () => {
     // First-parent commits without a PR-style suffix (e.g. local merge
     // commits, manual fast-forwards) carry no prNumber and contribute
@@ -1386,7 +1476,12 @@ describe('targeted PR cache invalidation on background ticks', () => {
 
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102]);
     // newNumbers is non-empty ([102]) — the no-PR-tag commit is filtered
-    // out but the tagged one still triggers the paired open-PR list drop.
-    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+    // out but the tagged one still triggers the paired open-PR list drop
+    // (hard-delete: (#N) tag is proof-of-merge).
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith(
+      'o',
+      'r',
+      { hard: true },
+    );
   });
 });

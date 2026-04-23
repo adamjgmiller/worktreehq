@@ -62,7 +62,8 @@ interface RepoInfo {
 
 /**
  * Auth detection cascade:
- *   1. Check persisted auth_method preference
+ *   1. Check persisted auth_method preference (handled synchronously by
+ *      `syncInitAuthFromConfig`)
  *   2. Try gh CLI (auto-detect; persists to config on success)
  *   3. Try keychain PAT (persists to config on success)
  *   4. Fall back to 'none'
@@ -71,53 +72,48 @@ interface RepoInfo {
  * enrichment and squash detection land as soon as auth is ready, rather
  * than waiting for the next 15s poll tick.
  */
-async function detectAndInitAuth(
+
+/**
+ * Synchronous explicit-auth bootstrap. Returns `true` if `cfg.auth_method`
+ * was an explicit value (`'gh-cli' | 'pat' | 'none'`) and was handled
+ * here — in which case `initGithub` was already called synchronously and
+ * the caller can safely proceed with PR cache hydration without racing
+ * against an async auth path that would re-`initGithub` (and therefore
+ * re-`prCache.clear()`) after hydration.
+ *
+ * Returns `false` when `cfg.auth_method` is unset (auto-detect), so the
+ * caller knows to fire the async auto-detect path.
+ *
+ * The PAT branch is async-but-awaited-by-caller only because it needs to
+ * read the keychain; this is still synchronous *relative to the rest of
+ * bootstrap* — hydratePrCache is awaited after it. This keeps the
+ * invariant that for any explicit method, initGithub runs before
+ * hydratePrCache and no second initGithub fires later.
+ */
+async function syncInitAuthFromConfig(
   cfg: AppConfig,
   setGithubAuthStatus: (s: 'missing' | 'checking' | 'valid' | 'invalid') => void,
   setAuthMethod: (m: AuthMethod) => void,
   cancelled: { current: boolean },
-): Promise<void> {
-  // Helper: after auth is established, validate and kick a refresh so the
-  // first load gets PR data without waiting a full poll interval. The
-  // refresh is gated on `dataRepoPath` (not just `repo`) so it only fires
-  // after the initial fetch + refresh cycle has committed data. Without
-  // this, a fast auth detection could trigger refreshOnce() between
-  // setRepo() and runFetchOnce(), committing a snapshot derived from stale
-  // origin/* refs — the shimmer would lift on pre-fetch data until the
-  // fetch-corrected refresh lands. When auth resolves before the fetch,
-  // the extra tick is harmlessly skipped: initGithub() already ran
-  // synchronously, so the fetch's own chained refreshOnce has the
-  // transport set and picks up PR data on its own.
-  const validateAndRefresh = () => {
-    setGithubAuthStatus('checking');
-    void validateToken().then((status) => {
-      if (cancelled.current) return;
-      setGithubAuthStatus(status);
-      if (status === 'valid' && useRepoStore.getState().dataRepoPath) {
-        void refreshOnce();
-      }
-    });
-  };
-
-  // If user has explicitly chosen an auth method, honor it.
+): Promise<boolean> {
   if (cfg.auth_method === 'gh-cli') {
     initGithub('gh-cli');
     setAuthMethod('gh-cli');
     void setGitAuthMethod('gh-cli');
-    validateAndRefresh();
-    return;
+    validateAndRefresh(setGithubAuthStatus, cancelled);
+    return true;
   }
 
   if (cfg.auth_method === 'pat') {
     const keychainToken = await tryKeychainToken();
-    if (cancelled.current) return;
+    if (cancelled.current) return true;
     const token = keychainToken || cfg.github_token || '';
     if (token) {
       initGithub('pat', token);
       setAuthMethod('pat');
       void setGitAuthMethod('pat', token);
-      validateAndRefresh();
-      return;
+      validateAndRefresh(setGithubAuthStatus, cancelled);
+      return true;
     }
     // Explicit PAT preference but no token found — fall through to 'none'
     // rather than auto-detect, so the user's explicit choice is respected.
@@ -125,7 +121,7 @@ async function detectAndInitAuth(
     setAuthMethod('none');
     void setGitAuthMethod('none');
     setGithubAuthStatus('missing');
-    return;
+    return true;
   }
 
   if (cfg.auth_method === 'none') {
@@ -133,9 +129,48 @@ async function detectAndInitAuth(
     setAuthMethod('none');
     void setGitAuthMethod('none');
     setGithubAuthStatus('missing');
-    return;
+    return true;
   }
 
+  return false;
+}
+
+// Helper: after auth is established, validate and kick a refresh so the
+// first load gets PR data without waiting a full poll interval. The
+// refresh is gated on `dataRepoPath` (not just `repo`) so it only fires
+// after the initial fetch + refresh cycle has committed data. Without
+// this, a fast auth detection could trigger refreshOnce() between
+// setRepo() and runFetchOnce(), committing a snapshot derived from stale
+// origin/* refs — the shimmer would lift on pre-fetch data until the
+// fetch-corrected refresh lands. When auth resolves before the fetch,
+// the extra tick is harmlessly skipped: initGithub() already ran
+// synchronously, so the fetch's own chained refreshOnce has the
+// transport set and picks up PR data on its own.
+function validateAndRefresh(
+  setGithubAuthStatus: (s: 'missing' | 'checking' | 'valid' | 'invalid') => void,
+  cancelled: { current: boolean },
+) {
+  setGithubAuthStatus('checking');
+  void validateToken().then((status) => {
+    if (cancelled.current) return;
+    setGithubAuthStatus(status);
+    if (status === 'valid' && useRepoStore.getState().dataRepoPath) {
+      void refreshOnce();
+    }
+  });
+}
+
+/**
+ * Async auto-detect path. ONLY runs when `cfg.auth_method` is unset —
+ * i.e. `syncInitAuthFromConfig` returned `false`. Must not be called for
+ * explicit-method configs: doing so would re-invoke `initGithub`, which
+ * triggers `prCache.clear()` and would wipe just-hydrated entries.
+ */
+async function autoDetectAndInitAuth(
+  setGithubAuthStatus: (s: 'missing' | 'checking' | 'valid' | 'invalid') => void,
+  setAuthMethod: (m: AuthMethod) => void,
+  cancelled: { current: boolean },
+): Promise<void> {
   // Auto-detect: try gh CLI first (preferred default)
   const ghAvailable = await detectGhCli();
   if (cancelled.current) return;
@@ -145,7 +180,7 @@ async function detectAndInitAuth(
     void setGitAuthMethod('gh-cli');
     // Persist so subsequent launches skip the subprocess detection.
     void updateConfig({ auth_method: 'gh-cli' }).catch(() => {});
-    validateAndRefresh();
+    validateAndRefresh(setGithubAuthStatus, cancelled);
     return;
   }
 
@@ -158,7 +193,7 @@ async function detectAndInitAuth(
     void setGitAuthMethod('pat', keychainToken);
     // Persist so subsequent launches skip the detection cascade.
     void updateConfig({ auth_method: 'pat' }).catch(() => {});
-    validateAndRefresh();
+    validateAndRefresh(setGithubAuthStatus, cancelled);
     return;
   }
 
@@ -230,10 +265,26 @@ export function useRepoBootstrap() {
         }
         const cfg = await invoke<AppConfig>('read_config');
 
-        // Auth detection cascade — fire-and-forget so it doesn't block the
-        // UI boot. The core worktree/branch data doesn't need auth; the auth
-        // pill updates once detection settles.
-        void detectAndInitAuth(cfg, setGithubAuthStatus, setAuthMethod, cancelledRef);
+        // Auth bootstrap, explicit-method branch: handle SYNCHRONOUSLY
+        // before hydratePrCache so that `initGithub` (and any
+        // `prCache.clear()` it triggers on method change) fires before we
+        // seed the in-memory cache from disk. If this ran fire-and-forget
+        // alongside hydratePrCache, a late-resolving initGithub could wipe
+        // just-hydrated (and still-warm) merged PR entries, silently
+        // regressing the PR-cache invalidation work.
+        const handledSync = await syncInitAuthFromConfig(
+          cfg,
+          setGithubAuthStatus,
+          setAuthMethod,
+          cancelledRef,
+        );
+        // If no explicit method was configured, kick the async auto-detect
+        // path fire-and-forget — it doesn't block the UI boot, and it
+        // intentionally runs AFTER hydratePrCache so the initial gh-cli/PAT
+        // detection doesn't clear the cache we're about to populate.
+        if (!handledSync) {
+          void autoDetectAndInitAuth(setGithubAuthStatus, setAuthMethod, cancelledRef);
+        }
 
         // Mirror the Rust default (config.rs default_interval = 15_000) and the
         // store default. The previous `|| 5000` silently undermined the

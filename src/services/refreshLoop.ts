@@ -193,16 +193,18 @@ async function runRefreshOnce(): Promise<void> {
 
     // Targeted PR cache invalidation. When `origin/<defaultBranch>` brings
     // new (#N) tagged commits since our last snapshot, soft-expire just
-    // those per-PR cache entries AND hard-clear the open-PR list cache so
+    // those per-PR cache entries AND hard-delete the open-PR list cache so
     // detectSquashMerges' batchFetchPRs and the openPRs fetch below both
     // refetch fresh data on this same tick. Without per-PR expiry, a
     // background fetch brings in the squash commit but the detector still
     // serves the cached `state: 'open'` PRInfo (5min TTL); without
     // open-list invalidation, `listOpenPRsForBranches` returns the just-
-    // merged PR as still-open (60s TTL) and the `state: rest.state` clamp
-    // below stamps it back to `'open'`, defeating the per-PR refresh —
-    // detectSquashMerges then skips squash-tagging because the PR looks
-    // open. So both caches must drop together.
+    // merged PR as still-open (60s TTL), detectSquashMerges then skips
+    // squash-tagging because the PR looks open. The open-list drop is
+    // hard (not soft-expire) because a transport failure on the refetch
+    // would otherwise serve the pre-merge list via getStale() — and
+    // batchFetchPRs's authoritative state now reaches the branch row
+    // unclobbered, so a once-merged PR shows as merged on this tick.
     // Read prevMainCommits fresh: `loadRepoAtPath` (in repoSelect.ts)
     // calls `setMainCommits([])` directly during a repo switch and can
     // race the awaits above. `refreshInFlight` dedupe rules out another
@@ -224,7 +226,16 @@ async function runRefreshOnce(): Promise<void> {
           }
         }
         if (newNumbers.length > 0) {
-          invalidateOpenPrListCache(remote.owner, remote.name);
+          // Hard-delete (not soft-expire) here: we have positive proof the
+          // cached open-PR list is wrong — the (#N) tag just landed on
+          // origin/<defaultBranch>, so PR #N is merged, not open. Letting
+          // `listOpenPRsForBranches`'s `getStale()` fallback re-serve the
+          // pre-merge list on a transport failure would re-stamp the PR as
+          // 'open' and defeat squash-detection on this tick. The other two
+          // invalidation call sites (join-branch, post-fetch) stay as soft
+          // expire — their stale-fallback IS net-right for generic TTL
+          // refreshes where we don't have merge proof.
+          invalidateOpenPrListCache(remote.owner, remote.name, { hard: true });
           expirePrEntriesByNumbers(remote.owner, remote.name, newNumbers);
         }
       }
@@ -263,9 +274,14 @@ async function runRefreshOnce(): Promise<void> {
       for (const [branchName, rest] of openPRs) {
         const full = enriched.get(rest.number);
         if (full) {
-          // GraphQL `state` is "open" here by design (we only queried numbers from
-          // the open list), but keep the REST-side state to be safe.
-          openPRs.set(branchName, { ...full, state: rest.state });
+          // Trust batchFetchPRs' state: the open-PR list can be stale (60s
+          // TTL plus soft-expire getStale fallback) and unconditionally
+          // stamps 'open' on every entry it returns. Preserving the REST
+          // state would mask merged PRs as still-open on this tick,
+          // blocking detectSquashMerges's hasOpenPR guard and its cherry-
+          // fallback filter. batchFetchPRs (graphqlNodeToPRInfo) derives
+          // state from node.merged/node.state, so it is authoritative.
+          openPRs.set(branchName, full);
         }
       }
     }
@@ -570,7 +586,7 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
         // Capture the repo the in-flight fetch is pulling BEFORE we await
         // — the in-flight's finally will null it out as it resolves.
         const inFlightPath = fetchInFlightRepoPath;
-        void refreshOnce({ userInitiated: true });
+        const joinOptimisticP = refreshOnce({ userInitiated: true });
         await fetchInFlightPromise.catch(() => {});
         // If the store's repo differs from what the in-flight fetch was
         // pulling — either because `loadRepoAtPath` flipped the store before
@@ -587,6 +603,7 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
         if (repoSwitched) {
           await runFetchOnce(opts);
         } else {
+          await joinOptimisticP;
           await refreshOnce(opts);
         }
       } finally {
@@ -808,7 +825,10 @@ async function runNarrowPrRefresh(
       const enriched = await batchFetchPRs(repo.owner, repo.name, numbers);
       for (const [branchName, rest] of openPRs) {
         const full = enriched.get(rest.number);
-        if (full) openPRs.set(branchName, { ...full, state: rest.state });
+        // Trust batchFetchPRs' state — see the matching comment in
+        // runRefreshOnce. Preserving rest.state ('open') would mask a
+        // merged PR returned by GraphQL as still-open.
+        if (full) openPRs.set(branchName, full);
       }
     }
 
@@ -900,6 +920,22 @@ export function setRepoAndRefresh(
 ): void {
   useRepoStore.getState().setRepo(repo);
   void refreshOnce(opts ?? { userInitiated: true });
+}
+
+// Variant of setRepoAndRefresh that kicks a user-initiated fetch instead of a
+// plain refresh. Use this on runtime repo switches where re-entering a repo
+// must also pull remote refs — a squash that landed on the remote while we
+// were on a different repo otherwise wouldn't appear in `mainCommits` until
+// the next 60s background fetch tick. `runFetchOnce` with `userInitiated:
+// true` fires its own synchronous optimistic `refreshOnce` before awaiting
+// the fetch, which preserves the same synchronous-follow-up contract the
+// CONTRACT comment on `setRepoAndRefresh` documents.
+export function setRepoAndFetch(
+  repo: RepoState,
+  opts?: RefreshOptions,
+): void {
+  useRepoStore.getState().setRepo(repo);
+  void runFetchOnce(opts ?? { userInitiated: true });
 }
 
 // Test-only: reset all module-level state between tests. Without this, a
