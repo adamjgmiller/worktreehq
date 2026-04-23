@@ -752,6 +752,85 @@ describe('runFetchOnce skip-when-unchanged', () => {
     await userClick;
   });
 
+  it('repo switch while a background fetch is in-flight fires a real fetch for the new repo', async () => {
+    // Regression test for super-code-review item #7. Before this fix,
+    // `loadRepoAtPath` firing `runFetchOnce({ userInitiated: true })` while
+    // a background fetch for the OLD repo was still in-flight would silently
+    // join that fetch — waiting out its drain but never actually running
+    // `fetchAllPrune` for the NEW repo. A squash that landed on the new
+    // repo's remote wouldn't appear in `mainCommits` until the next 60s
+    // background tick. The join branch now detects the repo mismatch after
+    // the drain and recurses so the new repo gets a real fetch.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repoA', defaultBranch: 'main', owner: 'o', name: 'a' },
+    });
+    // Repo A's fetch hangs until we release it, so the user-initiated call
+    // lands on the in-flight branch. Repo B's fetch resolves immediately.
+    let releaseA: () => void = () => {};
+    asMock(git.fetchAllPrune).mockImplementation((path: string) => {
+      if (path === '/tmp/repoA') {
+        return new Promise<void>((r) => { releaseA = () => r(); });
+      }
+      return Promise.resolve();
+    });
+
+    const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    // Background tick fires for repo A.
+    const bgFetch = runFetchOnce();
+    for (let i = 0; i < 3; i++) await tick();
+    expect(asMock(git.fetchAllPrune)).toHaveBeenCalledWith('/tmp/repoA');
+
+    // Simulate loadRepoAtPath: flip the store to repo B, then fire the
+    // user-initiated fetch that lands on the in-flight branch.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repoB', defaultBranch: 'main', owner: 'o', name: 'b' },
+    });
+    const userFetch = runFetchOnce({ userInitiated: true });
+    for (let i = 0; i < 3; i++) await tick();
+
+    // Release repo A's fetch. The join branch's post-drain mismatch check
+    // should now recurse into runFetchOnce for repo B — fetchAllPrune must
+    // be called for BOTH paths, not just A.
+    releaseA();
+    await bgFetch;
+    await userFetch;
+
+    const calls = asMock(git.fetchAllPrune).mock.calls.map((c) => c[0]);
+    expect(calls).toContain('/tmp/repoA');
+    expect(calls).toContain('/tmp/repoB');
+  });
+
+  it('same-repo click joining an in-flight fetch does NOT trigger a redundant recursive fetch', async () => {
+    // Guard for the mismatch-detection fix above: when the user clicks
+    // refresh while a background fetch for the SAME repo is in-flight, the
+    // join branch's post-drain repo-path check should be a no-op — we must
+    // not fire a second fetchAllPrune against the same remote on every
+    // rapid click.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    let releaseBg: () => void = () => {};
+    asMock(git.fetchAllPrune).mockImplementation(
+      () => new Promise<void>((r) => { releaseBg = () => r(); }),
+    );
+
+    const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    const bgFetch = runFetchOnce();
+    for (let i = 0; i < 3; i++) await tick();
+
+    const userClick = runFetchOnce({ userInitiated: true });
+    for (let i = 0; i < 3; i++) await tick();
+
+    releaseBg();
+    await bgFetch;
+    await userClick;
+
+    // Exactly one fetchAllPrune — the original in-flight background fetch.
+    expect(asMock(git.fetchAllPrune)).toHaveBeenCalledTimes(1);
+  });
+
   it('narrow pass is a no-op when the repo has no GitHub owner/name', async () => {
     // Non-GitHub remote (or remote that couldn't be resolved to an
     // owner/name pair). The narrow pass short-circuits before issuing

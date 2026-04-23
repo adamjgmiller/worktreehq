@@ -103,6 +103,14 @@ let fetchInFlight = false;
 // Promise mirror of `fetchInFlight` so user-initiated callers that land on a
 // background fetch can join it and then chain their own follow-up refresh.
 let fetchInFlightPromise: Promise<void> | null = null;
+// The repo path whose remote the in-flight fetch is pulling. Used by the
+// join branch to detect a repo switch during the drain: if the user called
+// `loadRepoAtPath` while a fetch for a DIFFERENT repo was in-flight, the old
+// `fetchAllPrune` pulled the wrong remote's refs and the new repo has no
+// real fetch yet. On mismatch the join branch recurses into `runFetchOnce`
+// (which now sees `fetchInFlight === false` because the old one's finally
+// cleared it) so the new repo actually fetches.
+let fetchInFlightRepoPath: string | null = null;
 
 // Single in-flight refresh promise. Callers that land during an active refresh
 // await the same work rather than kicking off a second one. Without this the
@@ -530,6 +538,14 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     // in-flight fetch and then still run a user-initiated refresh so the
     // user's click produces the feedback (and post-fetch refresh) they
     // expect. Background calls during an in-flight fetch remain dropped.
+    //
+    // Special case: repo switch during an in-flight fetch. If
+    // `loadRepoAtPath` fired us while a background (or prior user) fetch
+    // was still pulling a DIFFERENT repo, joining that fetch means the
+    // new repo's remote never actually got pulled — the user would be
+    // staring at local-only refs for the new repo until the next 60s
+    // background tick. Detect the mismatch after the drain and recurse
+    // so a real fetchAllPrune fires for the current repo.
     if (userInitiated && fetchInFlightPromise) {
       // Hold the spinner for the whole click via the module-level refcount.
       // The optimistic and post-fetch refreshOnce calls each hold+release
@@ -551,9 +567,28 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
           invalidateOpenPrListCache(joinRepo.owner, joinRepo.name);
           invalidatePrCacheForRepo(joinRepo.owner, joinRepo.name);
         }
+        // Capture the repo the in-flight fetch is pulling BEFORE we await
+        // — the in-flight's finally will null it out as it resolves.
+        const inFlightPath = fetchInFlightRepoPath;
         void refreshOnce({ userInitiated: true });
         await fetchInFlightPromise.catch(() => {});
-        await refreshOnce(opts);
+        // If the store's repo differs from what the in-flight fetch was
+        // pulling — either because `loadRepoAtPath` flipped the store before
+        // calling us, or because a repo switch raced us during the drain —
+        // the in-flight fetch pulled the wrong remote. Recurse so the current
+        // repo gets a real fetch. The old fetch's finally has already cleared
+        // `fetchInFlight` by the time we get here, so this recursion lands in
+        // the "actually fetch" path rather than re-entering the join branch.
+        const currentRepo = useRepoStore.getState().repo;
+        const repoSwitched =
+          inFlightPath !== null &&
+          currentRepo !== null &&
+          currentRepo.path !== inFlightPath;
+        if (repoSwitched) {
+          await runFetchOnce(opts);
+        } else {
+          await refreshOnce(opts);
+        }
       } finally {
         releaseSpinner();
       }
@@ -563,6 +598,7 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   const { repo, setFetching, setLastFetchError, setError } = useRepoStore.getState();
   if (!repo) return;
   fetchInFlight = true;
+  fetchInFlightRepoPath = repo.path;
   setFetching(true);
   // Hold the spinner via the refcount for the full click. holdSpinner
   // flips userRefreshing ON if nothing else is holding it; any inner
@@ -703,6 +739,7 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     setFetching(false);
     fetchInFlight = false;
     fetchInFlightPromise = null;
+    fetchInFlightRepoPath = null;
     // Release the spinner claim in the same finally as setFetching so
     // the grid's grey-out and the RepoBar spinner stop together. The
     // refcount ensures that if another caller (e.g. a second rapid
@@ -874,6 +911,7 @@ export function _resetRefreshLoopForTests(): void {
   pendingBackgroundRefresh = false;
   fetchInFlight = false;
   fetchInFlightPromise = null;
+  fetchInFlightRepoPath = null;
   spinnerHolders = 0;
   running = false;
   if (timer) clearTimeout(timer);
