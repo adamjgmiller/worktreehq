@@ -1091,7 +1091,7 @@ describe('expireOpenPrEntries', () => {
     expect(r4.get(4)?.state).toBe('merged');
   });
 
-  it('is a no-op when no open entries are cached', async () => {
+  it('is a no-op when only merged entries are cached', async () => {
     graphqlMock.mockResolvedValueOnce(mergedPRResponse(2));
     await batchFetchPRs('o', 'r', [2]);
 

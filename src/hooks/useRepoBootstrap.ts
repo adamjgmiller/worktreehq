@@ -318,15 +318,17 @@ export function useRepoBootstrap() {
         // older config so the list is non-empty for upgraders.
         setRecentRepoPaths(cfg.recent_repo_paths ?? []);
         await hydratePrCache();
-        // Soft-expire any rehydrated PR entries still in `state: 'open'`.
-        // The cache is persisted with original timestamps, so anything
-        // cached more than 5 min before quit auto-expires on first read,
-        // but entries cached within the 5-min TTL window come back warm-
-        // and-stale. A PR that was open when we quit but merged on
-        // github.com before relaunch would otherwise serve cached
-        // `state: 'open'` to detectSquashMerges and the squash-merged
-        // classification would lag until the TTL caught up. Terminal
-        // states (`merged`, `closed`) never transition — leave them.
+        // Soft-expire any rehydrated PR entries in a non-terminal state
+        // (`open` or `closed`). The cache is persisted with original
+        // timestamps, so anything cached more than 5 min before quit
+        // auto-expires on first read, but entries cached within the 5-min
+        // TTL window come back warm-and-stale. A PR that was open when we
+        // quit but merged on github.com before relaunch would otherwise
+        // serve cached `state: 'open'` to detectSquashMerges and the
+        // squash-merged classification would lag until the TTL caught up;
+        // the analogous reopen→merge case applies to cached `closed`
+        // entries (GitHub allows reopening closed PRs and then merging
+        // them). Only `merged` is truly terminal — leave those warm.
         expireOpenPrEntries();
 
         // Prefer the head of the MRU list; fall back to last_repo_path for
