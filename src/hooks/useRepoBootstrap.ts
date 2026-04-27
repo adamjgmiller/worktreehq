@@ -85,10 +85,13 @@ interface RepoInfo {
  * caller knows to fire the async auto-detect path.
  *
  * The PAT branch is async-but-awaited-by-caller only because it needs to
- * read the keychain; this is still synchronous *relative to the rest of
- * bootstrap* — hydratePrCache is awaited after it. This keeps the
- * invariant that for any explicit method, initGithub runs before
- * hydratePrCache and no second initGithub fires later.
+ * read the keychain. The caller dispatches this as a detached promise so
+ * the synchronous config store-setters (refresh/fetch interval, zoom,
+ * theme, recents) can run in parallel, then awaits the resulting chain
+ * (this function plus, on `false`, autoDetectAndInitAuth) before
+ * hydratePrCache. This keeps the invariant that for any explicit method,
+ * initGithub runs before hydratePrCache and no second initGithub fires
+ * later.
  */
 async function syncInitAuthFromConfig(
   cfg: AppConfig,
