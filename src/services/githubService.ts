@@ -157,9 +157,21 @@ export function hydratePrCache(): Promise<void> {
       if (parsed.version !== 1 || !parsed.entries) return;
       const now = Date.now();
       for (const [k, v] of Object.entries(parsed.entries)) {
+        // Upgrade-compat: pre-fix versions of `expire()` zeroed `at` without
+        // snapshotting it onto `expiredAt`, so a disk blob written by those
+        // versions can carry `at: 0` for any state. Re-stamp those entries
+        // with a synthetic plausible timestamp before insert — old enough
+        // that `get()` still misses (forcing refetch), recent enough that
+        // STALE_OPEN_PR_MS-based filters treat them as fresh-ish, and crucially
+        // non-zero so `schedulePersist` round-trips them to disk instead of
+        // dropping them. Applies uniformly to open/closed/merged entries —
+        // open ones still get the STALE_OPEN_PR_MS check below against the
+        // synthetic stamp (which is half-staleness-window old by construction,
+        // so they survive).
+        const at = v.at === 0 ? now - Math.floor(STALE_OPEN_PR_MS / 2) : v.at;
         const isOpen = v.pr?.state === 'open';
-        if (isOpen && now - v.at > STALE_OPEN_PR_MS) continue;
-        prCache.setWithTimestamp(k, v.pr, v.at);
+        if (isOpen && now - at > STALE_OPEN_PR_MS) continue;
+        prCache.setWithTimestamp(k, v.pr, at);
       }
       // setWithTimestamp intentionally skips the FIFO trim (cacheUtils.ts:57)
       // so callers can bulk-load without per-entry overhead. Trim once here

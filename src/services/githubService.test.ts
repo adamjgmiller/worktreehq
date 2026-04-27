@@ -1297,4 +1297,77 @@ describe('schedulePersist preserves soft-expired entries on disk (F003/F021 regr
       vi.useRealTimers();
     }
   });
+
+  it('upgrade-compat: rehydrated `at: 0` entries from a pre-fix release are not silently dropped on the next persist', async () => {
+    // Round-9 F003: a pre-fix release's `expire()` zeroed `at` without
+    // snapshotting it onto `expiredAt`, so a disk blob written by that
+    // release carries `{at: 0, pr: <merged-pr>}`. With the new
+    // `persistAt = entry.expiredAt ?? entry.at` rule in schedulePersist,
+    // any rehydrated legacy at:0 entry resolves to `null ?? 0 = 0` and
+    // gets dropped by the `if (persistAt === 0) continue` guard — silently
+    // wiping mergeTimeHeadSha off disk on the first post-upgrade persist.
+    //
+    // Fix lives in hydratePrCache: when v.at === 0 (legacy disk shape),
+    // re-stamp it with `Date.now() - Math.floor(STALE_OPEN_PR_MS / 2)` so
+    // the entry enters the cache with a synthetic-but-non-zero timestamp.
+    // schedulePersist then writes a real number, and the legacy entry
+    // round-trips cleanly across the upgrade boundary.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-04-01T00:00:00Z'));
+      // Synthetic pre-fix disk blob: at:0 + merged PR with full freeze
+      // metadata (mergeTimeHeadSha + observedLive=true). This is exactly
+      // what release 49581fe would have written after a user-initiated
+      // refresh that soft-expired the entry.
+      const legacyBlob = JSON.stringify({
+        version: 1,
+        entries: {
+          'o/r#42': {
+            at: 0,
+            pr: {
+              number: 42,
+              title: 'PR 42',
+              state: 'merged',
+              mergeCommitSha: 'merge-42',
+              headRef: 'feat/42',
+              headSha: 'merge-tip',
+              mergeTimeHeadSha: 'merge-tip',
+              mergeTimeHeadShaObservedLive: true,
+              url: 'https://github.com/o/r/pull/42',
+            },
+          },
+        },
+      });
+      readPrCacheFileMock.mockResolvedValueOnce(legacyBlob);
+      await hydratePrCache();
+
+      // Trigger schedulePersist via batchFetchPRs on an UNRELATED PR. The
+      // fetch path calls schedulePersist() unconditionally at its tail
+      // (githubService.ts:460), so this works even though o/r#42 itself
+      // isn't being refetched.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(100, 'merge-tip-100'));
+      await batchFetchPRs('x', 'y', [100]);
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(writePrCacheFileMock).toHaveBeenCalled();
+      const calls = writePrCacheFileMock.mock.calls;
+      const payload = JSON.parse(calls[calls.length - 1][0] as string);
+      // Legacy at:0 entry survives the upgrade — present on disk with a
+      // non-zero timestamp and freeze metadata intact.
+      expect(payload.entries['o/r#42']).toBeDefined();
+      expect(payload.entries['o/r#42'].at).not.toBe(0);
+      // Synthetic timestamp lands at Date.now() - STALE_OPEN_PR_MS/2 ≈
+      // 3.5 days ago. We don't assert exact value (it's an implementation
+      // detail of the clamp), only that it's a plausible recent timestamp:
+      // strictly less than now and strictly greater than a year ago.
+      const now = Date.parse('2026-04-01T00:00:00Z');
+      expect(payload.entries['o/r#42'].at).toBeGreaterThan(now - 365 * 24 * 60 * 60 * 1000);
+      expect(payload.entries['o/r#42'].at).toBeLessThan(now);
+      // Freeze + observedLive survive the round-trip.
+      expect(payload.entries['o/r#42'].pr.mergeTimeHeadSha).toBe('merge-tip');
+      expect(payload.entries['o/r#42'].pr.mergeTimeHeadShaObservedLive).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

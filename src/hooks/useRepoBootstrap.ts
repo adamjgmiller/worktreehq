@@ -271,34 +271,35 @@ export function useRepoBootstrap() {
         }
         const cfg = await invoke<AppConfig>('read_config');
 
-        // Auth bootstrap: handle explicit `auth_method` SYNCHRONOUSLY before
-        // hydratePrCache so that `initGithub` (and any `prCache.clear()` it
-        // triggers on method change) fires before we seed the in-memory
-        // cache from disk. If this ran fire-and-forget alongside
-        // hydratePrCache, a late-resolving initGithub could wipe just-
-        // hydrated (and still-warm) merged PR entries, silently regressing
-        // the PR-cache invalidation work. The auto-detect branch below is
-        // awaited for the same reason.
-        const handledSync = await syncInitAuthFromConfig(
+        // Auth bootstrap: kick off detection as a DETACHED promise so the
+        // synchronous store-setters below (refresh/fetch interval, zoom,
+        // theme, recents) can dispatch immediately — auth detection is
+        // bounded by detectGhCli's subprocess timeout (~3s on first launch)
+        // and the keychain read for the explicit-PAT path, both of which
+        // would otherwise block the entire bootstrap critical path before
+        // any UI-driving config landed in the store.
+        //
+        // The invariant we MUST preserve: `initGithub` (and any
+        // `prCache.clear()` it triggers on auth-method change) fires BEFORE
+        // hydratePrCache seeds the in-memory cache from disk. Otherwise a
+        // late-resolving initGithub would wipe just-hydrated (and
+        // still-warm) merged PR entries, silently regressing the PR-cache
+        // invalidation work. We enforce this by awaiting `authDone` right
+        // before `hydratePrCache()` below.
+        //
+        // The auto-detect branch is reached only when `cfg.auth_method` is
+        // unset; on subsequent launches it persists `auth_method` so the
+        // sync branch handles it.
+        const authDone = syncInitAuthFromConfig(
           cfg,
           setGithubAuthStatus,
           setAuthMethod,
           cancelledRef,
+        ).then((handledSync) =>
+          handledSync
+            ? null
+            : autoDetectAndInitAuth(setGithubAuthStatus, setAuthMethod, cancelledRef),
         );
-        // If no explicit method was configured, await the async auto-detect
-        // path BEFORE hydratePrCache. `initGithub` in the auto-detect path
-        // transitions from the default 'none' to 'gh-cli' or 'pat' on first
-        // launch, which triggers `prCache.clear()` in githubService — if we
-        // fired this fire-and-forget, a late-resolving detection could wipe
-        // the entries we just hydrated from disk. Awaiting here mirrors the
-        // invariant the explicit-method branch already preserves
-        // (initGithub-before-hydrate). Cost: bounded by detectGhCli's
-        // internal timeout; subsequent launches take the sync path since
-        // auto-detect persists `auth_method` on success.
-        if (!handledSync) {
-          await autoDetectAndInitAuth(setGithubAuthStatus, setAuthMethod, cancelledRef);
-          if (cancelled) return;
-        }
 
         // Mirror the Rust default (config.rs default_interval = 15_000) and the
         // store default. The previous `|| 5000` silently undermined the
@@ -317,6 +318,19 @@ export function useRepoBootstrap() {
         // read it. Rust seeds this from `last_repo_path` on first read of an
         // older config so the list is non-empty for upgraders.
         setRecentRepoPaths(cfg.recent_repo_paths ?? []);
+        // Block on auth before touching prCache: initGithub must run first
+        // so that any prCache.clear() triggered by an auth-method change
+        // happens before hydration seeds the cache from disk. Without this
+        // await, a late-resolving initGithub would wipe just-hydrated
+        // entries.
+        await authDone;
+        // Single cancellation guard covering both branches of the auth
+        // pipeline (explicit syncInitAuthFromConfig including its
+        // tryKeychainToken await, and the auto-detect autoDetectAndInitAuth
+        // path). If cleanup ran during either await, bail out before
+        // touching the store, the persisted PR cache, or scheduling any
+        // intervals.
+        if (cancelled) return;
         await hydratePrCache();
         // Soft-expire any rehydrated PR entries in a non-terminal state
         // (`open` or `closed`). The cache is persisted with original
