@@ -9,21 +9,7 @@
 
 > v0.x — early, actively developed. Currently builds from source; pre-built binaries are not yet provided.
 
-<!-- 
-  DEMO VIDEO — replace this placeholder after uploading your .mp4:
-  1. Open any GitHub issue comment box on this repo
-  2. Drag-and-drop your video file to upload it
-  3. Copy the resulting https://github.com/user-attachments/assets/... URL
-  4. Replace this entire comment block and the paragraph below with:
-  
-  <video src="YOUR_VIDEO_URL" width="100%" autoplay loop muted playsinline></video>
-
-  For a non-GitHub fallback (npm, crates.io, etc.), wrap it in a link with a thumbnail:
-  <a href="YOUR_VIDEO_URL">
-    <img src="YOUR_THUMBNAIL_URL" alt="WorktreeHQ demo" width="100%">
-  </a>
--->
-<p align="center"><em>Demo video coming soon</em></p>
+https://github.com/user-attachments/assets/31080d9f-283e-4c83-856d-a1b14b9a2d26
 
 > **[See all screenshots &rarr;](./SCREENSHOTS.md)** — light and dark themes, tabs, bulk operations, and more.
 
