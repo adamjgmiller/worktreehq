@@ -507,28 +507,16 @@ function openPrListCacheKey(owner: string, repo: string): string {
   return `${owner}/${repo}`;
 }
 
-export function invalidateOpenPrListCache(
-  owner?: string,
-  repo?: string,
-  opts?: { hard?: boolean },
-): void {
-  // Soft-expire the targeted entry by default (vs hard-delete) so
+export function invalidateOpenPrListCache(owner?: string, repo?: string): void {
+  // Soft-expire the targeted entry (vs hard-delete) so
   // `listOpenPRsForBranches`'s catch path can still recover the prior value
-  // via `getStale()` on a flaky network. With `delete()`, a single failed
-  // refetch right after invalidate would wipe every branch's open-PR data
-  // for the tick. The bulk variant (no args) still hard-clears: it's used on
-  // auth switch where serving a stale entry from the previous identity would
-  // be wrong.
-  //
-  // `hard: true` forces a delete instead of a soft expire. Callers that have
-  // positive proof the cached list is wrong (e.g. a new (#N) commit on main
-  // proves the referenced PR is merged, not open) MUST pass this — allowing
-  // `getStale()` to serve the pre-merge list back on a transport failure
-  // would re-stamp the merged PR as 'open' and defeat squash detection on
-  // the current tick.
+  // via `getStale()` on a flaky network. A `delete()` here would mean a
+  // single failed refetch right after invalidate wipes every branch's
+  // open-PR data for the tick. The bulk variant (no args) hard-clears via
+  // `clear()`: it's used on auth switch where serving a stale entry from
+  // the previous identity would be wrong.
   if (owner && repo) {
-    if (opts?.hard) openPrListCache.delete(openPrListCacheKey(owner, repo));
-    else openPrListCache.expire(openPrListCacheKey(owner, repo));
+    openPrListCache.expire(openPrListCacheKey(owner, repo));
   } else {
     openPrListCache.clear();
   }

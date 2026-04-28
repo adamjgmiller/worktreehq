@@ -1373,13 +1373,12 @@ describe('schedulePersist preserves soft-expired entries on disk (F003/F021 regr
 });
 
 describe('initGithub cancels pending persist debounce on auth change (F022 regression)', () => {
-  // Regression test for F022: setAuthMethod (and the legacy initGithub
-  // auth-switch path) called prCache.clear() without cancelling
-  // persistDebounce. A schedulePersist armed by a fetch that landed
-  // ≤500ms before the auth change would fire AFTER the clear, iterate
-  // the now-empty prCache, and atomic_write `entries: {}` to disk —
-  // wiping prior session's PR data even though that data is identifier-
-  // keyed and not token-keyed.
+  // Regression test for F022: the initGithub auth-switch path called
+  // prCache.clear() without cancelling persistDebounce. A schedulePersist
+  // armed by a fetch that landed ≤500ms before the auth change would
+  // fire AFTER the clear, iterate the now-empty prCache, and atomic_write
+  // `entries: {}` to disk — wiping prior session's PR data even though
+  // that data is identifier-keyed and not token-keyed.
   //
   // Fix: clearTimeout(persistDebounce) inside the auth-change branch
   // BEFORE clearing the in-memory caches. Result: disk state is left
