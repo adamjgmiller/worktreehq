@@ -845,16 +845,26 @@ async function runNarrowPrRefresh(
       for (const [branchName, rest] of openPRs) {
         const full = enriched.get(rest.number);
         // Trust batchFetchPRs' state — see the matching comment in
-        // runRefreshOnce. Preserving rest.state ('open') would mask a
-        // merged PR returned by GraphQL as still-open.
+        // runRefreshOnce. Preserving the listOpenPRsForBranches entry
+        // would mask a merged PR returned by GraphQL as still-open.
         //
-        // Skip patching merged PRs in the narrow pass: this path doesn't
-        // re-run detectSquashMerges, so attaching a merged PRInfo to a
-        // branch whose mergeStatus is still 'unmerged' would render a
-        // merged-PR pill on an unmerged branch until the next full
-        // refresh. The full path (runRefreshOnce) handles the same case
-        // safely because detectSquashMerges runs immediately after.
-        if (full && full.state !== 'merged') openPRs.set(branchName, full);
+        // When GraphQL reports the PR is merged, drop the entry from
+        // openPRs entirely instead of attaching a merged PRInfo to the
+        // branch. The narrow pass doesn't re-run detectSquashMerges, so
+        // attaching a merged PRInfo to a branch whose mergeStatus is
+        // still 'unmerged' would render a merged-PR pill on an unmerged
+        // branch until the next full refresh. Deleting the entry causes
+        // the patch loop below to fall through to the existing
+        // `b.pr?.state === 'open'` strip-stale-open branch — which
+        // correctly drops a prior-tick open pill while preserving any
+        // cached merged pill from detectSquashMerges. The full path
+        // (runRefreshOnce) handles the same case safely because
+        // detectSquashMerges runs immediately after.
+        if (full?.state === 'merged') {
+          openPRs.delete(branchName);
+        } else if (full) {
+          openPRs.set(branchName, full);
+        }
       }
     }
 
