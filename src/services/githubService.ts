@@ -277,8 +277,17 @@ function cacheKey(owner: string, repo: string, n: number) {
  *     observedLive=true.
  * The AND covers all three cases: cache-evicted live observation, app-
  * restart rehydrate, and genuine in-process transition. The Set is not
- * persisted, so it dies with the process; both are cleared in lockstep on
- * auth switch and in test teardown.
+ * persisted, so it dies with the process. On auth switch the two structures
+ * diverge intentionally: `liveObservations` is hard-cleared while `prCache`
+ * is soft-expired (entries stay reachable via `getStale()` so prior-identity
+ * timestamps round-trip back to disk through `schedulePersist`, avoiding a
+ * cross-repo wipe). The first post-switch refetch of a previously-cached
+ * newly-merged PR therefore misses the live-transition branch (no Set
+ * membership) and falls through to observedLive=false — correctly fail-
+ * closed, since the prior live observation belonged to a different identity
+ * whose visibility into the PR's open state can't be trusted across the
+ * switch. In test teardown `_clearPrCacheForTests` still clears both in
+ * lockstep (no cross-repo persistence concern there).
  *
  * Cross-invalidation preservation is handled by `invalidatePrCacheForRepo`
  * soft-expiring entries rather than deleting them — `prCache.getStale()`

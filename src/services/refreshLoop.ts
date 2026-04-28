@@ -619,7 +619,7 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
           // branch matches the same-repo path's invariant: by the time
           // runFetchOnce({ userInitiated: true }) returns, every queued
           // user-facing refresh has settled. They run in parallel because
-          // joinOptimisticP started above at line 602 and the recursive
+          // joinOptimisticP started above (the refreshOnce call a few lines up) and the recursive
           // runFetchOnce begins immediately here.
           await Promise.all([joinOptimisticP, runFetchOnce(opts)]);
         } else {
