@@ -61,19 +61,6 @@ interface RepoInfo {
 }
 
 /**
- * Auth detection cascade:
- *   1. Check persisted auth_method preference (handled synchronously by
- *      `syncInitAuthFromConfig`)
- *   2. Try gh CLI (auto-detect; persists to config on success)
- *   3. Try keychain PAT (persists to config on success)
- *   4. Fall back to 'none'
- *
- * When auth is established, triggers an extra refreshOnce() so PR
- * enrichment and squash detection land as soon as auth is ready, rather
- * than waiting for the next 15s poll tick.
- */
-
-/**
  * Synchronous explicit-auth bootstrap. Returns `true` if `cfg.auth_method`
  * was an explicit value (`'gh-cli' | 'pat' | 'none'`) and was handled
  * here — in which case `initGithub` was already called synchronously and

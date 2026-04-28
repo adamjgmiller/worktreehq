@@ -8,7 +8,7 @@
 import { useRepoStore } from '../store/useRepoStore';
 import { invoke, updateConfig } from './tauriBridge';
 import { checkGitAvailable, setGitVersion, getDefaultBranch, getRemoteUrl } from './gitService';
-import { setRepoAndFetch } from './refreshLoop';
+import { setRepoAndFetch, setRepoAndRefresh } from './refreshLoop';
 import { invalidateOpenPrListCache, invalidatePrCacheForRepo } from './githubService';
 import { readWorktreeOrder } from './worktreeOrderService';
 
@@ -142,12 +142,25 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     // `runFetchOnce` before the fetch await, which preserves the
     // synchronous-follow-up contract that runRefreshOnce's repo-switch
     // early return relies on (see the CONTRACT comment in refreshLoop.ts).
-    setRepoAndFetch({
+    // Respect `fetchIntervalMs === 0` so users who explicitly disabled
+    // auto-fetch don't get a surprise network call on every repo switch
+    // (mirrors the bootstrap gate in useRepoBootstrap.ts). When auto-fetch
+    // is disabled we still need to drive the refresh pipeline so the
+    // shimmer lifts on the new repo's data — fall back to
+    // `setRepoAndRefresh`, which also satisfies runRefreshOnce's repo-
+    // switch CONTRACT (a queued refresh must follow a `setRepo` call).
+    const { fetchIntervalMs } = useRepoStore.getState();
+    const repoState = {
       path: info.path,
       defaultBranch,
       owner: remote.owner,
       name: remote.name,
-    });
+    };
+    if (fetchIntervalMs > 0) {
+      setRepoAndFetch(repoState);
+    } else {
+      setRepoAndRefresh(repoState);
+    }
     setError(null);
     // Update the in-memory MRU list immediately so the dropdown re-renders
     // before the config write resolves. The store is the source of truth
