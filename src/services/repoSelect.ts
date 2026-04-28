@@ -132,23 +132,21 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
       invalidatePrCacheForRepo(remote.owner, remote.name);
       invalidateOpenPrListCache(remote.owner, remote.name);
     }
-    // Flip the store, then kick a user-initiated fetch. This replaces the
-    // prior `setRepoAndRefresh` (refresh-only) so re-entering a repo also
-    // pulls remote refs — without it, a squash that landed on the remote
-    // while we were on a different repo wouldn't appear in `mainCommits`
-    // until the next 60s background fetch tick. `runFetchOnce` with
-    // `userInitiated: true` fires its own immediate optimistic
-    // `refreshOnce({ userInitiated: true })` synchronously inside
-    // `runFetchOnce` before the fetch await, which preserves the
-    // synchronous-follow-up contract that runRefreshOnce's repo-switch
-    // early return relies on (see the CONTRACT comment in refreshLoop.ts).
-    // Respect `fetchIntervalMs === 0` so users who explicitly disabled
-    // auto-fetch don't get a surprise network call on every repo switch
-    // (mirrors the bootstrap gate in useRepoBootstrap.ts). When auto-fetch
-    // is disabled we still need to drive the refresh pipeline so the
-    // shimmer lifts on the new repo's data — fall back to
-    // `setRepoAndRefresh`, which also satisfies runRefreshOnce's repo-
-    // switch CONTRACT (a queued refresh must follow a `setRepo` call).
+    // Flip the store, then queue a refresh — using `setRepoAndFetch` when
+    // auto-fetch is enabled so re-entering a repo also pulls remote refs.
+    // Without the fetch, a squash that landed on the remote while we were
+    // on a different repo wouldn't appear in `mainCommits` until the next
+    // 60s background fetch tick. `runFetchOnce` with `userInitiated: true`
+    // fires its own immediate optimistic `refreshOnce({ userInitiated:
+    // true })` synchronously inside `runFetchOnce` before the fetch await,
+    // which preserves the synchronous-follow-up contract that
+    // runRefreshOnce's repo-switch early return relies on (see the
+    // CONTRACT comment in refreshLoop.ts). When `fetchIntervalMs === 0`
+    // (users who explicitly disabled auto-fetch — mirrors the bootstrap
+    // gate in useRepoBootstrap.ts), fall back to `setRepoAndRefresh` so
+    // the shimmer still lifts on the new repo's data without a surprise
+    // network call; that path also satisfies the CONTRACT (a queued
+    // refresh must follow a `setRepo` call).
     const { fetchIntervalMs } = useRepoStore.getState();
     const repoState = {
       path: info.path,
