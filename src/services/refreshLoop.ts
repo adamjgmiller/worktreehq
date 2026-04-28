@@ -201,10 +201,11 @@ async function runRefreshOnce(): Promise<void> {
     // open-list invalidation, `listOpenPRsForBranches` returns the just-
     // merged PR as still-open (60s TTL), detectSquashMerges then skips
     // squash-tagging because the PR looks open.
-    // Read prevMainCommits fresh: `loadRepoAtPath` (in repoSelect.ts)
-    // calls `setMainCommits([])` directly during a repo switch and can
-    // race the awaits above. `refreshInFlight` dedupe rules out another
-    // refresh tick committing here, but not a different-writer reset.
+    // Read prevMainCommits fresh: `loadRepoAtPath` (in repoSelect.ts) and
+    // the `setRepoAndFetch`/`setRepoAndRefresh` wrappers (below) call
+    // `setMainCommits([])` directly during a repo switch and can race the
+    // awaits above. `refreshInFlight` dedupe rules out another refresh
+    // tick committing here, but not a different-writer reset.
     // Skip when prevMainCommits is empty: that's either a first-refresh-
     // of-session or a recovery from a failed prior tick, and the
     // bootstrap's `expireOpenPrEntries()` already covers the boot case.

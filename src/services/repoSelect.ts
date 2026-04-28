@@ -116,9 +116,17 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     // if no mode is persisted but a manual order exists, default to
     // 'manual' so a legacy drag arrangement isn't silently overwritten by
     // the new 'recent' default; otherwise default to 'recent'.
+    // Per-read isolation: order and mode reads are wrapped in separate
+    // try/catch blocks so a successfully-loaded manual order isn't wiped
+    // by a subsequent mode-read failure.
+    let order: string[] = [];
     try {
-      const order = await readWorktreeOrder(info.path);
+      order = await readWorktreeOrder(info.path);
       setWorktreeOrder(order);
+    } catch {
+      setWorktreeOrder([]);
+    }
+    try {
       const savedMode = await readWorktreeSortMode(info.path);
       if (savedMode) {
         setWorktreeSortMode(savedMode);
@@ -128,8 +136,7 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
         setWorktreeSortMode('recent');
       }
     } catch {
-      setWorktreeOrder([]);
-      setWorktreeSortMode('recent');
+      setWorktreeSortMode(order.length > 0 ? 'manual' : 'recent');
     }
     // Soft-expire any cached PR entries for the destination repo BEFORE
     // we flip `repo` and kick the refresh chain. Re-entering a previously-

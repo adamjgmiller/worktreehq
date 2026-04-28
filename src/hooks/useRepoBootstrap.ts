@@ -154,13 +154,14 @@ function validateAndRefresh(
  * Async auto-detect path. ONLY runs when `cfg.auth_method` is unset —
  * i.e. `syncInitAuthFromConfig` returned `false`. Must not be called for
  * explicit-method configs: doing so would re-invoke `initGithub`, which
- * triggers `prCache.clear()` and would wipe just-hydrated entries.
+ * soft-expires every prCache entry and would wipe (force-refetch) just-
+ * hydrated entries.
  *
  * Caller must AWAIT this before `hydratePrCache()` — detection transitions
  * `initGithub` from the module-level default 'none' to 'gh-cli' or 'pat'
- * on first launch, and the method change triggers `prCache.clear()` inside
- * githubService. A fire-and-forget dispatch would race the hydrate and
- * wipe entries we just seeded from disk.
+ * on first launch, and the method change soft-expires every prCache entry
+ * inside githubService. A fire-and-forget dispatch would race the hydrate
+ * and force-refetch entries we just seeded from disk.
  */
 async function autoDetectAndInitAuth(
   setGithubAuthStatus: (s: 'missing' | 'checking' | 'valid' | 'invalid') => void,
@@ -269,13 +270,14 @@ export function useRepoBootstrap() {
         // would otherwise block the entire bootstrap critical path before
         // any UI-driving config landed in the store.
         //
-        // The invariant we MUST preserve: `initGithub` (and any
-        // `prCache.clear()` it triggers on auth-method change) fires BEFORE
-        // hydratePrCache seeds the in-memory cache from disk. Otherwise a
-        // late-resolving initGithub would wipe just-hydrated (and
-        // still-warm) merged PR entries, silently regressing the PR-cache
-        // invalidation work. We enforce this by awaiting `authDone` right
-        // before `hydratePrCache()` below.
+        // The invariant we MUST preserve: `initGithub` (and the
+        // soft-expire-all of prCache it triggers on auth-method change)
+        // fires BEFORE hydratePrCache seeds the in-memory cache from disk.
+        // Otherwise a late-resolving initGithub would soft-expire just-
+        // hydrated (and still-warm) merged PR entries, forcing a refetch
+        // and silently regressing the PR-cache invalidation work. We
+        // enforce this by awaiting `authDone` right before
+        // `hydratePrCache()` below.
         //
         // The auto-detect branch is reached only when `cfg.auth_method` is
         // unset; on subsequent launches it persists `auth_method` so the
@@ -309,10 +311,10 @@ export function useRepoBootstrap() {
         // older config so the list is non-empty for upgraders.
         setRecentRepoPaths(cfg.recent_repo_paths ?? []);
         // Block on auth before touching prCache: initGithub must run first
-        // so that any prCache.clear() triggered by an auth-method change
-        // happens before hydration seeds the cache from disk. Without this
-        // await, a late-resolving initGithub would wipe just-hydrated
-        // entries.
+        // so that any soft-expire-all of prCache triggered by an auth-
+        // method change happens before hydration seeds the cache from
+        // disk. Without this await, a late-resolving initGithub would
+        // soft-expire just-hydrated entries, forcing a refetch.
         await authDone;
         // Single cancellation guard covering both branches of the auth
         // pipeline (explicit syncInitAuthFromConfig including its
