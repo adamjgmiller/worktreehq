@@ -10,7 +10,7 @@ import { invoke, updateConfig } from './tauriBridge';
 import { checkGitAvailable, setGitVersion, getDefaultBranch, getRemoteUrl } from './gitService';
 import { setRepoAndFetch, setRepoAndRefresh } from './refreshLoop';
 import { invalidateOpenPrListCache, invalidatePrCacheForRepo } from './githubService';
-import { readWorktreeOrder } from './worktreeOrderService';
+import { readWorktreeOrder, readWorktreeSortMode } from './worktreeOrderService';
 
 interface RepoInfo {
   path: string;
@@ -66,6 +66,7 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     setCrossWorktreeConflicts,
     setDataRepoPath,
     setWorktreeOrder,
+    setWorktreeSortMode,
   } = useRepoStore.getState();
   try {
     const info = await invoke<RepoInfo>('resolve_repo', { path: candidate });
@@ -103,19 +104,32 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     setCrossWorktreeConflicts([], new Map());
     setDataRepoPath(null);
     setLastFetchError(null);
-    // Hydrate the persisted card order for the new repo BEFORE we flip
-    // `repo` and queue the refresh. Otherwise `setRepoAndRefresh` fires
-    // its refresh pipeline immediately, and if `commitRefreshResult`
-    // lands before `readWorktreeOrder` resolves, the Worktrees tab will
-    // render using the PREVIOUS repo's `worktreeOrder` — and then flicker
-    // to the new order once the read completes. Awaiting here preserves
-    // the old pre-#74 ordering guarantee on repo switches (a manual-sort
-    // repo never briefly shows the old repo's arrangement).
+    // Hydrate the persisted card order AND sort mode for the new repo
+    // BEFORE we flip `repo` and queue the refresh. Otherwise
+    // `setRepoAndRefresh` fires its refresh pipeline immediately, and if
+    // `commitRefreshResult` lands before the reads resolve, the Worktrees
+    // tab will render using the PREVIOUS repo's `worktreeOrder` /
+    // `worktreeSortMode` — and then flicker once the reads complete.
+    // Awaiting here preserves the old pre-#74 ordering guarantee on repo
+    // switches (a manual-sort repo never briefly shows the old repo's
+    // arrangement). Sort mode mirrors useRepoBootstrap's hydration block:
+    // if no mode is persisted but a manual order exists, default to
+    // 'manual' so a legacy drag arrangement isn't silently overwritten by
+    // the new 'recent' default; otherwise default to 'recent'.
     try {
       const order = await readWorktreeOrder(info.path);
       setWorktreeOrder(order);
+      const savedMode = await readWorktreeSortMode(info.path);
+      if (savedMode) {
+        setWorktreeSortMode(savedMode);
+      } else if (order.length > 0) {
+        setWorktreeSortMode('manual');
+      } else {
+        setWorktreeSortMode('recent');
+      }
     } catch {
       setWorktreeOrder([]);
+      setWorktreeSortMode('recent');
     }
     // Soft-expire any cached PR entries for the destination repo BEFORE
     // we flip `repo` and kick the refresh chain. Re-entering a previously-

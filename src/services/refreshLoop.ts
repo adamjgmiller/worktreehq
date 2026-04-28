@@ -954,6 +954,7 @@ export function setRepoAndRefresh(
   repo: RepoState,
   opts?: RefreshOptions,
 ): void {
+  useRepoStore.getState().setMainCommits([]);
   useRepoStore.getState().setRepo(repo);
   void refreshOnce(opts ?? { userInitiated: true });
 }
@@ -970,6 +971,7 @@ export function setRepoAndFetch(
   repo: RepoState,
   opts?: RefreshOptions,
 ): void {
+  useRepoStore.getState().setMainCommits([]);
   useRepoStore.getState().setRepo(repo);
   void runFetchOnce(opts ?? { userInitiated: true });
 }

@@ -78,7 +78,8 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
       break;
   }
 
-  // If the effective auth posture changed, drop both in-memory caches.
+  // If the effective auth posture changed, force a refetch of every cached
+  // PR under the new identity while preserving the on-disk cache.
   // Covers: token swap (PAT→PAT), method switch (gh-cli→none, pat→gh-cli),
   // and re-init of gh-cli with a previously active PAT. The open-PR list
   // cache must be cleared alongside the per-PR cache — otherwise switching
@@ -86,13 +87,23 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
   // list for up to 60 seconds.
   //
   // Cancel any pending persist debounce FIRST: the timer's closure captures
-  // `prCache.entries()` at fire time, so if we clear() without cancelling,
-  // a debounce armed by a fetch from the previous identity (≤500ms before
-  // this auth change) would fire after our clear and write an empty
-  // `entries: {}` to disk via writePrCacheFile's atomic_write — wiping the
-  // prior session's PR data. Skipping the persist leaves the on-disk cache
-  // untouched (recoverable), which matches `invalidatePrCacheForRepo`'s
-  // soft-expire philosophy (disk data is identifier-keyed, not token-keyed).
+  // `prCache.entries()` at fire time, so if we hard-clear() without
+  // cancelling, a debounce armed by a fetch from the previous identity
+  // (≤500ms before this auth change) would fire after our clear and write
+  // an empty `entries: {}` to disk via writePrCacheFile's atomic_write —
+  // wiping the prior session's PR data.
+  //
+  // Then SOFT-EXPIRE every entry instead of hard-clearing (matching
+  // `invalidatePrCacheForRepo`'s philosophy): each entry's `at` is zeroed
+  // so subsequent `get()` calls miss (forcing refetch under the new
+  // identity), but `expire()` snapshots the prior `at` onto `expiredAt`
+  // so the next schedulePersist round-trips the entries to disk with their
+  // real prior timestamps. Without this, the first batchFetchPRs under the
+  // new identity would fire schedulePersist over a near-empty in-memory
+  // cache, overwriting prior identity's persisted data on disk — including
+  // PR data for repos the user previously visited but isn't viewing now
+  // (cross-repo wipe). Disk data is identifier-keyed, not token-keyed, so
+  // preserving it across auth swaps is correct.
   //
   // Open-PR list invalidation goes through `invalidateOpenPrListCache()`
   // (no-args bulk-clear branch) rather than `openPrListCache.clear()` so
@@ -102,7 +113,9 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
       clearTimeout(persistDebounce);
       persistDebounce = null;
     }
-    prCache.clear();
+    for (const [k] of Array.from(prCache.entries())) {
+      prCache.expire(k);
+    }
     invalidateOpenPrListCache();
     liveObservations.clear();
   }
@@ -367,8 +380,10 @@ export function expirePrEntriesByNumbers(
     prCache.expire(cacheKey(owner, repo, n));
   }
   // No schedulePersist: this is called from the background refresh tick,
-  // which unconditionally fires schedulePersist shortly afterwards via
-  // batchFetchPRs. Adding one here is redundant. Crash-safety is
+  // which typically fires schedulePersist shortly afterwards via
+  // batchFetchPRs (subject to early-return when toFetch.length===0,
+  // !transport, or currentAuthMethod==="none"), and even when it does
+  // not, the crash-safety property below covers it. Crash-safety is
   // nevertheless intact: `expire()` preserves the pre-expire timestamp on
   // `expiredAt`, and the next persist (ours or an unrelated one during the
   // 500ms debounce) writes it to disk so entries round-trip cleanly.
@@ -408,9 +423,12 @@ export function expireOpenPrEntries(): void {
     }
   }
   // No schedulePersist: this is called once at boot, and the first refresh
-  // tick that follows will flush via batchFetchPRs. Crash-safety is still
-  // intact (expire() preserves the pre-expire timestamp on expiredAt, so
-  // any later persist round-trips the entry with its real `at`).
+  // tick that follows will typically flush via batchFetchPRs (subject to
+  // the same early-return conditions), and even when it does not, expire()
+  // preserves expiredAt so the next persist from any path round-trips the
+  // entry correctly. Crash-safety is still intact (expire() preserves the
+  // pre-expire timestamp on expiredAt, so any later persist round-trips
+  // the entry with its real `at`).
 }
 
 export function _getPrCacheKeysForTests(): string[] {

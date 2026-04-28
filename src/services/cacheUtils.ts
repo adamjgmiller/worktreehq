@@ -10,7 +10,8 @@
  */
 export interface TTLCacheEntry<V> {
   value: V;
-  /** Current timestamp. Zero means soft-expired (see `expire()`). */
+  /** Current timestamp. Zero means soft-expired (see `expire()`); `get()`
+   *  treats this as a miss regardless of whether the cache has a TTL. */
   at: number;
   /** When `expire()` zeros `at`, the prior `at` is snapshotted here so
    *  persistence layers can still write a real timestamp to disk. Null on
@@ -36,10 +37,17 @@ export class TTLCache<K, V> {
   /** Get a value if present and not expired. Returns undefined on miss.
    *  Expired entries are NOT deleted — they remain accessible via `getStale()`
    *  for stale-while-revalidate fallbacks. Cleanup happens via `set()` (which
-   *  triggers FIFO trim) and `clear()`. */
+   *  triggers FIFO trim) and `clear()`.
+   *
+   *  Soft-expired entries (`at: 0`, set by `expire()`) miss uniformly,
+   *  regardless of whether this cache has a TTL configured. Without this
+   *  guard, `expire()` would be a silent no-op on TTL-null content-addressed
+   *  caches because the natural-expiry comparison short-circuits when
+   *  `ttlMs === null`. */
   get(key: K): V | undefined {
     const entry = this.map.get(key);
     if (!entry) return undefined;
+    if (entry.at === 0) return undefined;
     if (this.ttlMs !== null && Date.now() - entry.at > this.ttlMs) {
       return undefined;
     }
@@ -73,6 +81,14 @@ export class TTLCache<K, V> {
    *  returns the prior value. Used for soft-invalidation where the caller
    *  wants to trigger a refetch while preserving state for stale-while-
    *  revalidate paths. No-op when the key is not present.
+   *
+   *  Works uniformly on TTL-set and TTL-null (content-addressed) caches:
+   *  `get()` checks `entry.at === 0` before the TTL comparison, so the
+   *  soft-expire sentinel takes effect even when `ttlMs` is null. Without
+   *  that guard, `expire()` would silently fail on caches like
+   *  `cherryCache` / `branchAbCache` / `mergeBaseCache` / `changedFilesCache`
+   *  because the natural-expiry check would short-circuit and `get()` would
+   *  return the stored value as if fresh.
    *
    *  The prior `at` is snapshotted onto `expiredAt` so persistence layers can
    *  still write a real timestamp to disk — otherwise a soft-expired entry

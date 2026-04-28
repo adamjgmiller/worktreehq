@@ -1445,3 +1445,159 @@ describe('initGithub cancels pending persist debounce on auth change (F022 regre
     }
   });
 });
+
+describe('initGithub preserves on-disk PR cache across auth identity switch (F006 regression)', () => {
+  // Regression test for F006: the initGithub auth-switch path used to
+  // hard-clear the in-memory prCache. As soon as the first batchFetchPRs
+  // under the new identity fired, its schedulePersist would iterate the
+  // now-empty (or mostly-empty) prCache and atomically rewrite the disk
+  // payload — wiping prior identity's persisted entries (including PR data
+  // for repos the user previously visited but isn't currently viewing).
+  //
+  // Fix: replace prCache.clear() in the auth-switch branch with a
+  // soft-expire-all loop (matching invalidatePrCacheForRepo's pattern).
+  // expire() zeroes `at` so subsequent get() calls miss (forcing refetch
+  // under the new identity) but snapshots the prior `at` onto `expiredAt`
+  // so schedulePersist still round-trips the entries to disk. Result: the
+  // disk cache survives auth swaps; only the in-memory hot path is
+  // invalidated.
+
+  const mergedPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    writePrCacheFileMock.mockReset();
+    writePrCacheFileMock.mockResolvedValue(undefined);
+    readPrCacheFileMock.mockReset();
+    readPrCacheFileMock.mockResolvedValue('');
+    initGithub('test-token');
+  });
+
+  it('next batchFetchPRs after auth switch does not wipe prior session entries from disk', async () => {
+    vi.useFakeTimers();
+    try {
+      // Hydrate from a synthetic prior-session disk payload covering two
+      // repos. One entry (r1#42) is merged with frozen mergeTimeHeadSha +
+      // observedLive=true; the other (r2#7) is a closed PR. Both look like
+      // real entries that survived a clean shutdown.
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const priorSessionAt = Date.parse('2025-12-31T23:00:00Z');
+      const priorBlob = JSON.stringify({
+        version: 1,
+        entries: {
+          'o/r1#42': {
+            at: priorSessionAt,
+            pr: {
+              number: 42,
+              title: 'PR 42',
+              state: 'merged',
+              mergeCommitSha: 'merge-42',
+              headRef: 'feat/42',
+              headSha: 'merge-tip',
+              mergeTimeHeadSha: 'merge-tip',
+              mergeTimeHeadShaObservedLive: true,
+              url: 'https://github.com/o/r1/pull/42',
+            },
+          },
+          'o/r2#7': {
+            at: priorSessionAt,
+            pr: {
+              number: 7,
+              title: 'PR 7',
+              state: 'closed',
+              mergeCommitSha: null,
+              headRef: 'feat/7',
+              headSha: 'close-tip',
+              url: 'https://github.com/o/r2/pull/7',
+            },
+          },
+        },
+      });
+      // _clearPrCacheForTests in beforeEach reset hydratePromise, so this
+      // hydrate call will read our blob.
+      readPrCacheFileMock.mockResolvedValueOnce(priorBlob);
+      await hydratePrCache();
+
+      // Sanity: the cache holds both entries pre-switch.
+      expect(_getPrCacheKeysForTests()).toEqual(
+        expect.arrayContaining(['o/r1#42', 'o/r2#7']),
+      );
+
+      // Switch auth identity. Pre-fix: prCache.clear() wipes the in-memory
+      // cache; the next batchFetchPRs's schedulePersist then writes
+      // entries: {<just the new fetch>} to disk, losing r1#42 and r2#7.
+      // Post-fix: soft-expire keeps both entries reachable for persist.
+      initGithub('pat', 'different-token');
+
+      // Trigger the next batchFetchPRs under the new identity. Use an
+      // unrelated repo (x/y) so the prior entries are not refetched —
+      // the test specifically targets cross-repo wipe.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(100, 'merge-tip-100'));
+      await batchFetchPRs('x', 'y', [100]);
+
+      // Flush the post-fetch debounce.
+      await vi.advanceTimersByTimeAsync(600);
+
+      // The most recent disk payload must still include r1#42 and r2#7
+      // with their pre-expire timestamps and freeze metadata intact.
+      expect(writePrCacheFileMock).toHaveBeenCalled();
+      const calls = writePrCacheFileMock.mock.calls;
+      const payload = JSON.parse(calls[calls.length - 1][0] as string);
+      expect(payload.entries['o/r1#42']).toBeDefined();
+      expect(payload.entries['o/r1#42'].at).toBe(priorSessionAt);
+      expect(payload.entries['o/r1#42'].pr.mergeTimeHeadSha).toBe('merge-tip');
+      expect(payload.entries['o/r1#42'].pr.mergeTimeHeadShaObservedLive).toBe(true);
+      expect(payload.entries['o/r2#7']).toBeDefined();
+      expect(payload.entries['o/r2#7'].at).toBe(priorSessionAt);
+      expect(payload.entries['o/r2#7'].pr.state).toBe('closed');
+      // The new identity's fetch is also persisted.
+      expect(payload.entries['x/y#100']).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('auth switch to "none" does not crash and leaves disk untouched (no fetch fires)', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Seed a real fetched merged PR.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+      await vi.advanceTimersByTimeAsync(600);
+      writePrCacheFileMock.mockClear();
+
+      // Switch auth to 'none'. batchFetchPRs early-returns before
+      // schedulePersist when currentAuthMethod==='none', so no write
+      // should fire from a follow-up fetch attempt.
+      initGithub('none');
+      const result = await batchFetchPRs('o', 'r', [99]);
+      expect(result.size).toBe(0);
+      await vi.advanceTimersByTimeAsync(600);
+
+      // No fresh persist occurred (transport is null + early-return).
+      expect(writePrCacheFileMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
