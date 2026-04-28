@@ -614,7 +614,13 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
           currentRepo !== null &&
           currentRepo.path !== inFlightPath;
         if (repoSwitched) {
-          await runFetchOnce(opts);
+          // Await joinOptimisticP alongside the recursive fetch so this
+          // branch matches the same-repo path's invariant: by the time
+          // runFetchOnce({ userInitiated: true }) returns, every queued
+          // user-facing refresh has settled. They run in parallel because
+          // joinOptimisticP started above at line 602 and the recursive
+          // runFetchOnce begins immediately here.
+          await Promise.all([joinOptimisticP, runFetchOnce(opts)]);
         } else {
           await joinOptimisticP;
           await refreshOnce(opts);
@@ -841,7 +847,14 @@ async function runNarrowPrRefresh(
         // Trust batchFetchPRs' state — see the matching comment in
         // runRefreshOnce. Preserving rest.state ('open') would mask a
         // merged PR returned by GraphQL as still-open.
-        if (full) openPRs.set(branchName, full);
+        //
+        // Skip patching merged PRs in the narrow pass: this path doesn't
+        // re-run detectSquashMerges, so attaching a merged PRInfo to a
+        // branch whose mergeStatus is still 'unmerged' would render a
+        // merged-PR pill on an unmerged branch until the next full
+        // refresh. The full path (runRefreshOnce) handles the same case
+        // safely because detectSquashMerges runs immediately after.
+        if (full && full.state !== 'merged') openPRs.set(branchName, full);
       }
     }
 
