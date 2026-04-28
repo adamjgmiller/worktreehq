@@ -1371,3 +1371,78 @@ describe('schedulePersist preserves soft-expired entries on disk (F003/F021 regr
     }
   });
 });
+
+describe('initGithub cancels pending persist debounce on auth change (F022 regression)', () => {
+  // Regression test for F022: setAuthMethod (and the legacy initGithub
+  // auth-switch path) called prCache.clear() without cancelling
+  // persistDebounce. A schedulePersist armed by a fetch that landed
+  // ≤500ms before the auth change would fire AFTER the clear, iterate
+  // the now-empty prCache, and atomic_write `entries: {}` to disk —
+  // wiping prior session's PR data even though that data is identifier-
+  // keyed and not token-keyed.
+  //
+  // Fix: clearTimeout(persistDebounce) inside the auth-change branch
+  // BEFORE clearing the in-memory caches. Result: disk state is left
+  // untouched on auth swap (recoverable) instead of wiped.
+
+  const mergedPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    writePrCacheFileMock.mockReset();
+    writePrCacheFileMock.mockResolvedValue(undefined);
+    initGithub('test-token');
+  });
+
+  it('does NOT write an empty entries map to disk when auth changes mid-debounce', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Seed cache with a merged PR. batchFetchPRs schedules a persist
+      // timer at the tail (githubService.ts schedulePersist call).
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+
+      // BEFORE the 500ms debounce fires, switch auth identity. The fix
+      // must clearTimeout(persistDebounce) so the empty post-clear map
+      // never reaches writePrCacheFile.
+      initGithub('pat', 'different-token');
+
+      // Advance well past the original debounce window. With the fix,
+      // the timer was cancelled, so no persist call should fire from
+      // the cancelled timer.
+      await vi.advanceTimersByTimeAsync(600);
+
+      // Either no write at all, or — if a future change adds a fresh
+      // schedulePersist after the auth swap — the payload is NOT empty.
+      // We assert the destructive case: nothing wrote `entries: {}` to
+      // disk. (Pre-fix, the cancelled-but-not-cancelled timer would
+      // fire here with the post-clear empty prCache.)
+      for (const call of writePrCacheFileMock.mock.calls) {
+        const payload = JSON.parse(call[0] as string);
+        expect(Object.keys(payload.entries).length).toBeGreaterThan(0);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

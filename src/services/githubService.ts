@@ -84,9 +84,26 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
   // cache must be cleared alongside the per-PR cache — otherwise switching
   // from 'none' to an authenticated method serves a stale (empty) open-PR
   // list for up to 60 seconds.
+  //
+  // Cancel any pending persist debounce FIRST: the timer's closure captures
+  // `prCache.entries()` at fire time, so if we clear() without cancelling,
+  // a debounce armed by a fetch from the previous identity (≤500ms before
+  // this auth change) would fire after our clear and write an empty
+  // `entries: {}` to disk via writePrCacheFile's atomic_write — wiping the
+  // prior session's PR data. Skipping the persist leaves the on-disk cache
+  // untouched (recoverable), which matches `invalidatePrCacheForRepo`'s
+  // soft-expire philosophy (disk data is identifier-keyed, not token-keyed).
+  //
+  // Open-PR list invalidation goes through `invalidateOpenPrListCache()`
+  // (no-args bulk-clear branch) rather than `openPrListCache.clear()` so
+  // every clear path stays funnelled through the unified invalidation API.
   if (prevToken !== currentToken || prevMethod !== method) {
+    if (persistDebounce) {
+      clearTimeout(persistDebounce);
+      persistDebounce = null;
+    }
     prCache.clear();
-    openPrListCache.clear();
+    invalidateOpenPrListCache();
     liveObservations.clear();
   }
 }
@@ -290,6 +307,14 @@ function setPrCacheEntry(key: string, pr: PRInfo | null): PRInfo | null {
 }
 
 export function _clearPrCacheForTests() {
+  // Cancel any pending persist debounce so a prior test's batchFetchPRs
+  // can't fire its 500ms timer mid-next-test and write a stale/empty
+  // payload to writePrCacheFileMock — same hazard as the auth-switch
+  // path in initGithub, just expressed across test boundaries.
+  if (persistDebounce) {
+    clearTimeout(persistDebounce);
+    persistDebounce = null;
+  }
   prCache.clear();
   liveObservations.clear();
   hydratePromise = null;

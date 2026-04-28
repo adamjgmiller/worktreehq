@@ -1304,17 +1304,12 @@ describe('targeted PR cache invalidation on background ticks', () => {
 
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledTimes(1);
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102, 101]);
-    // openPrListCache also dropped — hard-delete (not soft-expire) because
-    // the (#N) tag is positive proof the cached list is wrong. Without the
-    // hard flag, a transport failure on the refetch would let getStale()
-    // re-serve the pre-merge list and stamp the merged PR as 'open',
-    // defeating the per-PR refresh and causing detectSquashMerges to skip
-    // squash-tagging.
-    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith(
-      'o',
-      'r',
-      { hard: true },
-    );
+    // openPrListCache also dropped — soft-expire (not hard-delete). The (#N)
+    // tag is proof PR #N is merged, but hard-deleting the whole list would
+    // wipe getStale() recovery for unrelated active PRs on transport failure;
+    // batchFetchPRs's authoritative state override handles the just-merged
+    // PR row downstream.
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
   });
 
   it('does NOT invalidate when mainCommits is unchanged', async () => {
@@ -1444,11 +1439,7 @@ describe('targeted PR cache invalidation on background ticks', () => {
 
     // The targeted invalidation still fires for the newly-seen (#42) tag.
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [42]);
-    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith(
-      'o',
-      'r',
-      { hard: true },
-    );
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
 
     const feat = useRepoStore.getState().branches.find((b) => b.name === 'feat/squash');
     expect(feat?.pr?.state).toBe('merged');
@@ -1477,11 +1468,98 @@ describe('targeted PR cache invalidation on background ticks', () => {
     expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102]);
     // newNumbers is non-empty ([102]) — the no-PR-tag commit is filtered
     // out but the tagged one still triggers the paired open-PR list drop
-    // (hard-delete: (#N) tag is proof-of-merge).
-    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith(
-      'o',
-      'r',
-      { hard: true },
+    // (soft-expire so getStale() can recover unrelated active PRs on
+    // transport failure).
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+  });
+
+  it('does NOT misclassify a name-collision branch as squash-merged when the open-PR refetch fails', async () => {
+    // Regression test for F004. Scenario: a branch name X has been reused —
+    // a historical PR #99 with headRef='X' was previously merged (squash),
+    // and the user is now working on a NEW branch X with an active open
+    // PR #200. On the tick that brings in a fresh (#250) tag (unrelated
+    // squash for some other branch), the targeted invalidation soft-expires
+    // the open-PR list. If the refetch transport then fails,
+    // listOpenPRsForBranches.getStale() must still serve the pre-tick list
+    // (which contains X→PR #200 as open) so squashDetector pass-1 sees
+    // X has hasOpenPR=true and skips the misclassification.
+    //
+    // Under the old hard-delete behavior, getStale() returned undefined →
+    // empty open-PR map → X had no .pr attached → hasOpenPR=false → if
+    // PR #99's mergeCommitSha happened to appear in mainCommits and #99
+    // was warm in prCache, X got incorrectly tagged squash-merged.
+    const branchX = {
+      name: 'X',
+      hasLocal: true,
+      hasRemote: true,
+      lastCommitDate: '2026-01-01T00:00:00Z',
+      lastCommitSha: 'newsha',
+      aheadOfMain: 3,
+      behindMain: 0,
+      mergeStatus: 'unmerged' as const,
+    };
+    const stalePr200 = {
+      number: 200,
+      title: 'Active PR for X',
+      headRef: 'X',
+      url: 'https://github.com/o/r/pull/200',
+    };
+
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      // Prior tick: mainCommits includes the historical squash for PR #99.
+      // The (#250) tag is what's NEW on this tick — the diff fires the
+      // soft-expire for that one only.
+      mainCommits: [makeMainCommit('histsha', 99), makeMainCommit('a', 100)],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([branchX]);
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [
+        makeMainCommit('newsquash', 250),
+        makeMainCommit('histsha', 99),
+        makeMainCommit('a', 100),
+      ],
+      total: 3,
+    });
+    // listOpenPRsForBranches under transport failure: githubService catches
+    // the throw and falls back to getStale(). With soft-expire, the prior
+    // entry is still reachable as stale and stamped 'open'. We mock the
+    // observable behavior here — the function returns the pre-tick map.
+    asMock(github.listOpenPRsForBranches).mockResolvedValueOnce(
+      new Map([['X', { ...stalePr200, state: 'open' }]]),
     );
+    // batchFetchPRs returns the full data for #200 (still open) — no
+    // 'merged' entry that could clobber the row.
+    asMock(github.batchFetchPRs).mockResolvedValueOnce(
+      new Map([[200, { ...stalePr200, state: 'open' as const }]]),
+    );
+    // squashDetector receives the branches with X carrying its open PR.
+    // Simulate pass-1's hasOpenPR guard: when the branch carries an open
+    // PR, do NOT tag squash-merged. This is what the production detector
+    // does at squashDetector.ts:101.
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }: { branches: Branch[] }) => ({
+      updatedBranches: bs.map((b) =>
+        b.name === 'X' && b.pr?.state === 'open'
+          ? b // guard fires — leave unmerged
+          : b,
+      ),
+      mappings: [],
+    }));
+
+    await refreshOnce();
+
+    // The soft-expire still fired for the new (#250) tag.
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [250]);
+    // Soft-expire (no third arg) — hard-delete here would have cleared
+    // the open-PR list and undefined'd getStale(), removing the .pr
+    // attachment from X and unblocking the misclassification.
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+
+    const x = useRepoStore.getState().branches.find((b) => b.name === 'X');
+    // Open PR survives via getStale() fallback.
+    expect(x?.pr?.state).toBe('open');
+    expect(x?.pr?.number).toBe(200);
+    // Critical: X is NOT misclassified as squash-merged.
+    expect(x?.mergeStatus).toBe('unmerged');
   });
 });

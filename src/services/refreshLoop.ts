@@ -193,18 +193,14 @@ async function runRefreshOnce(): Promise<void> {
 
     // Targeted PR cache invalidation. When `origin/<defaultBranch>` brings
     // new (#N) tagged commits since our last snapshot, soft-expire just
-    // those per-PR cache entries AND hard-delete the open-PR list cache so
+    // those per-PR cache entries AND soft-expire the open-PR list cache so
     // detectSquashMerges' batchFetchPRs and the openPRs fetch below both
     // refetch fresh data on this same tick. Without per-PR expiry, a
     // background fetch brings in the squash commit but the detector still
     // serves the cached `state: 'open'` PRInfo (5min TTL); without
     // open-list invalidation, `listOpenPRsForBranches` returns the just-
     // merged PR as still-open (60s TTL), detectSquashMerges then skips
-    // squash-tagging because the PR looks open. The open-list drop is
-    // hard (not soft-expire) because a transport failure on the refetch
-    // would otherwise serve the pre-merge list via getStale() — and
-    // batchFetchPRs's authoritative state now reaches the branch row
-    // unclobbered, so a once-merged PR shows as merged on this tick.
+    // squash-tagging because the PR looks open.
     // Read prevMainCommits fresh: `loadRepoAtPath` (in repoSelect.ts)
     // calls `setMainCommits([])` directly during a repo switch and can
     // race the awaits above. `refreshInFlight` dedupe rules out another
@@ -226,16 +222,30 @@ async function runRefreshOnce(): Promise<void> {
           }
         }
         if (newNumbers.length > 0) {
-          // Hard-delete (not soft-expire) here: we have positive proof the
-          // cached open-PR list is wrong — the (#N) tag just landed on
-          // origin/<defaultBranch>, so PR #N is merged, not open. Letting
-          // `listOpenPRsForBranches`'s `getStale()` fallback re-serve the
-          // pre-merge list on a transport failure would re-stamp the PR as
-          // 'open' and defeat squash-detection on this tick. The other two
-          // invalidation call sites (join-branch, post-fetch) stay as soft
-          // expire — their stale-fallback IS net-right for generic TTL
-          // refreshes where we don't have merge proof.
-          invalidateOpenPrListCache(remote.owner, remote.name, { hard: true });
+          // Soft-expire (not hard-delete) here. The (#N) tag IS positive
+          // proof that PR #N is merged, but blowing away the entire open-PR
+          // list cache punishes every other branch in the repo when the
+          // refetch transport fails: `listOpenPRsForBranches` falls back to
+          // `getStale() ?? []`, and on a hard-deleted entry getStale()
+          // returns undefined — every branch loses its `.pr` attachment,
+          // including unrelated active open PRs.
+          //
+          // The original concern (stale list re-stamps the just-merged PR
+          // as 'open' and defeats squash-detection) is mitigated downstream
+          // by `batchFetchPRs`'s authoritative state override at the
+          // openPRs/branch attachment loop below: GraphQL is the source of
+          // truth for PR state, and any 'merged' it returns clobbers the
+          // 'open' the open-list stamped. So under transport failure, the
+          // worst case is the merged PR's own row gets squash-detected one
+          // tick later — vs hard-delete's worst case of mass-misclassifying
+          // active branches whose names collide with historical merged PRs
+          // (the historical merged-PR cache may stay warm in `prCache`
+          // while the live open-PR list is unreachable, opening the
+          // squashDetector pass-1 misclassification window).
+          //
+          // The other two invalidation call sites (join-branch, post-fetch)
+          // also use soft-expire; this call site is now consistent with them.
+          invalidateOpenPrListCache(remote.owner, remote.name);
           expirePrEntriesByNumbers(remote.owner, remote.name, newNumbers);
         }
       }
