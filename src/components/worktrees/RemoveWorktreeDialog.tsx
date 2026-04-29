@@ -87,7 +87,7 @@ export function RemoveWorktreeDialog({
         disabled={submitting}
       />
       <p className="text-sm text-wt-fg-2 mb-2">
-        Removing <span className="font-mono">{worktree.branch}</span>:
+        Removing <span className="font-mono">{worktree.branch === '(detached)' ? (worktree.path.split(/[\\/]/).pop() || 'detached HEAD') : worktree.branch}</span>:
       </p>
       <div className="font-mono text-xs text-wt-muted mb-3 break-all">
         {worktree.path}
@@ -137,7 +137,7 @@ export function RemoveWorktreeDialog({
               />
               <span>
                 Delete local branch{' '}
-                <span className="font-mono">{worktree.branch}</span>
+                <span className="font-mono">{worktree.branch === '(detached)' ? (worktree.path.split(/[\\/]/).pop() || 'detached HEAD') : worktree.branch}</span>
               </span>
             </label>
           )}

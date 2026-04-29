@@ -955,6 +955,21 @@ describe('createWorktree', () => {
       'main',
     ]);
   });
+
+  it('passes --detach with no branch when detached=true', async () => {
+    ensureDirMock.mockResolvedValue(undefined);
+    gitExecMock.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+
+    await createWorktree('/repo', '/tmp/wt-detached', '', false, true);
+
+    expect(ensureDirMock).toHaveBeenCalledWith('/tmp');
+    expect(gitExecMock).toHaveBeenCalledWith('/repo', [
+      'worktree',
+      'add',
+      '--detach',
+      '/tmp/wt-detached',
+    ]);
+  });
 });
 
 describe('isAncestor', () => {

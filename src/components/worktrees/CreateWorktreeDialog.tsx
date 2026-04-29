@@ -1,13 +1,35 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FolderOpen } from 'lucide-react';
 import type { Branch } from '../../types';
 import { pathExists } from '../../services/tauriBridge';
 import { Dialog, DialogHeader, DialogFooter } from '../common/Dialog';
 
+// Built-in path presets for different tool conventions. Exported for Settings,
+// which only offers these three as saved defaults — "Custom" is a runtime mode,
+// not a persistable default.
+export const PATH_PRESETS = [
+  { id: 'claude', label: 'Claude Code (.claude/worktrees/)', template: '{repo}/.claude/worktrees/{name}' },
+  { id: 'dotworktrees', label: 'Generic (.worktrees/)', template: '{repo}/.worktrees/{name}' },
+  { id: 'sibling', label: 'Sibling directory', template: '{repo}__worktrees/{name}' },
+] as const;
+
+export type PathPresetId = (typeof PATH_PRESETS)[number]['id'];
+
+// Dialog-local preset list adds a "Custom path…" entry so users can see the
+// escape hatch directly in the dropdown rather than having to intuit that the
+// path input is freely editable. `template: null` signals "no template — the
+// user-entered path is authoritative."
+type DialogPresetId = PathPresetId | 'custom';
+const DIALOG_PRESETS: Array<{ id: DialogPresetId; label: string; template: string | null }> = [
+  ...PATH_PRESETS,
+  { id: 'custom', label: 'Custom path…', template: null },
+];
+
 export interface CreateWorktreeValue {
   path: string;
   branch: string;
   newBranch: boolean;
+  detached: boolean;
   pushToRemote: boolean;
   postCreateCommands: string;
 }
@@ -20,6 +42,7 @@ export function CreateWorktreeDialog({
   branches,
   defaultBranch,
   defaultPostCreateCommands,
+  defaultPathPreset = 'claude',
   onCancel,
   onConfirm,
   onPickDirectory,
@@ -28,8 +51,9 @@ export function CreateWorktreeDialog({
   branches: Branch[];
   defaultBranch: string;
   defaultPostCreateCommands: string;
+  defaultPathPreset?: PathPresetId;
   onCancel: () => void;
-  onConfirm: (v: CreateWorktreeValue) => void;
+  onConfirm: (v: CreateWorktreeValue) => Promise<void> | void;
   onPickDirectory: () => Promise<string | null>;
 }) {
   const [path, setPath] = useState('');
@@ -39,10 +63,13 @@ export function CreateWorktreeDialog({
   // branch after touching the path is a deliberate "I know what I'm doing"
   // signal — so we honor it.
   const [pathTouched, setPathTouched] = useState(false);
-  const [mode, setMode] = useState<'existing' | 'new'>('new');
+  const [mode, setMode] = useState<'existing' | 'new' | 'detached'>('new');
   const [existingBranch, setExistingBranch] = useState<string>(defaultBranch);
   const [newBranchName, setNewBranchName] = useState('');
+  const [detachedName, setDetachedName] = useState('');
   const [pushToRemote, setPushToRemote] = useState(true);
+  const [pathPreset, setPathPreset] = useState<DialogPresetId>(defaultPathPreset);
+  const pathInputRef = useRef<HTMLInputElement>(null);
   // Seeded from the saved default but live-editable before submit. A user
   // might keep `npm install` as the default but, for this particular
   // creation, also want `cp ../main/.env .env`. The parent re-reads config
@@ -63,18 +90,37 @@ export function CreateWorktreeDialog({
       });
   }, [branches]);
 
-  // The branch that currently drives the suggested path. In "new" mode this
-  // is whatever the user has typed so far; in "existing" mode it's the
-  // selected branch. Empty → no suggestion yet.
-  const currentBranch = mode === 'new' ? newBranchName.trim() : existingBranch;
+  // Keep existingBranch in sync with the list. If the current value isn't
+  // in the list (seeded defaultBranch filtered out, or a branch deleted
+  // mid-dialog), snap to the first item — otherwise the <select> silently
+  // falls back to displaying the first option while state stays stale,
+  // and the path input auto-fills from the stale state.
+  useEffect(() => {
+    if (existingBranches.length === 0) return;
+    if (!existingBranches.some((b) => b.name === existingBranch)) {
+      setExistingBranch(existingBranches[0].name);
+    }
+  }, [existingBranches, existingBranch]);
 
-  // Default convention: `<repo>/.claude/worktrees/<branch>`. Matches Claude
-  // Code's own worktree convention and `.claude/` is already gitignored at
-  // the repo root, so a branch with slashes (`feat/foo`) becomes nested
-  // directories which git worktree add handles fine.
+  // The name that drives the suggested path. In branch modes this is the
+  // branch; in detached mode it's the user-typed session name.
+  const currentName =
+    mode === 'detached'
+      ? detachedName.trim()
+      : mode === 'new'
+        ? newBranchName.trim()
+        : existingBranch;
+
+  // Compute suggested path from the selected preset template. In "custom"
+  // mode there's no template — the user's typed path is authoritative, so
+  // suggestedPath is empty and the auto-fill effect no-ops.
+  const activeTemplate =
+    DIALOG_PRESETS.find((p) => p.id === pathPreset)?.template ?? null;
   const suggestedPath =
-    repoPath && currentBranch
-      ? `${repoPath}/.claude/worktrees/${currentBranch.replace(/\//g, '-')}`
+    activeTemplate && repoPath && currentName
+      ? activeTemplate
+          .replace('{repo}', repoPath)
+          .replace('{name}', currentName.replace(/\//g, '-'))
       : '';
 
   // Auto-fill the path input with the suggestion whenever it changes —
@@ -91,17 +137,25 @@ export function CreateWorktreeDialog({
     if (picked) {
       setPath(picked);
       setPathTouched(true);
+      // A user-picked directory is by definition a custom path — keep the
+      // dropdown honest so it reflects what's actually in the input.
+      setPathPreset('custom');
     }
   };
 
   const submit = async () => {
     const trimmed = path.trim();
+    if (mode === 'detached' && !detachedName.trim()) {
+      setError('Session name is required');
+      return;
+    }
     if (!trimmed) {
       setError('Path is required');
       return;
     }
-    const branch = mode === 'new' ? newBranchName.trim() : existingBranch;
-    if (!branch) {
+    const isDetached = mode === 'detached';
+    const branch = isDetached ? '' : mode === 'new' ? newBranchName.trim() : existingBranch;
+    if (!isDetached && !branch) {
       setError('Branch is required');
       return;
     }
@@ -116,10 +170,11 @@ export function CreateWorktreeDialog({
         setError(`Path already exists: ${trimmed}`);
         return;
       }
-      onConfirm({
+      await onConfirm({
         path: trimmed,
         branch,
         newBranch: mode === 'new',
+        detached: isDetached,
         pushToRemote: mode === 'new' && pushToRemote,
         postCreateCommands,
       });
@@ -134,28 +189,20 @@ export function CreateWorktreeDialog({
         <div className="space-y-4">
           <div>
             <div className="flex gap-2 text-xs mb-2">
-              <button
-                type="button"
-                onClick={() => setMode('new')}
-                className={
-                  mode === 'new'
-                    ? 'px-3 py-1 rounded-full border border-wt-info bg-wt-info/15 text-wt-info'
-                    : 'px-3 py-1 rounded-full border border-wt-border text-wt-fg-2'
-                }
-              >
-                New branch
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode('existing')}
-                className={
-                  mode === 'existing'
-                    ? 'px-3 py-1 rounded-full border border-wt-info bg-wt-info/15 text-wt-info'
-                    : 'px-3 py-1 rounded-full border border-wt-border text-wt-fg-2'
-                }
-              >
-                Existing branch
-              </button>
+              {(['new', 'existing', 'detached'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  className={
+                    mode === m
+                      ? 'px-3 py-1 rounded-full border border-wt-info bg-wt-info/15 text-wt-info'
+                      : 'px-3 py-1 rounded-full border border-wt-border text-wt-fg-2'
+                  }
+                >
+                  {m === 'new' ? 'New branch' : m === 'existing' ? 'Existing branch' : 'Detached HEAD'}
+                </button>
+              ))}
             </div>
             {mode === 'existing' ? (
               <select
@@ -170,6 +217,24 @@ export function CreateWorktreeDialog({
                   </option>
                 ))}
               </select>
+            ) : mode === 'detached' ? (
+              <>
+                <input
+                  autoFocus
+                  value={detachedName}
+                  onChange={(e) => setDetachedName(e.target.value)}
+                  placeholder="experiment-1"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full bg-wt-bg border border-wt-border rounded px-3 py-2 font-mono text-sm"
+                />
+                <p className="mt-1 text-[11px] text-wt-fg-2">
+                  Creates a worktree at the current HEAD with no branch. Useful for
+                  throwaway experiments or tools like Codex that work in detached HEAD.
+                </p>
+              </>
             ) : (
               <>
                 <input
@@ -195,13 +260,43 @@ export function CreateWorktreeDialog({
             )}
           </div>
           <div>
-            <label className="text-xs uppercase tracking-wide text-wt-muted">Path</label>
-            <div className="mt-1 flex gap-2">
+            <div className="flex items-center gap-3 mb-1">
+              <label className="text-xs uppercase tracking-wide text-wt-muted">Path</label>
+              <select
+                value={pathPreset}
+                onChange={(e) => {
+                  const next = e.target.value as DialogPresetId;
+                  setPathPreset(next);
+                  if (next === 'custom') {
+                    // Explicit opt-in to custom mode: clear any preset-driven
+                    // value and put focus on the input so the user can just
+                    // start typing.
+                    setPath('');
+                    setPathTouched(true);
+                    setTimeout(() => pathInputRef.current?.focus(), 0);
+                  } else {
+                    // Switching back to a real preset re-enables auto-fill.
+                    setPathTouched(false);
+                  }
+                }}
+                className="bg-wt-bg border border-wt-border rounded px-2 py-0.5 text-[11px] text-wt-fg-2"
+              >
+                {DIALOG_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex gap-2">
               <input
+                ref={pathInputRef}
                 value={path}
                 onChange={(e) => {
                   setPath(e.target.value);
                   setPathTouched(true);
+                  // Typing anything makes the input authoritative — reflect
+                  // that in the dropdown so it doesn't claim a preset the
+                  // path no longer matches.
+                  setPathPreset('custom');
                 }}
                 placeholder={suggestedPath || '/path/to/new-worktree'}
                 autoCapitalize="off"
@@ -219,6 +314,16 @@ export function CreateWorktreeDialog({
                 <FolderOpen className="w-4 h-4" />
               </button>
             </div>
+            {!path && !currentName && repoPath && activeTemplate && (
+              <p className="mt-1 text-[11px] text-wt-fg-2">
+                Will create at:{' '}
+                <span className="font-mono">
+                  {activeTemplate
+                    .replace('{repo}', repoPath)
+                    .replace('{name}', mode === 'detached' ? '<name>' : '<branch>')}
+                </span>
+              </p>
+            )}
           </div>
           <div>
             <div className="flex items-baseline justify-between">
