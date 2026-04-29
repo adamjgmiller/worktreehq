@@ -78,15 +78,45 @@ export function initGithub(methodOrToken: AuthMethod | string, token?: string): 
       break;
   }
 
-  // If the effective auth posture changed, drop both in-memory caches.
+  // If the effective auth posture changed, force a refetch of every cached
+  // PR under the new identity while preserving the on-disk cache.
   // Covers: token swap (PAT→PAT), method switch (gh-cli→none, pat→gh-cli),
   // and re-init of gh-cli with a previously active PAT. The open-PR list
   // cache must be cleared alongside the per-PR cache — otherwise switching
   // from 'none' to an authenticated method serves a stale (empty) open-PR
   // list for up to 60 seconds.
+  //
+  // Cancel any pending persist debounce FIRST: the timer's closure captures
+  // `prCache.entries()` at fire time, so if we hard-clear() without
+  // cancelling, a debounce armed by a fetch from the previous identity
+  // (≤500ms before this auth change) would fire after our clear and write
+  // an empty `entries: {}` to disk via writePrCacheFile's atomic_write —
+  // wiping the prior session's PR data.
+  //
+  // Then SOFT-EXPIRE every entry instead of hard-clearing (matching
+  // `invalidatePrCacheForRepo`'s philosophy): each entry's `at` is zeroed
+  // so subsequent `get()` calls miss (forcing refetch under the new
+  // identity), but `expire()` snapshots the prior `at` onto `expiredAt`
+  // so the next schedulePersist round-trips the entries to disk with their
+  // real prior timestamps. Without this, the first batchFetchPRs under the
+  // new identity would fire schedulePersist over a near-empty in-memory
+  // cache, overwriting prior identity's persisted data on disk — including
+  // PR data for repos the user previously visited but isn't viewing now
+  // (cross-repo wipe). Disk data is identifier-keyed, not token-keyed, so
+  // preserving it across auth swaps is correct.
+  //
+  // Open-PR list invalidation goes through `invalidateOpenPrListCache()`
+  // (no-args bulk-clear branch) rather than `openPrListCache.clear()` so
+  // every clear path stays funnelled through the unified invalidation API.
   if (prevToken !== currentToken || prevMethod !== method) {
-    prCache.clear();
-    openPrListCache.clear();
+    if (persistDebounce) {
+      clearTimeout(persistDebounce);
+      persistDebounce = null;
+    }
+    for (const [k] of Array.from(prCache.entries())) {
+      prCache.expire(k);
+    }
+    invalidateOpenPrListCache();
     liveObservations.clear();
   }
 }
@@ -134,8 +164,9 @@ let persistDebounce: ReturnType<typeof setTimeout> | null = null;
 // the cache-evicted case (no priorInCache) and the rehydrated-open case
 // (no Set membership because the rehydrated entry didn't go through
 // `setPrCacheEntry`). Not persisted: cold-bootstrap-after-restart must fail
-// closed. Cleared in lockstep with `prCache` on auth switch and in test
-// teardown.
+// closed. Hard-cleared on auth switch (where `prCache` soft-expires
+// instead — see `setPrCacheEntry` docstring) and in test teardown via
+// `_clearPrCacheForTests`, which clears both in lockstep.
 const liveObservations = new Set<string>();
 
 const STALE_OPEN_PR_MS = 7 * 24 * 60 * 60 * 1000;
@@ -157,9 +188,21 @@ export function hydratePrCache(): Promise<void> {
       if (parsed.version !== 1 || !parsed.entries) return;
       const now = Date.now();
       for (const [k, v] of Object.entries(parsed.entries)) {
+        // Upgrade-compat: pre-fix versions of `expire()` zeroed `at` without
+        // snapshotting it onto `expiredAt`, so a disk blob written by those
+        // versions can carry `at: 0` for any state. Re-stamp those entries
+        // with a synthetic plausible timestamp before insert — old enough
+        // that `get()` still misses (forcing refetch), recent enough that
+        // STALE_OPEN_PR_MS-based filters treat them as fresh-ish, and crucially
+        // non-zero so `schedulePersist` round-trips them to disk instead of
+        // dropping them. Applies uniformly to open/closed/merged entries —
+        // open ones still get the STALE_OPEN_PR_MS check below against the
+        // synthetic stamp (which is half-staleness-window old by construction,
+        // so they survive).
+        const at = v.at === 0 ? now - Math.floor(STALE_OPEN_PR_MS / 2) : v.at;
         const isOpen = v.pr?.state === 'open';
-        if (isOpen && now - v.at > STALE_OPEN_PR_MS) continue;
-        prCache.setWithTimestamp(k, v.pr, v.at);
+        if (isOpen && now - at > STALE_OPEN_PR_MS) continue;
+        prCache.setWithTimestamp(k, v.pr, at);
       }
       // setWithTimestamp intentionally skips the FIFO trim (cacheUtils.ts:57)
       // so callers can bulk-load without per-entry overhead. Trim once here
@@ -177,7 +220,20 @@ function schedulePersist() {
   persistDebounce = setTimeout(() => {
     const entries: Record<string, PersistedCacheEntry> = {};
     for (const [k, entry] of prCache.entries()) {
-      entries[k] = { at: entry.at, pr: entry.value };
+      // Persist soft-expired entries using their preserved pre-expire
+      // timestamp (`expiredAt`). `expire()` zeroes `at` in-memory as a
+      // refetch trigger, but snapshots the prior `at` onto `expiredAt` so
+      // the entry can still round-trip through disk with a valid timestamp.
+      // Without this, a schedulePersist fired while entries are soft-
+      // expired (e.g. after invalidatePrCacheForRepo, or an unrelated
+      // refetch during the 500ms debounce window) would either drop those
+      // entries from disk (breaking mergeTimeHeadSha survival across
+      // crash/restart) or persist them as at:0 (breaking STALE_OPEN_PR_MS
+      // on rehydrate). A truly uninitialised entry (at=0 and expiredAt=null)
+      // is the only case we still skip — it has no real timestamp to write.
+      const persistAt = entry.expiredAt ?? entry.at;
+      if (persistAt === 0) continue;
+      entries[k] = { at: persistAt, pr: entry.value };
     }
     const payload: PersistedCache = { version: 1, entries };
     void writePrCacheFile(JSON.stringify(payload));
@@ -222,8 +278,20 @@ function cacheKey(owner: string, repo: string, n: number) {
  *     observedLive=true.
  * The AND covers all three cases: cache-evicted live observation, app-
  * restart rehydrate, and genuine in-process transition. The Set is not
- * persisted, so it dies with the process; both are cleared in lockstep on
- * auth switch and in test teardown.
+ * persisted, so it dies with the process. On auth switch the two structures
+ * diverge intentionally: `liveObservations` is hard-cleared while `prCache`
+ * is soft-expired (entries stay in the map: `getStale()` keeps them
+ * reachable for the next refetch's freeze-preservation chain, and
+ * `schedulePersist` still sees them via `entries()` and writes their
+ * preserved pre-expire timestamp (snapshotted onto `expiredAt` in memory,
+ * persisted as the on-disk `at`) to disk, avoiding a cross-repo wipe).
+ * The first post-switch refetch of a previously-cached
+ * newly-merged PR therefore misses the live-transition branch (no Set
+ * membership) and falls through to observedLive=false — correctly fail-
+ * closed, since the prior live observation belonged to a different identity
+ * whose visibility into the PR's open state can't be trusted across the
+ * switch. In test teardown `_clearPrCacheForTests` still clears both in
+ * lockstep (no cross-repo persistence concern there).
  *
  * Cross-invalidation preservation is handled by `invalidatePrCacheForRepo`
  * soft-expiring entries rather than deleting them — `prCache.getStale()`
@@ -265,6 +333,14 @@ function setPrCacheEntry(key: string, pr: PRInfo | null): PRInfo | null {
 }
 
 export function _clearPrCacheForTests() {
+  // Cancel any pending persist debounce so a prior test's batchFetchPRs
+  // can't fire its 500ms timer mid-next-test and write a stale/empty
+  // payload to writePrCacheFileMock — same hazard as the auth-switch
+  // path in initGithub, just expressed across test boundaries.
+  if (persistDebounce) {
+    clearTimeout(persistDebounce);
+    persistDebounce = null;
+  }
   prCache.clear();
   liveObservations.clear();
   hydratePromise = null;
@@ -276,9 +352,17 @@ export function _clearPrCacheForTests() {
  * keep the entry values reachable via `getStale()` so `setPrCacheEntry`'s
  * fallback chain can preserve `mergeTimeHeadSha` + `observedLive` across
  * the refetch. Replaces a prior hard-delete design that required a
- * side-channel stash for freeze preservation; soft-expiry also survives
- * app crash between invalidate and refetch because expired entries still
- * persist to disk and rehydrate on boot.
+ * side-channel stash for freeze preservation.
+ *
+ * Soft-expiry also survives app crash between invalidate and refetch:
+ * `expire()` snapshots the pre-expire timestamp onto `expiredAt`, and
+ * `schedulePersist` writes `expiredAt ?? at`, so expired entries persist
+ * to disk with their prior valid timestamp and rehydrate on boot with
+ * their merged-PR state (including `mergeTimeHeadSha` +
+ * `mergeTimeHeadShaObservedLive`) intact. `expireOpenPrEntries` on the
+ * next boot re-marks non-terminal (`open` + `closed`) entries expired so
+ * they refetch on the first refresh tick — only `merged` entries, which
+ * GitHub disallows reopening, remain warm.
  */
 export function invalidatePrCacheForRepo(owner: string, repo: string): void {
   const prefix = `${owner}/${repo}#`;
@@ -288,6 +372,76 @@ export function invalidatePrCacheForRepo(owner: string, repo: string): void {
     if (prCache.expire(k)) expired++;
   }
   if (expired > 0) schedulePersist();
+}
+
+/**
+ * Soft-expire a specific list of PR cache entries. Used by the background
+ * refresh path in `runRefreshOnce` when new `(#N)` PR-tags appear on
+ * `origin/<defaultBranch>` — only those PRs need a refetch to flip their
+ * cached `state: 'open'` to `'merged'` so squash detection can catch them
+ * on the same tick rather than waiting up to the 5-min TTL. Soft-expire
+ * (vs hard-delete) preserves `mergeTimeHeadSha` + `observedLive` via
+ * `setPrCacheEntry`'s `getStale()` fallback chain.
+ */
+export function expirePrEntriesByNumbers(
+  owner: string,
+  repo: string,
+  numbers: number[],
+): void {
+  if (numbers.length === 0) return;
+  for (const n of numbers) {
+    prCache.expire(cacheKey(owner, repo, n));
+  }
+  // No schedulePersist: this is called from the background refresh tick,
+  // which typically fires schedulePersist shortly afterwards via
+  // batchFetchPRs (subject to early-return when toFetch.length===0,
+  // !transport, or currentAuthMethod==="none"), and even when it does
+  // not, the crash-safety property below covers it. Crash-safety is
+  // nevertheless intact: `expire()` preserves the pre-expire timestamp on
+  // `expiredAt`, and the next persist (ours or an unrelated one during the
+  // 500ms debounce) writes it to disk so entries round-trip cleanly.
+}
+
+/**
+ * Soft-expire every cached PR in a non-terminal state (`open` or `closed`)
+ * so the first post-boot refresh refetches them. Called once after
+ * `hydratePrCache()` resolves at app boot.
+ *
+ * Why both `open` and `closed`:
+ *   - `open` → might have merged while the app was quit.
+ *   - `closed` → GitHub allows reopening a closed PR and then merging it,
+ *     so a cached `closed` entry can also become `merged` between sessions.
+ * Only `merged` is truly terminal (GitHub disallows reopening a merged PR),
+ * so `merged` entries stay warm to avoid wasted network on the first tick —
+ * which matters because squash detection's PR-tag pass does a targeted
+ * PR lookup per first-parent commit on `main`.
+ *
+ * Name retained as `expireOpenPrEntries` for caller stability (the hook,
+ * tests, and surrounding comments all reference it); "open" here is now
+ * historical and means "non-terminal".
+ */
+export function expireOpenPrEntries(): void {
+  // Array.from materialises a snapshot of the entries before the loop so
+  // mutation during iteration is impossible. Even so, the mutation below is
+  // iterator-safe on its own: TTLCache.expire() only calls `map.set` on an
+  // existing key (re-writing the same entry with at=0) — it never inserts
+  // or deletes. JS is single-threaded, so there is no concurrent prCache.get
+  // race either: every reader that could fire during this loop is on a
+  // different turn of the event loop and sees either the pre- or post-expire
+  // state cleanly.
+  for (const [k, entry] of Array.from(prCache.entries())) {
+    const state = entry.value?.state;
+    if (state === 'open' || state === 'closed') {
+      prCache.expire(k);
+    }
+  }
+  // No schedulePersist: this is called once at boot, and the first refresh
+  // tick that follows will typically flush via batchFetchPRs (subject to
+  // the same early-return conditions), and even when it does not, expire()
+  // preserves expiredAt so the next persist from any path round-trips the
+  // entry correctly. Crash-safety is still intact (expire() preserves the
+  // pre-expire timestamp on expiredAt, so any later persist round-trips
+  // the entry with its real `at`).
 }
 
 export function _getPrCacheKeysForTests(): string[] {
@@ -385,8 +539,18 @@ function openPrListCacheKey(owner: string, repo: string): string {
 }
 
 export function invalidateOpenPrListCache(owner?: string, repo?: string): void {
-  if (owner && repo) openPrListCache.delete(openPrListCacheKey(owner, repo));
-  else openPrListCache.clear();
+  // Soft-expire the targeted entry (vs hard-delete) so
+  // `listOpenPRsForBranches`'s catch path can still recover the prior value
+  // via `getStale()` on a flaky network. A `delete()` here would mean a
+  // single failed refetch right after invalidate wipes every branch's
+  // open-PR data for the tick. The bulk variant (no args) hard-clears via
+  // `clear()`: it's used on auth switch where serving a stale entry from
+  // the previous identity would be wrong.
+  if (owner && repo) {
+    openPrListCache.expire(openPrListCacheKey(owner, repo));
+  } else {
+    openPrListCache.clear();
+  }
 }
 
 export function _getOpenPrListCacheKeysForTests(): string[] {

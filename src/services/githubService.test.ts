@@ -10,8 +10,9 @@ vi.mock('./tauriBridge', () => ({
   keychainStore: vi.fn().mockResolvedValue(undefined),
   keychainDelete: vi.fn().mockResolvedValue(undefined),
 }));
-import { readPrCacheFile } from './tauriBridge';
+import { readPrCacheFile, writePrCacheFile } from './tauriBridge';
 const readPrCacheFileMock = readPrCacheFile as unknown as ReturnType<typeof vi.fn>;
+const writePrCacheFileMock = writePrCacheFile as unknown as ReturnType<typeof vi.fn>;
 
 // Mock Octokit with shared graphql + paginate methods so tests can configure
 // them per-case. The Octokit class is now imported in octokitTransport.ts.
@@ -32,6 +33,8 @@ import {
   mapMergeable,
   mapReviewDecision,
   batchFetchPRs,
+  expireOpenPrEntries,
+  expirePrEntriesByNumbers,
   initGithub,
   hydratePrCache,
   getPR,
@@ -782,8 +785,12 @@ describe('listOpenPRsForBranches caching', () => {
 
     await listOpenPRsForBranches('o', 'r', ['feat/a']);
     invalidateOpenPrListCache('o', 'r');
+    // After targeted invalidate (now soft-expire), a failed refetch must
+    // recover the prior list via getStale() rather than collapsing to []
+    // — otherwise a single flaky tick wipes every branch's open-PR data.
     const out = await listOpenPRsForBranches('o', 'r', ['feat/a']);
-    expect(out.size).toBe(0);
+    expect(out.size).toBe(1);
+    expect(out.get('feat/a')?.number).toBe(1);
   });
 });
 
@@ -833,5 +840,764 @@ describe('validateToken', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(await validateToken()).toBe('valid');
     warnSpy.mockRestore();
+  });
+});
+
+describe('expirePrEntriesByNumbers', () => {
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    initGithub('test-token');
+  });
+
+  const openPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'OPEN',
+        merged: false,
+        mergedAt: null,
+        mergeCommit: null,
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  const mergedPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  it('soft-expires only the specified PR numbers, leaving siblings warm', async () => {
+    // Cache three PRs from one repo and one from another. Calling
+    // expirePrEntriesByNumbers([42, 43]) should make 42/43's next get()
+    // miss (forcing refetch) while 44 and the cross-repo entry stay warm.
+    graphqlMock.mockResolvedValueOnce({
+      repository: {
+        ...openPRResponse(42, 'tip-42').repository,
+        ...openPRResponse(43, 'tip-43').repository,
+        ...openPRResponse(44, 'tip-44').repository,
+      },
+    });
+    await batchFetchPRs('o', 'r', [42, 43, 44]);
+    graphqlMock.mockResolvedValueOnce(openPRResponse(99, 'tip-99'));
+    await batchFetchPRs('other', 'repo', [99]);
+
+    expirePrEntriesByNumbers('o', 'r', [42, 43]);
+
+    // Refetch all four; expect 42 and 43 to hit the network (one merged
+    // call covering both), and 44 + cross-repo 99 to be served from cache
+    // (no graphql call).
+    graphqlMock.mockResolvedValueOnce({
+      repository: {
+        ...mergedPRResponse(42, 'tip-42').repository,
+        ...mergedPRResponse(43, 'tip-43').repository,
+      },
+    });
+    graphqlMock.mockClear();
+    const refetched = await batchFetchPRs('o', 'r', [42, 43, 44]);
+    expect(graphqlMock).toHaveBeenCalledTimes(1);
+    expect(refetched.get(42)?.state).toBe('merged');
+    expect(refetched.get(43)?.state).toBe('merged');
+    expect(refetched.get(44)?.state).toBe('open');
+
+    graphqlMock.mockClear();
+    const crossRepo = await batchFetchPRs('other', 'repo', [99]);
+    expect(graphqlMock).not.toHaveBeenCalled();
+    expect(crossRepo.get(99)?.state).toBe('open');
+  });
+
+  it('preserves mergeTimeHeadSha + observedLive across the soft-expire + refetch path', async () => {
+    // The same freeze-preservation guarantee that invalidatePrCacheForRepo
+    // gives us — verified for the targeted helper too. This is the load-
+    // bearing property that lets the background-tick path use soft-expire
+    // safely without dropping observedLive=true. Uses fake timers to step
+    // past the 5-min TTL between observations (matches the open→merged
+    // transition test at line ~213).
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      graphqlMock.mockResolvedValueOnce(openPRResponse(42, 'open-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+
+      // Soft-expire mid-window — the next get() misses, getStale() still
+      // returns the merged entry so setPrCacheEntry preserves the freeze.
+      expirePrEntriesByNumbers('o', 'r', [42]);
+
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const refetched = await batchFetchPRs('o', 'r', [42]);
+      const pr = refetched.get(42);
+      expect(pr?.headSha).toBe('post-merge-tip');
+      expect(pr?.mergeTimeHeadSha).toBe('merge-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is a no-op for an empty number list', () => {
+    expirePrEntriesByNumbers('o', 'r', []);
+    // No throw, no state changes — function should return early without
+    // iterating the cache.
+    expect(_getPrCacheKeysForTests()).toEqual([]);
+  });
+
+  it('skips numbers with no cache entry', async () => {
+    graphqlMock.mockResolvedValueOnce(openPRResponse(42, 'tip-42'));
+    await batchFetchPRs('o', 'r', [42]);
+    // 999 isn't cached — expire() returns false for it and is a no-op.
+    // 42's entry should still be expired.
+    expirePrEntriesByNumbers('o', 'r', [42, 999]);
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'tip-42'));
+    const refetched = await batchFetchPRs('o', 'r', [42]);
+    expect(refetched.get(42)?.state).toBe('merged');
+  });
+});
+
+describe('expireOpenPrEntries', () => {
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    initGithub('test-token');
+  });
+
+  const openPRResponse = (num: number) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'OPEN',
+        merged: false,
+        mergedAt: null,
+        mergeCommit: null,
+        headRefName: `feat/${num}`,
+        headRefOid: `tip-${num}`,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  const mergedPRResponse = (num: number) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: `tip-${num}`,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  const closedPRResponse = (num: number) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'CLOSED',
+        merged: false,
+        mergedAt: null,
+        mergeCommit: null,
+        headRefName: `feat/${num}`,
+        headRefOid: `tip-${num}`,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  it('expires non-terminal (open + closed) entries; leaves merged warm', async () => {
+    // Seed the cache: open PR 1, merged PR 2, closed PR 4, plus a cross-repo
+    // open PR 3. After expireOpenPrEntries, 1, 3, and 4 should refetch on
+    // next read (reopen→merge between sessions is possible for closed PRs);
+    // only merged PR 2 stays warm (GitHub disallows reopening a merged PR).
+    graphqlMock.mockResolvedValueOnce(openPRResponse(1));
+    await batchFetchPRs('o', 'r', [1]);
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(2));
+    await batchFetchPRs('o', 'r', [2]);
+    graphqlMock.mockResolvedValueOnce(openPRResponse(3));
+    await batchFetchPRs('other', 'repo', [3]);
+    graphqlMock.mockResolvedValueOnce(closedPRResponse(4));
+    await batchFetchPRs('o', 'r', [4]);
+
+    expireOpenPrEntries();
+
+    // Open PR 1 — refetched (now merged).
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(1));
+    graphqlMock.mockClear();
+    const r1 = await batchFetchPRs('o', 'r', [1]);
+    expect(graphqlMock).toHaveBeenCalledTimes(1);
+    expect(r1.get(1)?.state).toBe('merged');
+
+    // Merged PR 2 — served from cache (no graphql call).
+    graphqlMock.mockClear();
+    const r2 = await batchFetchPRs('o', 'r', [2]);
+    expect(graphqlMock).not.toHaveBeenCalled();
+    expect(r2.get(2)?.state).toBe('merged');
+
+    // Cross-repo open PR 3 — also refetched (repo-agnostic helper).
+    graphqlMock.mockResolvedValueOnce(openPRResponse(3));
+    graphqlMock.mockClear();
+    const r3 = await batchFetchPRs('other', 'repo', [3]);
+    expect(graphqlMock).toHaveBeenCalledTimes(1);
+    expect(r3.get(3)?.state).toBe('open');
+
+    // Closed PR 4 — refetched (simulates reopen+merge between sessions).
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(4));
+    graphqlMock.mockClear();
+    const r4 = await batchFetchPRs('o', 'r', [4]);
+    expect(graphqlMock).toHaveBeenCalledTimes(1);
+    expect(r4.get(4)?.state).toBe('merged');
+  });
+
+  it('is a no-op when only merged entries are cached', async () => {
+    graphqlMock.mockResolvedValueOnce(mergedPRResponse(2));
+    await batchFetchPRs('o', 'r', [2]);
+
+    expireOpenPrEntries();
+
+    // Merged entry stays warm — refetch hits cache.
+    graphqlMock.mockClear();
+    const result = await batchFetchPRs('o', 'r', [2]);
+    expect(graphqlMock).not.toHaveBeenCalled();
+    expect(result.get(2)?.state).toBe('merged');
+  });
+});
+
+describe('schedulePersist preserves soft-expired entries on disk (F003/F021 regression)', () => {
+  // Regression suite for the round-9 finding: schedulePersist previously
+  // skipped any entry with `at === 0`, so any schedulePersist fired while
+  // entries were soft-expired (after invalidatePrCacheForRepo, or an
+  // unrelated refetch during the 500ms debounce window) would rewrite
+  // prs.json WITHOUT those entries — dropping mergeTimeHeadSha and losing
+  // crash-survival. Fix: expire() snapshots the pre-expire `at` onto
+  // `expiredAt`, schedulePersist writes `expiredAt ?? at`, so soft-expired
+  // entries round-trip through disk with their real prior timestamp.
+  //
+  // Each test waits on a custom writePrCacheFileMock to fire (the 500ms
+  // debounce means we need real or fake timers plus the mock).
+
+  const mergedPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    writePrCacheFileMock.mockReset();
+    writePrCacheFileMock.mockResolvedValue(undefined);
+    initGithub('test-token');
+  });
+
+  it('persists soft-expired entries with their pre-expire timestamp (invalidate + persist round-trip)', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Seed with a merged PR — cold-bootstrap path, so mergeTimeHeadSha
+      // gets frozen on first fetch.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+      // Flush the debounced persist from batchFetchPRs.
+      await vi.advanceTimersByTimeAsync(600);
+      writePrCacheFileMock.mockClear();
+
+      const invalidateAt = Date.parse('2026-01-01T00:05:00Z');
+      vi.setSystemTime(new Date(invalidateAt));
+
+      // Soft-invalidate and flush the debounce. The disk write must
+      // contain the entry with its pre-expire timestamp, not `at: 0`.
+      invalidatePrCacheForRepo('o', 'r');
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(writePrCacheFileMock).toHaveBeenCalledTimes(1);
+      const payload = JSON.parse(writePrCacheFileMock.mock.calls[0][0] as string);
+      expect(payload.entries['o/r#42']).toBeDefined();
+      expect(payload.entries['o/r#42'].at).not.toBe(0);
+      // at should match the pre-expire fetch time (Date.now() at seed).
+      expect(payload.entries['o/r#42'].at).toBe(
+        Date.parse('2026-01-01T00:00:00Z'),
+      );
+      expect(payload.entries['o/r#42'].pr.mergeTimeHeadSha).toBe('merge-tip');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not drop soft-expired entries when an unrelated PR fetch triggers schedulePersist mid-debounce', async () => {
+    // F003's most insidious symptom: invalidatePrCacheForRepo schedules a
+    // persist, and before the 500ms debounce fires, an unrelated getPR /
+    // batchFetchPRs on a different PR fires its own schedulePersist (which
+    // clears the pending timeout). Under the old implementation, the
+    // eventual single disk write skipped all at=0 entries, permanently
+    // losing them even though the map still held them. With expiredAt, the
+    // race-triggered write still contains them.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Seed two merged PRs in different repos.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip-42'));
+      await batchFetchPRs('o', 'r', [42]);
+      await vi.advanceTimersByTimeAsync(600);
+
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(99, 'merge-tip-99'));
+      await batchFetchPRs('other', 'repo', [99]);
+      await vi.advanceTimersByTimeAsync(600);
+      writePrCacheFileMock.mockClear();
+
+      // Invalidate repo o/r, then immediately fetch PR 99 on the other
+      // repo (cached — but force-refetch by clearing cache for it would
+      // require plumbing; instead, simulate via getPR on a fresh PR).
+      vi.setSystemTime(new Date('2026-01-01T00:05:00Z'));
+      invalidatePrCacheForRepo('o', 'r');
+
+      // Unrelated fetch that also schedules persist (resets the debounce).
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(100, 'merge-tip-100'));
+      // getPR-style fetch — need to fire the persist without affecting
+      // o/r#42's entry. Advance a tick but don't fire the debounce yet.
+      await batchFetchPRs('x', 'y', [100]);
+
+      // Flush the combined debounce.
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(writePrCacheFileMock).toHaveBeenCalled();
+      const calls = writePrCacheFileMock.mock.calls;
+      const payload = JSON.parse(calls[calls.length - 1][0] as string);
+      // The soft-expired o/r#42 entry MUST still be on disk with its
+      // pre-expire timestamp.
+      expect(payload.entries['o/r#42']).toBeDefined();
+      expect(payload.entries['o/r#42'].at).toBe(
+        Date.parse('2026-01-01T00:00:00Z'),
+      );
+      expect(payload.entries['o/r#42'].pr.mergeTimeHeadSha).toBe('merge-tip-42');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('crash-after-invalidate: rehydrating from the disk blob recovers freeze + observedLive', async () => {
+    // Full crash-survival trace: set up an observedLive=true PR, invalidate,
+    // capture the persist payload, then simulate a restart by clearing the
+    // cache and rehydrating from the captured blob. getStale must still
+    // return the frozen mergeTimeHeadSha.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Observe PR 42 open, then merged — gives observedLive=true.
+      graphqlMock.mockResolvedValueOnce({
+        repository: {
+          p42: {
+            number: 42,
+            title: 'PR 42',
+            state: 'OPEN',
+            merged: false,
+            mergedAt: null,
+            mergeCommit: null,
+            headRefName: 'feat/42',
+            headRefOid: 'open-tip',
+            url: 'https://github.com/o/r/pull/42',
+            isDraft: false,
+            mergeable: 'MERGEABLE',
+            reviewDecision: null,
+            commits: { nodes: [] },
+          },
+        },
+      });
+      await batchFetchPRs('o', 'r', [42]);
+      await vi.advanceTimersByTimeAsync(600);
+
+      vi.setSystemTime(new Date('2026-01-01T00:06:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+      await vi.advanceTimersByTimeAsync(600);
+      writePrCacheFileMock.mockClear();
+
+      // Invalidate, let persist fire.
+      invalidatePrCacheForRepo('o', 'r');
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(writePrCacheFileMock).toHaveBeenCalledTimes(1);
+      const capturedBlob = writePrCacheFileMock.mock.calls[0][0] as string;
+      const parsed = JSON.parse(capturedBlob);
+      // Entry is on disk with real timestamp + preserved freeze metadata.
+      expect(parsed.entries['o/r#42'].pr.mergeTimeHeadSha).toBe('merge-tip');
+      expect(parsed.entries['o/r#42'].pr.mergeTimeHeadShaObservedLive).toBe(true);
+
+      // Simulate app restart: clear memory, rehydrate from captured blob.
+      _clearPrCacheForTests();
+      readPrCacheFileMock.mockResolvedValueOnce(capturedBlob);
+      await hydratePrCache();
+
+      // Cache now holds the entry again — a follow-up fetch hits
+      // setPrCacheEntry's first branch (prior freeze wins).
+      vi.setSystemTime(new Date('2026-01-01T00:12:00Z'));
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'post-merge-tip'));
+      const result = await batchFetchPRs('o', 'r', [42]);
+      const pr = result.get(42);
+      expect(pr?.headSha).toBe('post-merge-tip');
+      expect(pr?.mergeTimeHeadSha).toBe('merge-tip');
+      expect(pr?.mergeTimeHeadShaObservedLive).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('upgrade-compat: rehydrated `at: 0` entries from a pre-fix release are not silently dropped on the next persist', async () => {
+    // Round-9 F003: a pre-fix release's `expire()` zeroed `at` without
+    // snapshotting it onto `expiredAt`, so a disk blob written by that
+    // release carries `{at: 0, pr: <merged-pr>}`. With the new
+    // `persistAt = entry.expiredAt ?? entry.at` rule in schedulePersist,
+    // any rehydrated legacy at:0 entry resolves to `null ?? 0 = 0` and
+    // gets dropped by the `if (persistAt === 0) continue` guard — silently
+    // wiping mergeTimeHeadSha off disk on the first post-upgrade persist.
+    //
+    // Fix lives in hydratePrCache: when v.at === 0 (legacy disk shape),
+    // re-stamp it with `Date.now() - Math.floor(STALE_OPEN_PR_MS / 2)` so
+    // the entry enters the cache with a synthetic-but-non-zero timestamp.
+    // schedulePersist then writes a real number, and the legacy entry
+    // round-trips cleanly across the upgrade boundary.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-04-01T00:00:00Z'));
+      // Synthetic pre-fix disk blob: at:0 + merged PR with full freeze
+      // metadata (mergeTimeHeadSha + observedLive=true). This is exactly
+      // what release 49581fe would have written after a user-initiated
+      // refresh that soft-expired the entry.
+      const legacyBlob = JSON.stringify({
+        version: 1,
+        entries: {
+          'o/r#42': {
+            at: 0,
+            pr: {
+              number: 42,
+              title: 'PR 42',
+              state: 'merged',
+              mergeCommitSha: 'merge-42',
+              headRef: 'feat/42',
+              headSha: 'merge-tip',
+              mergeTimeHeadSha: 'merge-tip',
+              mergeTimeHeadShaObservedLive: true,
+              url: 'https://github.com/o/r/pull/42',
+            },
+          },
+        },
+      });
+      readPrCacheFileMock.mockResolvedValueOnce(legacyBlob);
+      await hydratePrCache();
+
+      // Trigger schedulePersist via batchFetchPRs on an UNRELATED PR. The
+      // fetch path calls schedulePersist() unconditionally at its tail
+      // (githubService.ts:460), so this works even though o/r#42 itself
+      // isn't being refetched.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(100, 'merge-tip-100'));
+      await batchFetchPRs('x', 'y', [100]);
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(writePrCacheFileMock).toHaveBeenCalled();
+      const calls = writePrCacheFileMock.mock.calls;
+      const payload = JSON.parse(calls[calls.length - 1][0] as string);
+      // Legacy at:0 entry survives the upgrade — present on disk with a
+      // non-zero timestamp and freeze metadata intact.
+      expect(payload.entries['o/r#42']).toBeDefined();
+      expect(payload.entries['o/r#42'].at).not.toBe(0);
+      // Synthetic timestamp lands at Date.now() - STALE_OPEN_PR_MS/2 ≈
+      // 3.5 days ago. We don't assert exact value (it's an implementation
+      // detail of the clamp), only that it's a plausible recent timestamp:
+      // strictly less than now and strictly greater than a year ago.
+      const now = Date.parse('2026-04-01T00:00:00Z');
+      expect(payload.entries['o/r#42'].at).toBeGreaterThan(now - 365 * 24 * 60 * 60 * 1000);
+      expect(payload.entries['o/r#42'].at).toBeLessThan(now);
+      // Freeze + observedLive survive the round-trip.
+      expect(payload.entries['o/r#42'].pr.mergeTimeHeadSha).toBe('merge-tip');
+      expect(payload.entries['o/r#42'].pr.mergeTimeHeadShaObservedLive).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('initGithub cancels pending persist debounce on auth change (F022 regression)', () => {
+  // Regression test for F022: the initGithub auth-switch path called
+  // prCache.clear() without cancelling persistDebounce. A schedulePersist
+  // armed by a fetch that landed ≤500ms before the auth change would
+  // fire AFTER the clear, iterate the now-empty prCache, and atomic_write
+  // `entries: {}` to disk — wiping prior session's PR data even though
+  // that data is identifier-keyed and not token-keyed.
+  //
+  // Fix: clearTimeout(persistDebounce) inside the auth-change branch
+  // BEFORE clearing the in-memory caches. Result: disk state is left
+  // untouched on auth swap (recoverable) instead of wiped.
+
+  const mergedPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    writePrCacheFileMock.mockReset();
+    writePrCacheFileMock.mockResolvedValue(undefined);
+    initGithub('test-token');
+  });
+
+  it('does NOT write an empty entries map to disk when auth changes mid-debounce', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Seed cache with a merged PR. batchFetchPRs schedules a persist
+      // timer at the tail (githubService.ts schedulePersist call).
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+
+      // BEFORE the 500ms debounce fires, switch auth identity. The fix
+      // must clearTimeout(persistDebounce) so the empty post-clear map
+      // never reaches writePrCacheFile.
+      initGithub('pat', 'different-token');
+
+      // Advance well past the original debounce window. With the fix,
+      // the timer was cancelled, so no persist call should fire from
+      // the cancelled timer.
+      await vi.advanceTimersByTimeAsync(600);
+
+      // Either no write at all, or — if a future change adds a fresh
+      // schedulePersist after the auth swap — the payload is NOT empty.
+      // We assert the destructive case: nothing wrote `entries: {}` to
+      // disk. (Pre-fix, the cancelled-but-not-cancelled timer would
+      // fire here with the post-clear empty prCache.)
+      for (const call of writePrCacheFileMock.mock.calls) {
+        const payload = JSON.parse(call[0] as string);
+        expect(Object.keys(payload.entries).length).toBeGreaterThan(0);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('initGithub preserves on-disk PR cache across auth identity switch (F006 regression)', () => {
+  // Regression test for F006: the initGithub auth-switch path used to
+  // hard-clear the in-memory prCache. As soon as the first batchFetchPRs
+  // under the new identity fired, its schedulePersist would iterate the
+  // now-empty (or mostly-empty) prCache and atomically rewrite the disk
+  // payload — wiping prior identity's persisted entries (including PR data
+  // for repos the user previously visited but isn't currently viewing).
+  //
+  // Fix: replace prCache.clear() in the auth-switch branch with a
+  // soft-expire-all loop (matching invalidatePrCacheForRepo's pattern).
+  // expire() zeroes `at` so subsequent get() calls miss (forcing refetch
+  // under the new identity) but snapshots the prior `at` onto `expiredAt`
+  // so schedulePersist still round-trips the entries to disk. Result: the
+  // disk cache survives auth swaps; only the in-memory hot path is
+  // invalidated.
+
+  const mergedPRResponse = (num: number, headOid: string) => ({
+    repository: {
+      [`p${num}`]: {
+        number: num,
+        title: `PR ${num}`,
+        state: 'MERGED',
+        merged: true,
+        mergedAt: '2026-01-01T00:00:00Z',
+        mergeCommit: { oid: `merge-${num}` },
+        headRefName: `feat/${num}`,
+        headRefOid: headOid,
+        url: `https://github.com/o/r/pull/${num}`,
+        isDraft: false,
+        mergeable: 'MERGEABLE',
+        reviewDecision: null,
+        commits: { nodes: [] },
+      },
+    },
+  });
+
+  beforeEach(() => {
+    _clearPrCacheForTests();
+    graphqlMock.mockReset();
+    writePrCacheFileMock.mockReset();
+    writePrCacheFileMock.mockResolvedValue(undefined);
+    readPrCacheFileMock.mockReset();
+    readPrCacheFileMock.mockResolvedValue('');
+    initGithub('test-token');
+  });
+
+  it('next batchFetchPRs after auth switch does not wipe prior session entries from disk', async () => {
+    vi.useFakeTimers();
+    try {
+      // Hydrate from a synthetic prior-session disk payload covering two
+      // repos. One entry (r1#42) is merged with frozen mergeTimeHeadSha +
+      // observedLive=true; the other (r2#7) is a closed PR. Both look like
+      // real entries that survived a clean shutdown.
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const priorSessionAt = Date.parse('2025-12-31T23:00:00Z');
+      const priorBlob = JSON.stringify({
+        version: 1,
+        entries: {
+          'o/r1#42': {
+            at: priorSessionAt,
+            pr: {
+              number: 42,
+              title: 'PR 42',
+              state: 'merged',
+              mergeCommitSha: 'merge-42',
+              headRef: 'feat/42',
+              headSha: 'merge-tip',
+              mergeTimeHeadSha: 'merge-tip',
+              mergeTimeHeadShaObservedLive: true,
+              url: 'https://github.com/o/r1/pull/42',
+            },
+          },
+          'o/r2#7': {
+            at: priorSessionAt,
+            pr: {
+              number: 7,
+              title: 'PR 7',
+              state: 'closed',
+              mergeCommitSha: null,
+              headRef: 'feat/7',
+              headSha: 'close-tip',
+              url: 'https://github.com/o/r2/pull/7',
+            },
+          },
+        },
+      });
+      // _clearPrCacheForTests in beforeEach reset hydratePromise, so this
+      // hydrate call will read our blob.
+      readPrCacheFileMock.mockResolvedValueOnce(priorBlob);
+      await hydratePrCache();
+
+      // Sanity: the cache holds both entries pre-switch.
+      expect(_getPrCacheKeysForTests()).toEqual(
+        expect.arrayContaining(['o/r1#42', 'o/r2#7']),
+      );
+
+      // Switch auth identity. Pre-fix: prCache.clear() wipes the in-memory
+      // cache; the next batchFetchPRs's schedulePersist then writes
+      // entries: {<just the new fetch>} to disk, losing r1#42 and r2#7.
+      // Post-fix: soft-expire keeps both entries reachable for persist.
+      initGithub('pat', 'different-token');
+
+      // Trigger the next batchFetchPRs under the new identity. Use an
+      // unrelated repo (x/y) so the prior entries are not refetched —
+      // the test specifically targets cross-repo wipe.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(100, 'merge-tip-100'));
+      await batchFetchPRs('x', 'y', [100]);
+
+      // Flush the post-fetch debounce.
+      await vi.advanceTimersByTimeAsync(600);
+
+      // The most recent disk payload must still include r1#42 and r2#7
+      // with their pre-expire timestamps and freeze metadata intact.
+      expect(writePrCacheFileMock).toHaveBeenCalled();
+      const calls = writePrCacheFileMock.mock.calls;
+      const payload = JSON.parse(calls[calls.length - 1][0] as string);
+      expect(payload.entries['o/r1#42']).toBeDefined();
+      expect(payload.entries['o/r1#42'].at).toBe(priorSessionAt);
+      expect(payload.entries['o/r1#42'].pr.mergeTimeHeadSha).toBe('merge-tip');
+      expect(payload.entries['o/r1#42'].pr.mergeTimeHeadShaObservedLive).toBe(true);
+      expect(payload.entries['o/r2#7']).toBeDefined();
+      expect(payload.entries['o/r2#7'].at).toBe(priorSessionAt);
+      expect(payload.entries['o/r2#7'].pr.state).toBe('closed');
+      // The new identity's fetch is also persisted.
+      expect(payload.entries['x/y#100']).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('auth switch to "none" does not crash and leaves disk untouched (no fetch fires)', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      // Seed a real fetched merged PR.
+      graphqlMock.mockResolvedValueOnce(mergedPRResponse(42, 'merge-tip'));
+      await batchFetchPRs('o', 'r', [42]);
+      await vi.advanceTimersByTimeAsync(600);
+      writePrCacheFileMock.mockClear();
+
+      // Switch auth to 'none'. batchFetchPRs early-returns before
+      // schedulePersist when currentAuthMethod==='none', so no write
+      // should fire from a follow-up fetch attempt.
+      initGithub('none');
+      const result = await batchFetchPRs('o', 'r', [99]);
+      expect(result.size).toBe(0);
+      await vi.advanceTimersByTimeAsync(600);
+
+      // No fresh persist occurred (transport is null + early-return).
+      expect(writePrCacheFileMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

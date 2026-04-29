@@ -35,6 +35,7 @@ vi.mock('./githubService', () => ({
   batchFetchPRs: vi.fn(),
   invalidateOpenPrListCache: vi.fn(),
   invalidatePrCacheForRepo: vi.fn(),
+  expirePrEntriesByNumbers: vi.fn(),
 }));
 
 vi.mock('./claudeAwarenessService', () => ({
@@ -51,6 +52,7 @@ import type { AuthMethod } from './githubService';
 import * as squash from './squashDetector';
 import * as claude from './claudeAwarenessService';
 import * as conflicts from './conflictDetector';
+import type { Branch } from '../types';
 
 const asMock = <T extends (...args: any[]) => any>(fn: T) => fn as unknown as Mock;
 
@@ -751,6 +753,85 @@ describe('runFetchOnce skip-when-unchanged', () => {
     await userClick;
   });
 
+  it('repo switch while a background fetch is in-flight fires a real fetch for the new repo', async () => {
+    // Regression test for super-code-review item #7. Before this fix,
+    // `loadRepoAtPath` firing `runFetchOnce({ userInitiated: true })` while
+    // a background fetch for the OLD repo was still in-flight would silently
+    // join that fetch — waiting out its drain but never actually running
+    // `fetchAllPrune` for the NEW repo. A squash that landed on the new
+    // repo's remote wouldn't appear in `mainCommits` until the next 60s
+    // background tick. The join branch now detects the repo mismatch after
+    // the drain and recurses so the new repo gets a real fetch.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repoA', defaultBranch: 'main', owner: 'o', name: 'a' },
+    });
+    // Repo A's fetch hangs until we release it, so the user-initiated call
+    // lands on the in-flight branch. Repo B's fetch resolves immediately.
+    let releaseA: () => void = () => {};
+    asMock(git.fetchAllPrune).mockImplementation((path: string) => {
+      if (path === '/tmp/repoA') {
+        return new Promise<void>((r) => { releaseA = () => r(); });
+      }
+      return Promise.resolve();
+    });
+
+    const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    // Background tick fires for repo A.
+    const bgFetch = runFetchOnce();
+    for (let i = 0; i < 3; i++) await tick();
+    expect(asMock(git.fetchAllPrune)).toHaveBeenCalledWith('/tmp/repoA');
+
+    // Simulate loadRepoAtPath: flip the store to repo B, then fire the
+    // user-initiated fetch that lands on the in-flight branch.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repoB', defaultBranch: 'main', owner: 'o', name: 'b' },
+    });
+    const userFetch = runFetchOnce({ userInitiated: true });
+    for (let i = 0; i < 3; i++) await tick();
+
+    // Release repo A's fetch. The join branch's post-drain mismatch check
+    // should now recurse into runFetchOnce for repo B — fetchAllPrune must
+    // be called for BOTH paths, not just A.
+    releaseA();
+    await bgFetch;
+    await userFetch;
+
+    const calls = asMock(git.fetchAllPrune).mock.calls.map((c) => c[0]);
+    expect(calls).toContain('/tmp/repoA');
+    expect(calls).toContain('/tmp/repoB');
+  });
+
+  it('same-repo click joining an in-flight fetch does NOT trigger a redundant recursive fetch', async () => {
+    // Guard for the mismatch-detection fix above: when the user clicks
+    // refresh while a background fetch for the SAME repo is in-flight, the
+    // join branch's post-drain repo-path check should be a no-op — we must
+    // not fire a second fetchAllPrune against the same remote on every
+    // rapid click.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+    });
+    let releaseBg: () => void = () => {};
+    asMock(git.fetchAllPrune).mockImplementation(
+      () => new Promise<void>((r) => { releaseBg = () => r(); }),
+    );
+
+    const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    const bgFetch = runFetchOnce();
+    for (let i = 0; i < 3; i++) await tick();
+
+    const userClick = runFetchOnce({ userInitiated: true });
+    for (let i = 0; i < 3; i++) await tick();
+
+    releaseBg();
+    await bgFetch;
+    await userClick;
+
+    // Exactly one fetchAllPrune — the original in-flight background fetch.
+    expect(asMock(git.fetchAllPrune)).toHaveBeenCalledTimes(1);
+  });
+
   it('narrow pass is a no-op when the repo has no GitHub owner/name', async () => {
     // Non-GitHub remote (or remote that couldn't be resolved to an
     // owner/name pair). The narrow pass short-circuits before issuing
@@ -1189,5 +1270,296 @@ describe('merge-status ratchet', () => {
     await refreshOnce();
     // stale is not ratcheted — the transition to empty is allowed.
     expect(useRepoStore.getState().branches[0].mergeStatus).toBe('empty');
+  });
+});
+
+describe('targeted PR cache invalidation on background ticks', () => {
+  // The background fetch loop deliberately doesn't drop the per-PR cache
+  // (5min TTL — see the `if (userInitiated) invalidatePrCacheForRepo(...)`
+  // branch in `runFetchOnce`'s post-fetch block). Without targeted help,
+  // a PR that gets squash-merged on github.com is brought into origin/main
+  // by the next 60s fetch but the cached PRInfo still says state:'open',
+  // so detectSquashMerges' batchFetchPRs serves stale data and the squash
+  // classification doesn't land for up to 5min on auto-refresh. The diff
+  // injected into runRefreshOnce soft-expires only the PR entries whose
+  // (#N) tag is newly present in mainCommits — preserves the cost of the
+  // 5min TTL elsewhere while plugging the squash-detection gap.
+
+  function makeMainCommit(sha: string, prNumber?: number) {
+    const subject = prNumber !== undefined ? `do thing (#${prNumber})` : 'no pr';
+    return { sha, subject, date: '2026-01-01T00:00:00Z', prNumber };
+  }
+
+  it('invalidates only the newly-appeared PR numbers when origin/main advances', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('c', 102), makeMainCommit('b', 101), makeMainCommit('a', 100)],
+      total: 3,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledTimes(1);
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102, 101]);
+    // openPrListCache also dropped — soft-expire (not hard-delete). The (#N)
+    // tag is proof PR #N is merged, but hard-deleting the whole list would
+    // wipe getStale() recovery for unrelated active PRs on transport failure;
+    // batchFetchPRs's authoritative state override handles the just-merged
+    // PR row downstream.
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+  });
+
+  it('does NOT invalidate when mainCommits is unchanged', async () => {
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('a', 100)],
+      total: 1,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).not.toHaveBeenCalled();
+    expect(asMock(github.invalidateOpenPrListCache)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT invalidate on the first refresh of a session (empty prevMainCommits)', async () => {
+    // Cold boot — store.mainCommits is []. We can't diff so we skip.
+    // The bootstrap's expireOpenPrEntries() covers this case via a
+    // different mechanism (rehydrated cache state).
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('a', 100)],
+      total: 1,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT invalidate when the repo has no GitHub remote', async () => {
+    // Non-github remotes won't have owner/name, and there's no PR cache
+    // to invalidate anyway. Skip the diff entirely.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('b', 101), makeMainCommit('a', 100)],
+      total: 2,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).not.toHaveBeenCalled();
+    // No owner/name → diff block is skipped entirely; the open-PR list
+    // cache must not be dropped either (paired with expirePrEntriesByNumbers
+    // inside the same `if (newNumbers.length > 0)` branch).
+    expect(asMock(github.invalidateOpenPrListCache)).not.toHaveBeenCalled();
+  });
+
+  it('tags squash-merged when open-list fallback serves stale data but batchFetchPRs returns merged', async () => {
+    // Regression test for F016 + F031. Scenario:
+    //   1. Prior tick cached an open-PR list containing PR #42 as open.
+    //   2. A squash commit (#42) just landed on origin/main.
+    //   3. The targeted invalidation fires, but the refetch transport
+    //      fails — so `listOpenPRsForBranches` serves the pre-merge list
+    //      back via its `getStale()` fallback (unconditionally stamped
+    //      'open'). `batchFetchPRs` returns PR #42 with state: 'merged'
+    //      (authoritative via GraphQL).
+    //
+    // Before the fix, the `{ ...full, state: rest.state }` clamp re-stamped
+    // the PR as 'open', defeating detectSquashMerges' hasOpenPR guard and
+    // leaving the branch as unmerged for up to 5 minutes. After the fix,
+    // the unclobbered 'merged' state flows through and squashDetector tags
+    // the branch squash-merged on the same tick.
+    const branch = {
+      name: 'feat/squash',
+      hasLocal: true,
+      hasRemote: true,
+      lastCommitDate: '2026-01-01T00:00:00Z',
+      lastCommitSha: 'deadbeef',
+      aheadOfMain: 1,
+      behindMain: 0,
+      mergeStatus: 'unmerged' as const,
+    };
+    const stalePrEntry = {
+      number: 42,
+      title: 'Feat: squash me',
+      headRef: 'feat/squash',
+      url: 'https://github.com/o/r/pull/42',
+    };
+    const mergedPrFull = {
+      ...stalePrEntry,
+      state: 'merged' as const,
+      mergeCommitSha: 'squashsha',
+    };
+
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([branch]);
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [makeMainCommit('squashsha', 42), makeMainCommit('a', 100)],
+      total: 2,
+    });
+    // The open-list transport "failed" upstream: from the refresh loop's
+    // perspective, listOpenPRsForBranches silently returned the stale
+    // entry (state stamped 'open') via getStale(). We mock that here.
+    asMock(github.listOpenPRsForBranches).mockResolvedValueOnce(
+      new Map([['feat/squash', { ...stalePrEntry, state: 'open' }]]),
+    );
+    // batchFetchPRs returns the authoritative merged state.
+    asMock(github.batchFetchPRs).mockResolvedValueOnce(
+      new Map([[42, mergedPrFull]]),
+    );
+    // detectSquashMerges runs after the open-list attachment: if the PR
+    // flows through as merged, the detector can tag the branch. Assert
+    // on the shape it receives.
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }: { branches: Branch[] }) => {
+      const tagged = bs.map((b) =>
+        b.name === 'feat/squash' && b.pr?.state === 'merged'
+          ? { ...b, mergeStatus: 'squash-merged' as const }
+          : b,
+      );
+      return { updatedBranches: tagged, mappings: [] };
+    });
+
+    await refreshOnce();
+
+    // The targeted invalidation still fires for the newly-seen (#42) tag.
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [42]);
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+
+    const feat = useRepoStore.getState().branches.find((b) => b.name === 'feat/squash');
+    expect(feat?.pr?.state).toBe('merged');
+    expect(feat?.mergeStatus).toBe('squash-merged');
+  });
+
+  it('skips main commits with no (#N) PR tag', async () => {
+    // First-parent commits without a PR-style suffix (e.g. local merge
+    // commits, manual fast-forwards) carry no prNumber and contribute
+    // nothing to the diff.
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      mainCommits: [makeMainCommit('a', 100)],
+    });
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [
+        makeMainCommit('c', 102),
+        makeMainCommit('b'), // no PR tag
+        makeMainCommit('a', 100),
+      ],
+      total: 3,
+    });
+
+    await refreshOnce();
+
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [102]);
+    // newNumbers is non-empty ([102]) — the no-PR-tag commit is filtered
+    // out but the tagged one still triggers the paired open-PR list drop
+    // (soft-expire so getStale() can recover unrelated active PRs on
+    // transport failure).
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+  });
+
+  it('does NOT misclassify a name-collision branch as squash-merged when the open-PR refetch fails', async () => {
+    // Regression test for F004. Scenario: a branch name X has been reused —
+    // a historical PR #99 with headRef='X' was previously merged (squash),
+    // and the user is now working on a NEW branch X with an active open
+    // PR #200. On the tick that brings in a fresh (#250) tag (unrelated
+    // squash for some other branch), the targeted invalidation soft-expires
+    // the open-PR list. If the refetch transport then fails,
+    // listOpenPRsForBranches.getStale() must still serve the pre-tick list
+    // (which contains X→PR #200 as open) so squashDetector pass-1 sees
+    // X has hasOpenPR=true and skips the misclassification.
+    //
+    // Under the old hard-delete behavior, getStale() returned undefined →
+    // empty open-PR map → X had no .pr attached → hasOpenPR=false → if
+    // PR #99's mergeCommitSha happened to appear in mainCommits and #99
+    // was warm in prCache, X got incorrectly tagged squash-merged.
+    const branchX = {
+      name: 'X',
+      hasLocal: true,
+      hasRemote: true,
+      lastCommitDate: '2026-01-01T00:00:00Z',
+      lastCommitSha: 'newsha',
+      aheadOfMain: 3,
+      behindMain: 0,
+      mergeStatus: 'unmerged' as const,
+    };
+    const stalePr200 = {
+      number: 200,
+      title: 'Active PR for X',
+      headRef: 'X',
+      url: 'https://github.com/o/r/pull/200',
+    };
+
+    useRepoStore.setState({
+      repo: { path: '/tmp/repo', defaultBranch: 'main', owner: 'o', name: 'r' },
+      // Prior tick: mainCommits includes the historical squash for PR #99.
+      // The (#250) tag is what's NEW on this tick — the diff fires the
+      // soft-expire for that one only.
+      mainCommits: [makeMainCommit('histsha', 99), makeMainCommit('a', 100)],
+    });
+    asMock(git.listBranches).mockResolvedValueOnce([branchX]);
+    asMock(git.listMainCommits).mockResolvedValueOnce({
+      commits: [
+        makeMainCommit('newsquash', 250),
+        makeMainCommit('histsha', 99),
+        makeMainCommit('a', 100),
+      ],
+      total: 3,
+    });
+    // listOpenPRsForBranches under transport failure: githubService catches
+    // the throw and falls back to getStale(). With soft-expire, the prior
+    // entry is still reachable as stale and stamped 'open'. We mock the
+    // observable behavior here — the function returns the pre-tick map.
+    asMock(github.listOpenPRsForBranches).mockResolvedValueOnce(
+      new Map([['X', { ...stalePr200, state: 'open' }]]),
+    );
+    // batchFetchPRs returns the full data for #200 (still open) — no
+    // 'merged' entry that could clobber the row.
+    asMock(github.batchFetchPRs).mockResolvedValueOnce(
+      new Map([[200, { ...stalePr200, state: 'open' as const }]]),
+    );
+    // squashDetector receives the branches with X carrying its open PR.
+    // Simulate pass-1's hasOpenPR guard: when the branch carries an open
+    // PR, do NOT tag squash-merged. This is what the production detector
+    // does at squashDetector.ts:101.
+    asMock(squash.detectSquashMerges).mockImplementationOnce(async ({ branches: bs }: { branches: Branch[] }) => ({
+      updatedBranches: bs.map((b) =>
+        b.name === 'X' && b.pr?.state === 'open'
+          ? b // guard fires — leave unmerged
+          : b,
+      ),
+      mappings: [],
+    }));
+
+    await refreshOnce();
+
+    // The soft-expire still fired for the new (#250) tag.
+    expect(asMock(github.expirePrEntriesByNumbers)).toHaveBeenCalledWith('o', 'r', [250]);
+    // Soft-expire (no third arg) — hard-delete here would have cleared
+    // the open-PR list and undefined'd getStale(), removing the .pr
+    // attachment from X and unblocking the misclassification.
+    expect(asMock(github.invalidateOpenPrListCache)).toHaveBeenCalledWith('o', 'r');
+
+    const x = useRepoStore.getState().branches.find((b) => b.name === 'X');
+    // Open PR survives via getStale() fallback.
+    expect(x?.pr?.state).toBe('open');
+    expect(x?.pr?.number).toBe(200);
+    // Critical: X is NOT misclassified as squash-merged.
+    expect(x?.mergeStatus).toBe('unmerged');
   });
 });

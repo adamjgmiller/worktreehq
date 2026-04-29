@@ -10,6 +10,7 @@ import {
 import { detectSquashMerges } from './squashDetector';
 import {
   batchFetchPRs,
+  expirePrEntriesByNumbers,
   invalidateOpenPrListCache,
   invalidatePrCacheForRepo,
   listOpenPRsForBranches,
@@ -102,6 +103,14 @@ let fetchInFlight = false;
 // Promise mirror of `fetchInFlight` so user-initiated callers that land on a
 // background fetch can join it and then chain their own follow-up refresh.
 let fetchInFlightPromise: Promise<void> | null = null;
+// The repo path whose remote the in-flight fetch is pulling. Used by the
+// join branch to detect a repo switch during the drain: if the user called
+// `loadRepoAtPath` while a fetch for a DIFFERENT repo was in-flight, the old
+// `fetchAllPrune` pulled the wrong remote's refs and the new repo has no
+// real fetch yet. On mismatch the join branch recurses into `runFetchOnce`
+// (which now sees `fetchInFlight === false` because the old one's finally
+// cleared it) so the new repo actually fetches.
+let fetchInFlightRepoPath: string | null = null;
 
 // Single in-flight refresh promise. Callers that land during an active refresh
 // await the same work rather than kicking off a second one. Without this the
@@ -182,6 +191,67 @@ async function runRefreshOnce(): Promise<void> {
     const { commits: mainCommits, total: mainCommitsTotal } = mainCommitsResult;
     const remote = { owner: repo.owner, name: repo.name };
 
+    // Targeted PR cache invalidation. When `origin/<defaultBranch>` brings
+    // new (#N) tagged commits since our last snapshot, soft-expire just
+    // those per-PR cache entries AND soft-expire the open-PR list cache so
+    // detectSquashMerges' batchFetchPRs and the openPRs fetch below both
+    // refetch fresh data on this same tick. Without per-PR expiry, a
+    // background fetch brings in the squash commit but the detector still
+    // serves the cached `state: 'open'` PRInfo (5min TTL); without
+    // open-list invalidation, `listOpenPRsForBranches` returns the just-
+    // merged PR as still-open (60s TTL), detectSquashMerges then skips
+    // squash-tagging because the PR looks open.
+    // Read prevMainCommits fresh: `loadRepoAtPath` (in repoSelect.ts) and
+    // the `setRepoAndFetch`/`setRepoAndRefresh` wrappers (below) call
+    // `setMainCommits([])` directly during a repo switch and can race the
+    // awaits above. `refreshInFlight` dedupe rules out another refresh
+    // tick committing here, but not a different-writer reset.
+    // Skip when prevMainCommits is empty: that's either a first-refresh-
+    // of-session or a recovery from a failed prior tick, and the
+    // bootstrap's `expireOpenPrEntries()` already covers the boot case.
+    if (remote.owner && remote.name) {
+      const prevMainCommits = useRepoStore.getState().mainCommits;
+      if (prevMainCommits.length > 0) {
+        const prevPrSet = new Set<number>();
+        for (const c of prevMainCommits) {
+          if (c.prNumber !== undefined) prevPrSet.add(c.prNumber);
+        }
+        const newNumbers: number[] = [];
+        for (const c of mainCommits) {
+          if (c.prNumber !== undefined && !prevPrSet.has(c.prNumber)) {
+            newNumbers.push(c.prNumber);
+          }
+        }
+        if (newNumbers.length > 0) {
+          // Soft-expire (not hard-delete) here. The (#N) tag IS positive
+          // proof that PR #N is merged, but blowing away the entire open-PR
+          // list cache punishes every other branch in the repo when the
+          // refetch transport fails: `listOpenPRsForBranches` falls back to
+          // `getStale() ?? []`, and on a hard-deleted entry getStale()
+          // returns undefined — every branch loses its `.pr` attachment,
+          // including unrelated active open PRs.
+          //
+          // The original concern (stale list re-stamps the just-merged PR
+          // as 'open' and defeats squash-detection) is mitigated downstream
+          // by `batchFetchPRs`'s authoritative state override at the
+          // openPRs/branch attachment loop below: GraphQL is the source of
+          // truth for PR state, and any 'merged' it returns clobbers the
+          // 'open' the open-list stamped. So under transport failure, the
+          // worst case is the merged PR's own row gets squash-detected one
+          // tick later — vs hard-delete's worst case of mass-misclassifying
+          // active branches whose names collide with historical merged PRs
+          // (the historical merged-PR cache may stay warm in `prCache`
+          // while the live open-PR list is unreachable, opening the
+          // squashDetector pass-1 misclassification window).
+          //
+          // The other two invalidation call sites (join-branch, post-fetch)
+          // also use soft-expire; this call site is now consistent with them.
+          invalidateOpenPrListCache(remote.owner, remote.name);
+          expirePrEntriesByNumbers(remote.owner, remote.name, newNumbers);
+        }
+      }
+    }
+
     // Attach worktree paths to branches. Build new objects rather than
     // mutating the entries returned by listBranches so that any future
     // caching inside gitService can't accidentally leak attached fields
@@ -215,9 +285,14 @@ async function runRefreshOnce(): Promise<void> {
       for (const [branchName, rest] of openPRs) {
         const full = enriched.get(rest.number);
         if (full) {
-          // GraphQL `state` is "open" here by design (we only queried numbers from
-          // the open list), but keep the REST-side state to be safe.
-          openPRs.set(branchName, { ...full, state: rest.state });
+          // Trust batchFetchPRs' state: the open-PR list can be stale (60s
+          // TTL plus soft-expire getStale fallback) and unconditionally
+          // stamps 'open' on every entry it returns. Preserving the REST
+          // state would mask merged PRs as still-open on this tick,
+          // blocking detectSquashMerges's hasOpenPR guard and its cherry-
+          // fallback filter. batchFetchPRs (graphqlNodeToPRInfo) derives
+          // state from node.merged/node.state, so it is authoritative.
+          openPRs.set(branchName, full);
         }
       }
     }
@@ -348,13 +423,16 @@ async function runRefreshOnce(): Promise<void> {
     // CONTRACT: every caller that sets the store's `repo` MUST queue a
     // follow-up refreshOnce() synchronously. The new repo's refresh is
     // what drives `loading` back to false when it commits. If you're
-    // adding a new setRepo() call site, prefer `setRepoAndRefresh()`
-    // below — it couples the two steps so the invariant can't be
-    // forgotten. The only exception is the bootstrap path in
-    // `useRepoBootstrap`, which deliberately awaits `runFetchOnce()`
-    // before starting the refresh loop (to avoid a stale-refs flash on
-    // first paint); bootstrap uses raw `setRepo()` with a commented
-    // justification.
+    // adding a new setRepo() call site, prefer the sanctioned wrappers
+    // below — `setRepoAndRefresh()` for the plain case, or
+    // `setRepoAndFetch()` for runtime repo switches that must also pull
+    // remote refs (runFetchOnce fires its own synchronous optimistic
+    // refreshOnce before the fetch await, satisfying the same contract).
+    // Both couple the two steps so the invariant can't be forgotten. The
+    // only exception is the bootstrap path in `useRepoBootstrap`, which
+    // deliberately awaits `runFetchOnce()` before starting the refresh
+    // loop (to avoid a stale-refs flash on first paint); bootstrap uses
+    // raw `setRepo()` with a commented justification.
     if (useRepoStore.getState().repo?.path !== repo.path) return;
 
     // Atomic commit — a single setState triggers exactly one render pass.
@@ -490,6 +568,14 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     // in-flight fetch and then still run a user-initiated refresh so the
     // user's click produces the feedback (and post-fetch refresh) they
     // expect. Background calls during an in-flight fetch remain dropped.
+    //
+    // Special case: repo switch during an in-flight fetch. If
+    // `loadRepoAtPath` fired us while a background (or prior user) fetch
+    // was still pulling a DIFFERENT repo, joining that fetch means the
+    // new repo's remote never actually got pulled — the user would be
+    // staring at local-only refs for the new repo until the next 60s
+    // background tick. Detect the mismatch after the drain and recurse
+    // so a real fetchAllPrune fires for the current repo.
     if (userInitiated && fetchInFlightPromise) {
       // Hold the spinner for the whole click via the module-level refcount.
       // The optimistic and post-fetch refreshOnce calls each hold+release
@@ -511,9 +597,35 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
           invalidateOpenPrListCache(joinRepo.owner, joinRepo.name);
           invalidatePrCacheForRepo(joinRepo.owner, joinRepo.name);
         }
-        void refreshOnce({ userInitiated: true });
+        // Capture the repo the in-flight fetch is pulling BEFORE we await
+        // — the in-flight's finally will null it out as it resolves.
+        const inFlightPath = fetchInFlightRepoPath;
+        const joinOptimisticP = refreshOnce({ userInitiated: true });
         await fetchInFlightPromise.catch(() => {});
-        await refreshOnce(opts);
+        // If the store's repo differs from what the in-flight fetch was
+        // pulling — either because `loadRepoAtPath` flipped the store before
+        // calling us, or because a repo switch raced us during the drain —
+        // the in-flight fetch pulled the wrong remote. Recurse so the current
+        // repo gets a real fetch. The old fetch's finally has already cleared
+        // `fetchInFlight` by the time we get here, so this recursion lands in
+        // the "actually fetch" path rather than re-entering the join branch.
+        const currentRepo = useRepoStore.getState().repo;
+        const repoSwitched =
+          inFlightPath !== null &&
+          currentRepo !== null &&
+          currentRepo.path !== inFlightPath;
+        if (repoSwitched) {
+          // Await joinOptimisticP alongside the recursive fetch so this
+          // branch matches the same-repo path's invariant: by the time
+          // runFetchOnce({ userInitiated: true }) returns, every queued
+          // user-facing refresh has settled. They run in parallel because
+          // joinOptimisticP started above (the refreshOnce call a few lines up) and the recursive
+          // runFetchOnce begins immediately here.
+          await Promise.all([joinOptimisticP, runFetchOnce(opts)]);
+        } else {
+          await joinOptimisticP;
+          await refreshOnce(opts);
+        }
       } finally {
         releaseSpinner();
       }
@@ -523,6 +635,7 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
   const { repo, setFetching, setLastFetchError, setError } = useRepoStore.getState();
   if (!repo) return;
   fetchInFlight = true;
+  fetchInFlightRepoPath = repo.path;
   setFetching(true);
   // Hold the spinner via the refcount for the full click. holdSpinner
   // flips userRefreshing ON if nothing else is holding it; any inner
@@ -663,6 +776,7 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
     setFetching(false);
     fetchInFlight = false;
     fetchInFlightPromise = null;
+    fetchInFlightRepoPath = null;
     // Release the spinner claim in the same finally as setFetching so
     // the grid's grey-out and the RepoBar spinner stop together. The
     // refcount ensures that if another caller (e.g. a second rapid
@@ -731,7 +845,27 @@ async function runNarrowPrRefresh(
       const enriched = await batchFetchPRs(repo.owner, repo.name, numbers);
       for (const [branchName, rest] of openPRs) {
         const full = enriched.get(rest.number);
-        if (full) openPRs.set(branchName, { ...full, state: rest.state });
+        // Trust batchFetchPRs' state — see the matching comment in
+        // runRefreshOnce. Preserving the listOpenPRsForBranches entry
+        // would mask a merged PR returned by GraphQL as still-open.
+        //
+        // When GraphQL reports the PR is merged, drop the entry from
+        // openPRs entirely instead of attaching a merged PRInfo to the
+        // branch. The narrow pass doesn't re-run detectSquashMerges, so
+        // attaching a merged PRInfo to a branch whose mergeStatus is
+        // still 'unmerged' would render a merged-PR pill on an unmerged
+        // branch until the next full refresh. Deleting the entry causes
+        // the patch loop below to fall through to the existing
+        // `b.pr?.state === 'open'` strip-stale-open branch — which
+        // correctly drops a prior-tick open pill while preserving any
+        // cached merged pill from detectSquashMerges. The full path
+        // (runRefreshOnce) handles the same case safely because
+        // detectSquashMerges runs immediately after.
+        if (full?.state === 'merged') {
+          openPRs.delete(branchName);
+        } else if (full) {
+          openPRs.set(branchName, full);
+        }
       }
     }
 
@@ -821,8 +955,26 @@ export function setRepoAndRefresh(
   repo: RepoState,
   opts?: RefreshOptions,
 ): void {
+  useRepoStore.getState().setMainCommits([]);
   useRepoStore.getState().setRepo(repo);
   void refreshOnce(opts ?? { userInitiated: true });
+}
+
+// Variant of setRepoAndRefresh that kicks a user-initiated fetch instead of a
+// plain refresh. Use this on runtime repo switches where re-entering a repo
+// must also pull remote refs — a squash that landed on the remote while we
+// were on a different repo otherwise wouldn't appear in `mainCommits` until
+// the next 60s background fetch tick. `runFetchOnce` with `userInitiated:
+// true` fires its own synchronous optimistic `refreshOnce` before awaiting
+// the fetch, which preserves the same synchronous-follow-up contract the
+// CONTRACT comment on `setRepoAndRefresh` documents.
+export function setRepoAndFetch(
+  repo: RepoState,
+  opts?: RefreshOptions,
+): void {
+  useRepoStore.getState().setMainCommits([]);
+  useRepoStore.getState().setRepo(repo);
+  void runFetchOnce(opts ?? { userInitiated: true });
 }
 
 // Test-only: reset all module-level state between tests. Without this, a
@@ -834,6 +986,7 @@ export function _resetRefreshLoopForTests(): void {
   pendingBackgroundRefresh = false;
   fetchInFlight = false;
   fetchInFlightPromise = null;
+  fetchInFlightRepoPath = null;
   spinnerHolders = 0;
   running = false;
   if (timer) clearTimeout(timer);
