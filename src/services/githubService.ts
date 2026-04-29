@@ -164,8 +164,9 @@ let persistDebounce: ReturnType<typeof setTimeout> | null = null;
 // the cache-evicted case (no priorInCache) and the rehydrated-open case
 // (no Set membership because the rehydrated entry didn't go through
 // `setPrCacheEntry`). Not persisted: cold-bootstrap-after-restart must fail
-// closed. Cleared in lockstep with `prCache` on auth switch and in test
-// teardown.
+// closed. Hard-cleared on auth switch (where `prCache` soft-expires
+// instead — see `setPrCacheEntry` docstring) and in test teardown via
+// `_clearPrCacheForTests`, which clears both in lockstep.
 const liveObservations = new Set<string>();
 
 const STALE_OPEN_PR_MS = 7 * 24 * 60 * 60 * 1000;
