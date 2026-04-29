@@ -53,7 +53,7 @@ export function CreateWorktreeDialog({
   defaultPostCreateCommands: string;
   defaultPathPreset?: PathPresetId;
   onCancel: () => void;
-  onConfirm: (v: CreateWorktreeValue) => void;
+  onConfirm: (v: CreateWorktreeValue) => Promise<void> | void;
   onPickDirectory: () => Promise<string | null>;
 }) {
   const [path, setPath] = useState('');
@@ -145,6 +145,10 @@ export function CreateWorktreeDialog({
 
   const submit = async () => {
     const trimmed = path.trim();
+    if (mode === 'detached' && !detachedName.trim()) {
+      setError('Session name is required');
+      return;
+    }
     if (!trimmed) {
       setError('Path is required');
       return;
@@ -166,7 +170,7 @@ export function CreateWorktreeDialog({
         setError(`Path already exists: ${trimmed}`);
         return;
       }
-      onConfirm({
+      await onConfirm({
         path: trimmed,
         branch,
         newBranch: mode === 'new',
@@ -310,7 +314,7 @@ export function CreateWorktreeDialog({
                 <FolderOpen className="w-4 h-4" />
               </button>
             </div>
-            {!pathTouched && !currentName && repoPath && activeTemplate && (
+            {!path && !currentName && repoPath && activeTemplate && (
               <p className="mt-1 text-[11px] text-wt-fg-2">
                 Will create at:{' '}
                 <span className="font-mono">

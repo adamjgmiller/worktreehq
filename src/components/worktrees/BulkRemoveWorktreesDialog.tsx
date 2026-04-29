@@ -107,7 +107,9 @@ export function BulkRemoveWorktreesDialog({
   const allLocalDeletesAreSafe = useMemo(
     () =>
       effectiveWorktrees.every((w) => {
-        const m = effectiveBranchByName.get(w.branch)?.mergeStatus;
+        const branch = effectiveBranchByName.get(w.branch);
+        if (!branch || branch.name === defaultBranch) return true;
+        const m = branch.mergeStatus;
         return (
           m === 'merged-normally' ||
           m === 'squash-merged' ||
@@ -115,7 +117,7 @@ export function BulkRemoveWorktreesDialog({
           m === 'empty'
         );
       }),
-    [effectiveWorktrees, effectiveBranchByName],
+    [effectiveWorktrees, effectiveBranchByName, defaultBranch],
   );
   const requiresTyping =
     requiresForce || deleteRemote || (deleteLocal && !allLocalDeletesAreSafe);
@@ -157,7 +159,7 @@ export function BulkRemoveWorktreesDialog({
                 <li key={w.path} className="px-2 py-1.5 flex items-center gap-2">
                   <span className="text-wt-fg flex-shrink-0">{basename(w.path)}</span>
                   <span className="text-wt-muted">·</span>
-                  <span className="text-wt-fg-2 truncate">{w.branch}</span>
+                  <span className="text-wt-fg-2 truncate">{w.branch === '(detached)' ? (w.path.split(/[\\/]/).pop() || 'detached HEAD') : w.branch}</span>
                   {(w.untrackedCount + w.modifiedCount + w.stagedCount > 0 ||
                     w.hasConflicts ||
                     w.inProgress) && (
