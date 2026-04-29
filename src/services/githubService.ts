@@ -280,9 +280,11 @@ function cacheKey(owner: string, repo: string, n: number) {
  * restart rehydrate, and genuine in-process transition. The Set is not
  * persisted, so it dies with the process. On auth switch the two structures
  * diverge intentionally: `liveObservations` is hard-cleared while `prCache`
- * is soft-expired (entries stay reachable via `getStale()` so prior-identity
- * timestamps round-trip back to disk through `schedulePersist`, avoiding a
- * cross-repo wipe). The first post-switch refetch of a previously-cached
+ * is soft-expired (entries stay in the map: `getStale()` keeps them
+ * reachable for the next refetch's freeze-preservation chain, and
+ * `schedulePersist` still sees them via `entries()` and writes their
+ * preserved `expiredAt` to disk, avoiding a cross-repo wipe).
+ * The first post-switch refetch of a previously-cached
  * newly-merged PR therefore misses the live-transition branch (no Set
  * membership) and falls through to observedLive=false — correctly fail-
  * closed, since the prior live observation belonged to a different identity
