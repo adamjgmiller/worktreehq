@@ -8,8 +8,9 @@
 import { useRepoStore } from '../store/useRepoStore';
 import { invoke, updateConfig } from './tauriBridge';
 import { checkGitAvailable, setGitVersion, getDefaultBranch, getRemoteUrl } from './gitService';
-import { setRepoAndRefresh } from './refreshLoop';
-import { readWorktreeOrder } from './worktreeOrderService';
+import { setRepoAndFetch, setRepoAndRefresh } from './refreshLoop';
+import { invalidateOpenPrListCache, invalidatePrCacheForRepo } from './githubService';
+import { readWorktreeOrder, readWorktreeSortMode } from './worktreeOrderService';
 
 interface RepoInfo {
   path: string;
@@ -65,6 +66,7 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     setCrossWorktreeConflicts,
     setDataRepoPath,
     setWorktreeOrder,
+    setWorktreeSortMode,
   } = useRepoStore.getState();
   try {
     const info = await invoke<RepoInfo>('resolve_repo', { path: candidate });
@@ -102,31 +104,82 @@ export async function loadRepoAtPath(candidate: string): Promise<boolean> {
     setCrossWorktreeConflicts([], new Map());
     setDataRepoPath(null);
     setLastFetchError(null);
-    // Hydrate the persisted card order for the new repo BEFORE we flip
-    // `repo` and queue the refresh. Otherwise `setRepoAndRefresh` fires
-    // its refresh pipeline immediately, and if `commitRefreshResult`
-    // lands before `readWorktreeOrder` resolves, the Worktrees tab will
-    // render using the PREVIOUS repo's `worktreeOrder` — and then flicker
-    // to the new order once the read completes. Awaiting here preserves
-    // the old pre-#74 ordering guarantee on repo switches (a manual-sort
-    // repo never briefly shows the old repo's arrangement).
+    // Hydrate the persisted card order AND sort mode for the new repo
+    // BEFORE we flip `repo` and queue the refresh. Otherwise
+    // `setRepoAndRefresh` fires its refresh pipeline immediately, and if
+    // `commitRefreshResult` lands before the reads resolve, the Worktrees
+    // tab will render using the PREVIOUS repo's `worktreeOrder` /
+    // `worktreeSortMode` — and then flicker once the reads complete.
+    // Awaiting here preserves the old pre-#74 ordering guarantee on repo
+    // switches (a manual-sort repo never briefly shows the old repo's
+    // arrangement). Sort mode mirrors useRepoBootstrap's hydration block:
+    // if no mode is persisted but a manual order exists, default to
+    // 'manual' so a legacy drag arrangement isn't silently overwritten by
+    // the new 'recent' default; otherwise default to 'recent'.
+    // Per-read isolation: order and mode reads are wrapped in separate
+    // try/catch blocks so a successfully-loaded manual order isn't wiped
+    // by a subsequent mode-read failure.
+    let order: string[] = [];
     try {
-      const order = await readWorktreeOrder(info.path);
+      order = await readWorktreeOrder(info.path);
       setWorktreeOrder(order);
     } catch {
       setWorktreeOrder([]);
     }
-    // setRepoAndRefresh couples the store write to the follow-up refresh.
-    // runRefreshOnce's repo-switch early return leaks `loading: true` on
-    // purpose; the new repo's refresh is what clears it. A bare setRepo()
-    // here would leave the shimmer pinned if the refresh call were ever
-    // forgotten. See the CONTRACT comment in refreshLoop.ts.
-    setRepoAndRefresh({
+    try {
+      const savedMode = await readWorktreeSortMode(info.path);
+      if (savedMode) {
+        setWorktreeSortMode(savedMode);
+      } else if (order.length > 0) {
+        setWorktreeSortMode('manual');
+      } else {
+        setWorktreeSortMode('recent');
+      }
+    } catch {
+      setWorktreeSortMode(order.length > 0 ? 'manual' : 'recent');
+    }
+    // Soft-expire any cached PR entries for the destination repo BEFORE
+    // we flip `repo` and kick the refresh chain. Re-entering a previously-
+    // visited repo would otherwise serve last-visit's cached
+    // `state: 'open'` PRInfo to detectSquashMerges, missing any squash
+    // merge that landed remotely while we were away. Soft-expire (not
+    // hard-delete) preserves `mergeTimeHeadSha` + `observedLive` via
+    // `setPrCacheEntry`'s getStale() fallback chain.
+    // Both caches must drop together — the optimistic refreshOnce in
+    // runFetchOnce (below) would otherwise serve merged PRs as still-open
+    // from the 60s-TTL openPrListCache, blocking squashDetector.hasOpenPR
+    // and the cherry-fallback filter.
+    if (remote.owner && remote.name) {
+      invalidatePrCacheForRepo(remote.owner, remote.name);
+      invalidateOpenPrListCache(remote.owner, remote.name);
+    }
+    // Flip the store, then queue a refresh — using `setRepoAndFetch` when
+    // auto-fetch is enabled so re-entering a repo also pulls remote refs.
+    // Without the fetch, a squash that landed on the remote while we were
+    // on a different repo wouldn't appear in `mainCommits` until the next
+    // 60s background fetch tick. `runFetchOnce` with `userInitiated: true`
+    // fires its own immediate optimistic `refreshOnce({ userInitiated:
+    // true })` synchronously inside `runFetchOnce` before the fetch await,
+    // which preserves the synchronous-follow-up contract that
+    // runRefreshOnce's repo-switch early return relies on (see the
+    // CONTRACT comment in refreshLoop.ts). When `fetchIntervalMs === 0`
+    // (users who explicitly disabled auto-fetch — mirrors the bootstrap
+    // gate in useRepoBootstrap.ts), fall back to `setRepoAndRefresh` so
+    // the shimmer still lifts on the new repo's data without a surprise
+    // network call; that path also satisfies the CONTRACT (a queued
+    // refresh must follow a `setRepo` call).
+    const { fetchIntervalMs } = useRepoStore.getState();
+    const repoState = {
       path: info.path,
       defaultBranch,
       owner: remote.owner,
       name: remote.name,
-    });
+    };
+    if (fetchIntervalMs > 0) {
+      setRepoAndFetch(repoState);
+    } else {
+      setRepoAndRefresh(repoState);
+    }
     setError(null);
     // Update the in-memory MRU list immediately so the dropdown re-renders
     // before the config write resolves. The store is the source of truth

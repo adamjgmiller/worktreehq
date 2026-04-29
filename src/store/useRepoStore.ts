@@ -105,8 +105,10 @@ interface StoreState {
    *
    * Current direct callers: `useRepoBootstrap` (only because the bootstrap
    * path awaits `runFetchOnce()` before starting the refresh loop — see
-   * inline comment there). Everything else goes through
-   * `setRepoAndRefresh`. See the CONTRACT comment in `refreshLoop.ts`.
+   * inline comment there); and the sanctioned wrappers `setRepoAndRefresh`
+   * / `setRepoAndFetch` in `services/refreshLoop`, which every other call
+   * site (including `loadRepoAtPath` in `services/repoSelect`) must go
+   * through. See the CONTRACT comment in `refreshLoop.ts`.
    */
   setRepo: (r: RepoState) => void;
   setWorktrees: (w: Worktree[]) => void;
