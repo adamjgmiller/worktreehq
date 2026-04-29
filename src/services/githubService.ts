@@ -283,7 +283,8 @@ function cacheKey(owner: string, repo: string, n: number) {
  * is soft-expired (entries stay in the map: `getStale()` keeps them
  * reachable for the next refetch's freeze-preservation chain, and
  * `schedulePersist` still sees them via `entries()` and writes their
- * preserved `expiredAt` to disk, avoiding a cross-repo wipe).
+ * preserved pre-expire timestamp (snapshotted onto `expiredAt` in memory,
+ * persisted as the on-disk `at`) to disk, avoiding a cross-repo wipe).
  * The first post-switch refetch of a previously-cached
  * newly-merged PR therefore misses the live-transition branch (no Set
  * membership) and falls through to observedLive=false — correctly fail-
