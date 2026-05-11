@@ -46,6 +46,7 @@ export function WorktreeFilterBar({
   search,
   onSearch,
   leftActions,
+  selectAllControl,
   belowDescriptionExtra,
 }: {
   value: WorktreePreset;
@@ -57,6 +58,10 @@ export function WorktreeFilterBar({
   // than baked-in props so this component stays generic and the parent
   // controls keyboard shortcuts, click handlers, etc.
   leftActions?: ReactNode;
+  // Slot for a select-all affordance rendered between the chips and the
+  // search input. Kept as a render slot so the parent owns the selection
+  // state and the bar stays generic.
+  selectAllControl?: ReactNode;
   // Optional secondary line under the active-filter description (e.g.,
   // "drag-to-reorder paused while filtered"). Same row as `description` so
   // they don't fight for vertical space when both apply.
@@ -96,12 +101,20 @@ export function WorktreeFilterBar({
             </Tooltip>
           ))}
         </div>
+        {selectAllControl && (
+          // ml-auto lives on the slot so search stays flush-right after it.
+          // Without a slot, search keeps ml-auto so it floats right on its own.
+          <div className="ml-auto flex items-center">{selectAllControl}</div>
+        )}
         <input
           id="worktree-search-input"
           value={search}
           onChange={(e) => onSearch(e.target.value)}
           placeholder="search worktrees…"
-          className="ml-auto w-56 bg-wt-bg border border-wt-border rounded px-3 py-1.5 text-sm font-mono"
+          className={clsx(
+            selectAllControl ? '' : 'ml-auto',
+            'w-56 bg-wt-bg border border-wt-border rounded px-3 py-1.5 text-sm font-mono',
+          )}
         />
       </div>
       {(active?.description || belowDescriptionExtra) && (

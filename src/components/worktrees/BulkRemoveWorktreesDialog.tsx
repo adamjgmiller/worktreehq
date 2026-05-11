@@ -225,23 +225,24 @@ export function BulkRemoveWorktreesDialog({
                 Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
               </label>
               {requiresForce ? (
-                <p className="text-xs text-wt-muted mt-1">
+                <p id="bulk-remove-typing-confirm-hazard" className="text-xs text-wt-muted mt-1">
                   Force-remove discards the uncommitted state in the dirty worktrees above
                   and can’t be undone.
                 </p>
               ) : deleteRemote ? (
-                <p className="text-xs text-wt-muted mt-1">
+                <p id="bulk-remove-typing-confirm-hazard" className="text-xs text-wt-muted mt-1">
                   Remote branches are shared with collaborators — deletion is visible to
                   everyone on the team.
                 </p>
               ) : deleteLocal && !allLocalDeletesAreSafe ? (
-                <p className="text-xs text-wt-muted mt-1">
+                <p id="bulk-remove-typing-confirm-hazard" className="text-xs text-wt-muted mt-1">
                   At least one selected branch isn’t known-merged, so the force-delete
                   could drop commits not merged anywhere else.
                 </p>
               ) : null}
               <input
                 id="bulk-remove-typing-confirm"
+                aria-describedby="bulk-remove-typing-confirm-hazard"
                 value={typed}
                 onChange={(e) => setTyped(e.target.value)}
                 disabled={submitting}
