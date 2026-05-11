@@ -223,12 +223,69 @@ export function BranchesView() {
               }
             }
           }
+          // Remote-only archive intent: when the user picked archive-and-delete
+          // on a branch with no local ref, the local block above no-op'd (its
+          // outer gate is `b.hasLocal`), which previously meant the archive tag
+          // was silently dropped and the remote was deleted unarchived (#121).
+          // Honor the explicit archive intent by tagging from origin/<branch>
+          // before the remote delete. The remote-tracking ref is guaranteed to
+          // exist whenever `b.hasRemote === true` in the app's branch model.
+          // Mirrors the idempotent "already exists" handling from the hasLocal
+          // path. The lag risk (origin/<branch> last-fetched tip behind the
+          // live remote) is the same pattern the rest of the destructive flow
+          // already handles, per the issue's recommendation. Gating the
+          // remote delete on archive success preserves the same "if we can't
+          // archive, we don't destroy the last reference" property.
+          let remoteArchiveOk = true;
+          if (mode === 'archive-and-delete' && !b.hasLocal && b.hasRemote) {
+            const remoteRef = `origin/${b.name}`;
+            const tagName = archiveTagNameFor(b.name);
+            let archiveSha: string | undefined;
+            try {
+              archiveSha = await resolveCommitSha(repo.path, remoteRef);
+            } catch (e: any) {
+              errors.push(
+                `${b.name}: cannot resolve ${remoteRef} to archive — ${e?.message ?? e}; remote ref was NOT deleted`,
+              );
+              remoteArchiveOk = false;
+            }
+            if (remoteArchiveOk && archiveSha) {
+              try {
+                await tagBranch(repo.path, archiveSha, tagName);
+              } catch (tagErr: any) {
+                const tagMsg = String(tagErr?.message ?? tagErr);
+                if (!/already exists/.test(tagMsg)) {
+                  errors.push(`${b.name}: ${tagMsg}; remote ref was NOT deleted`);
+                  remoteArchiveOk = false;
+                } else {
+                  try {
+                    const existingTagSha = await resolveCommitSha(repo.path, tagName);
+                    if (existingTagSha === archiveSha) {
+                      infos.push(
+                        `${b.name}: archive tag ${tagName} already existed at this tip — reused`,
+                      );
+                    } else {
+                      errors.push(
+                        `${b.name}: archive tag ${tagName} already exists at a different commit (existing=${existingTagSha.slice(0, 7)}, wanted=${archiveSha.slice(0, 7)}) — use \`git tag <new-name> ${archiveSha.slice(0, 7)}\` to preserve the remote tip; remote ref was NOT deleted`,
+                      );
+                      remoteArchiveOk = false;
+                    }
+                  } catch (cmpErr: any) {
+                    errors.push(
+                      `${b.name}: archive tag ${tagName} verification failed (${cmpErr?.message ?? cmpErr}); remote ref was NOT deleted`,
+                    );
+                    remoteArchiveOk = false;
+                  }
+                }
+              }
+            }
+          }
           // When the local delete was deferred to the force-delete dialog
           // (`localDeferredToForce === true`), we also defer the remote delete to
           // performForceDelete. Deleting the remote here would leave the local ref
           // stranded if the user cancels the force dialog; the remote is re-issued
           // on confirm via `wantsRemote` in performForceDelete.
-          if (deletesRemote && b.hasRemote && !localDeferredToForce) {
+          if (deletesRemote && b.hasRemote && !localDeferredToForce && remoteArchiveOk) {
             await deleteRemoteBranch(repo.path, 'origin', b.name);
           }
         } catch (e: any) {
