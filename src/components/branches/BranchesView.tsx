@@ -207,14 +207,13 @@ export function BranchesView() {
       for (const b of selectedBranches) {
         let localDeferredToForce = false;
         // Pre-delete local tip SHA. Captured for every
-        // `archive-and-delete + hasLocal` regardless of mergeStatus, so:
-        //   - The primary `archive/<name>` tag can point at the captured
-        //     pre-delete SHA (the local ref is gone by the time we tag).
-        //   - The divergent-origin block can compare origin's SHA against
-        //     the actual local tip. Comparing against an "archive succeeded"
-        //     flag would spuriously fire for mergeStatuses where
-        //     shouldArchive used to be false, creating a redundant origin
-        //     tag even when local and origin pointed at the same commit.
+        // `archive-and-delete + hasLocal`, regardless of mergeStatus.
+        // Used by:
+        //   - The primary `archive/<name>` tag (the local ref is gone by
+        //     the time we tag, so we have to capture before `-d`).
+        //   - The divergent-origin block, which compares origin's SHA
+        //     against the actual local tip to skip the SHA-suffixed tag
+        //     when local and origin pointed at the same commit.
         let localPreDeleteSha: string | undefined;
         try {
           if (deletesLocal && b.hasLocal) {
@@ -234,17 +233,25 @@ export function BranchesView() {
             // performForceDelete, which does its own tag-then-force-delete
             // arc with idempotent "tag already exists at same SHA" handling.
             //
-            // shouldArchive runs for every archive-and-delete + hasLocal
-            // EXCEPT `empty` branches. Empty branches have no commits unique
-            // to them (everything is reachable from main by definition), so
-            // an archive tag would just clutter the namespace. For every
-            // OTHER non-empty mergeStatus that succeeds at `-d`, the user's
-            // archive intent is honored:
+            // shouldArchive runs for every archive-and-delete + hasLocal,
+            // regardless of mergeStatus. The user explicitly picked
+            // "archive + delete" — the archive tag is the explicit
+            // contract. Even `empty` branches (no unique commits, all
+            // reachable from main) get a tag pointing at the captured tip,
+            // matching what the ConfirmDeleteDialog promises and the
+            // remote-only archive path already does for the no-hasLocal
+            // case.
+            //
+            // Per mergeStatus:
             //   - merged-normally / direct-merged: `-d` typically succeeds;
             //     archive captures the merge tip.
-            //   - squash-merged: `-d` ALWAYS refuses → routes to
+            //   - squash-merged: `-d` typically refuses → routes to
             //     performForceDelete (which archives unconditionally for
-            //     archive-and-delete).
+            //     archive-and-delete). When the local tip happens to equal
+            //     the upstream tip, `-d` succeeds here instead and the
+            //     primary tag is created on the success path; the
+            //     squash-merged + force path is then bypassed because
+            //     localDeferredToForce stays false.
             //   - unmerged / stale: `-d` typically refuses, but CAN succeed
             //     when local tip equals upstream tip (git's "merged into
             //     upstream" rule). In that case the squash detector's
@@ -252,14 +259,15 @@ export function BranchesView() {
             //     check, but the user STILL picked archive-and-delete and
             //     deserves an archive tag — otherwise this code path would
             //     delete-and-forget commits that may not be on main.
-            const shouldArchive =
-              mode === 'archive-and-delete' && b.mergeStatus !== 'empty';
+            //   - empty: as above — archive tag honors the user's explicit
+            //     intent. Tag points at the (deleted) local tip, which is
+            //     reachable from main; no risk of dangling references.
+            const shouldArchive = mode === 'archive-and-delete';
             // Resolve the local tip once for both the primary archive tag
-            // (when shouldArchive) AND the divergent-origin comparison below
-            // (which needs the local SHA even when shouldArchive is false,
-            // i.e. for `empty` mergeStatus). One resolveCommitSha call
-            // instead of two; reused via archiveSha when shouldArchive is
-            // true.
+            // AND the divergent-origin comparison below (which needs the
+            // local SHA to skip the SHA-suffixed origin tag when local ==
+            // origin). One resolveCommitSha call instead of two; reused
+            // via archiveSha.
             if (mode === 'archive-and-delete') {
               localPreDeleteSha = await resolveCommitSha(repo.path, b.name);
             }
@@ -374,15 +382,11 @@ export function BranchesView() {
           // archive the origin SHA under a SHA-suffixed name when it
           // doesn't match the local tip.
           //
-          // Compares `originSha` against `localPreDeleteSha`, which is
-          // captured unconditionally for every archive-and-delete +
-          // hasLocal (whether or not shouldArchive ran a primary archive
-          // — `empty` mergeStatus branches skip the primary tag but the
-          // SHA is still captured for this comparison). Comparing against
-          // an "archive succeeded" flag would spuriously fire for `empty`
-          // branches (no primary tag → flag undefined → strict-inequality
-          // always true), creating a redundant tag even when local and
-          // origin pointed at the same commit.
+          // Compares `originSha` against `localPreDeleteSha`, captured
+          // unconditionally for every archive-and-delete + hasLocal. The
+          // primary archive runs for every such case (shouldArchive is
+          // unconditional under archive-and-delete), so `localPreDeleteSha`
+          // is always populated when this block runs.
           //
           // `!localDeferredToForce` is load-bearing: when `-d` is refused
           // (squash-merged always; merged-normally/direct-merged in the
@@ -492,12 +496,15 @@ export function BranchesView() {
             // Tag FIRST, still — just moved here from performDelete so the tag
             // only lands when the user actually confirms the force-delete.
             // Covers every deferred archive-and-delete item regardless of
-            // mergeStatus (squash-merged, unmerged, stale, other), so the
-            // user's archive intent is honored even for unmerged/stale
-            // branches. Idempotent "tag already exists at same SHA" handling
-            // lives in `ensureArchiveTag` (above the BranchesView function).
-            // LC_ALL=C in git_exec keeps the stderr string stable English so
-            // the regex inside the helper matches reliably.
+            // mergeStatus (any of squash-merged / unmerged / stale that
+            // routed here via `git -d` refusal, plus the 'other' rejection
+            // cohort — detector-vs-git disagreement on a
+            // merged-normally/direct-merged classification), so the user's
+            // archive intent is honored end-to-end. Idempotent "tag already
+            // exists at same SHA" handling lives in `ensureArchiveTag`
+            // (above the BranchesView function). LC_ALL=C in git_exec keeps
+            // the stderr string stable English so the regex inside the
+            // helper matches reliably.
             if (item.mode === 'archive-and-delete') {
               const tagName = archiveTagNameFor(item.branch.name);
               const result = await ensureArchiveTag(
