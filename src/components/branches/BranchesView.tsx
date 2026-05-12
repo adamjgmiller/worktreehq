@@ -83,7 +83,7 @@ async function ensureArchiveTag(
         return { ok: true, sha };
       }
       errors.push(
-        `${branchDisplayName}: an archive tag for this branch already exists at a different commit — rename the existing tag manually before retrying; ${opts.failureSuffix}`,
+        `${branchDisplayName}: an archive tag for this branch already exists at a different commit (existing=${existingTagSha.slice(0, 7)}, wanted=${sha.slice(0, 7)}) — rename the existing tag manually or use \`git tag <new-name> ${sha.slice(0, 7)}\` to preserve this tip; ${opts.failureSuffix}`,
       );
       return { ok: false };
     } catch (cmpErr: any) {
@@ -152,7 +152,9 @@ export function BranchesView() {
   // out-of-filter selections, contradicting the (n/m) counter shown in the
   // header (which is scoped to the filter intersection). When every filtered
   // branch is already in `prev`, this becomes "clear visible"; otherwise it's
-  // "fill visible". Mirrors toggleRange's additive `new Set(prev)` pattern.
+  // "fill visible". Mirrors the local `toggle` helper's additive
+  // `new Set(prev)` pattern (and WorktreesView's `toggleRange`, the
+  // parallel shift-click range writer there).
   const toggleAll = useCallback(() => {
     setSelection((prev) => {
       if (filtered.length === 0) return prev;
@@ -262,6 +264,12 @@ export function BranchesView() {
                 // SHA directly as the source ref (a SHA is a valid commit-ish
                 // for `git rev-parse`).
                 const tagName = archiveTagNameFor(b.name);
+                // failureSuffix branches on b.hasRemote because the local
+                // ref has ALREADY been deleted at this point: for a
+                // hasRemote branch the user-visible recovery info is "we
+                // didn't proceed to delete the remote either", but for a
+                // local-only branch there is no remote to mention, and
+                // claiming `remote branch was NOT deleted` would be a lie.
                 const result = await ensureArchiveTag(
                   repo.path,
                   archiveSha,
@@ -270,7 +278,9 @@ export function BranchesView() {
                   errors,
                   infos,
                   {
-                    failureSuffix: 'remote branch was NOT deleted',
+                    failureSuffix: b.hasRemote
+                      ? 'the local branch was deleted; remote branch was NOT deleted'
+                      : 'the local branch was deleted',
                     sourceLabel: 'branch tip',
                   },
                 );
@@ -336,18 +346,26 @@ export function BranchesView() {
           // Divergent-origin-tip archive: when both a local AND a remote
           // exist for an archive-and-delete, the local tip may not match
           // origin/<branch>'s tip (e.g. a force-push by a teammate, or a
-          // local rebase the user hasn't pushed). The local-archive step
-          // above tagged the local SHA; if origin points at a DIFFERENT
-          // commit, we need a second tag preserving the origin tip too —
-          // otherwise the remote delete below would destroy commits the
-          // single archive doesn't cover. Use a SHA-suffixed tag name so
-          // it can't collide with the primary archive tag.
-          if (
-            mode === 'archive-and-delete' &&
-            b.hasLocal &&
-            b.hasRemote &&
-            localArchivedSha !== undefined
-          ) {
+          // local rebase the user hasn't pushed). The remote delete below
+          // would destroy commits the primary archive doesn't cover, so we
+          // archive the origin SHA under a SHA-suffixed name when it
+          // doesn't match `localArchivedSha`.
+          //
+          // The gate runs for EVERY archive-and-delete with hasLocal AND
+          // hasRemote — not only when `localArchivedSha` was set. For
+          // `empty` / `other` mergeStatus branches that succeed at `-d`,
+          // `shouldArchive` is false so the local-archive step is skipped
+          // and `localArchivedSha` stays undefined; but the LOCAL ref has
+          // still been destroyed (line above) AND the remote may carry
+          // commits diverged from main. Comparing `originSha !==
+          // localArchivedSha` correctly returns true when
+          // `localArchivedSha` is undefined, so origin gets archived under
+          // a distinct tag whenever the primary archive doesn't already
+          // cover it. The convergent-tips case (origin === local) AND the
+          // case where no local archive ran AND origin happens to equal
+          // some other-known SHA still go through the helper's idempotent
+          // "tag already exists at same SHA" path on retry.
+          if (mode === 'archive-and-delete' && b.hasLocal && b.hasRemote) {
             const remoteRef = `refs/remotes/origin/${b.name}`;
             try {
               const originSha = await resolveCommitSha(repo.path, remoteRef);
@@ -479,7 +497,14 @@ export function BranchesView() {
                       errors,
                       infos,
                       {
-                        failureSuffix: 'remote branch was NOT deleted',
+                        // Origin archive failure here gates BOTH the local
+                        // force-delete and the remote delete below, so the
+                        // suffix accurately names both. Without this gate
+                        // the local would still force-delete and the user
+                        // would see only "remote branch was NOT deleted",
+                        // which under-reports what just happened.
+                        failureSuffix:
+                          'neither the local nor remote branch was deleted — retry once the origin tip can be archived',
                         sourceLabel: 'remote branch tip',
                       },
                     );
@@ -489,13 +514,28 @@ export function BranchesView() {
                   }
                 } catch (e: any) {
                   errors.push(
-                    `${item.branch.name}: could not read the latest commit for archiving remote branch tip — ${e?.message ?? e}. Try refreshing the branch list and retrying; remote branch was NOT deleted`,
+                    `${item.branch.name}: could not read the latest commit for archiving remote branch tip — ${e?.message ?? e}. Try refreshing the branch list and retrying; neither the local nor remote branch was deleted`,
                   );
                   originArchiveOk = false;
                 }
               }
             }
-            await deleteLocalBranch(repo.path, item.branch.name, true);
+            // Gate the local force-delete on originArchiveOk: when the
+            // user picks archive-and-delete and we couldn't archive the
+            // origin tip, force-deleting the local now would still leave
+            // origin's diverged commits reachable from `refs/remotes/origin/<name>`
+            // (since we also skip the remote delete below) — but the
+            // local archive tag created above only covers the local SHA.
+            // If origin gets pruned later, those commits become
+            // unreachable. Preserving the local ref lets the user retry
+            // archive-and-delete once the origin-archive issue is resolved.
+            // For modes other than archive-and-delete, `originArchiveOk`
+            // stays at its `true` default (the divergent-origin block is
+            // gated on `item.mode === 'archive-and-delete'`), so the local
+            // force-delete proceeds unchanged.
+            if (originArchiveOk) {
+              await deleteLocalBranch(repo.path, item.branch.name, true);
+            }
           }
           // Honor the original mode: if the user picked `both` or `archive-and-delete`,
           // their confirmation covered the remote ref too, so remove it now that the
@@ -562,7 +602,14 @@ export function BranchesView() {
           />
         </div>
       )}
-      <BulkActionBar count={selection.size} onAction={(m) => setConfirm(m)} />
+      {/* Count is the filter ∩ selection size (matches `selectedBranches`,
+          which is what the confirm dialog and the delete loop both consume).
+          Reading the raw `selection.size` here would over-report when
+          `toggleAll`'s scoped union/diff semantics have preserved
+          out-of-filter selections — the user would see "5 selected" but the
+          dialog would only list 3, and only 3 would actually get deleted.
+          Mirrors WorktreesView's `selectedActionable.length` shape. */}
+      <BulkActionBar count={selectedBranches.length} onAction={(m) => setConfirm(m)} />
       {confirm && (
         <ConfirmDeleteDialog
           branches={selectedBranches}
