@@ -207,11 +207,22 @@ export function BranchesView() {
       for (const b of selectedBranches) {
         let localDeferredToForce = false;
         // Track the SHA we successfully archived from the LOCAL tip (if any),
-        // so the post-local origin-tip archive step below can detect a
-        // divergent origin and tag it under a distinct name. Stays undefined
-        // when no local archive happened (mode != archive-and-delete, or no
-        // hasLocal, or the local archive failed and we `continue`'d).
+        // so post-action infos / errors can name the archived SHA. Stays
+        // undefined when no local archive happened (mode != archive-and-delete,
+        // or no hasLocal, or the local archive failed and we `continue`'d, or
+        // shouldArchive is false for the mergeStatus).
         let localArchivedSha: string | undefined;
+        // Pre-delete local tip SHA. Captured for every
+        // `archive-and-delete + hasLocal` regardless of shouldArchive, so the
+        // divergent-origin block below can compare origin's SHA against the
+        // actual local tip — not against `localArchivedSha`, which is only set
+        // when shouldArchive is true and would otherwise be `undefined` for
+        // `empty` / `other` mergeStatus branches, causing the strict-inequality
+        // check to spuriously fire and create a redundant origin tag even when
+        // local and origin pointed at the same commit. Capturing
+        // unconditionally for archive-and-delete + hasLocal aligns code with
+        // the UI copy ("when local and origin tips have diverged").
+        let localPreDeleteSha: string | undefined;
         try {
           if (deletesLocal && b.hasLocal) {
             // Capture-then-delete-then-tag: resolve the branch tip SHA BEFORE
@@ -238,9 +249,15 @@ export function BranchesView() {
             const shouldArchive =
               mode === 'archive-and-delete' &&
               (b.mergeStatus === 'merged-normally' || b.mergeStatus === 'direct-merged');
-            const archiveSha = shouldArchive
-              ? await resolveCommitSha(repo.path, b.name)
-              : undefined;
+            // Resolve the local tip once for both the primary archive tag
+            // (when shouldArchive) AND the divergent-origin comparison below
+            // (which needs the local SHA regardless of mergeStatus). One
+            // resolveCommitSha call instead of two; reused via archiveSha
+            // when shouldArchive is true.
+            if (mode === 'archive-and-delete') {
+              localPreDeleteSha = await resolveCommitSha(repo.path, b.name);
+            }
+            const archiveSha = shouldArchive ? localPreDeleteSha : undefined;
             try {
               // Never auto-force: git -d refuses unmerged branches and that's a feature.
               // "not fully merged" rejections route to ForceDeleteRejectedDialog,
@@ -350,23 +367,18 @@ export function BranchesView() {
           // local rebase the user hasn't pushed). The remote delete below
           // would destroy commits the primary archive doesn't cover, so we
           // archive the origin SHA under a SHA-suffixed name when it
-          // doesn't match `localArchivedSha`.
+          // doesn't match the local tip.
           //
-          // The gate runs for EVERY archive-and-delete with hasLocal AND
-          // hasRemote whose local `-d` SUCCEEDED — not only when
-          // `localArchivedSha` was set. For `empty` / `other` mergeStatus
-          // branches that succeed at `-d`, `shouldArchive` is false so the
-          // local-archive step is skipped and `localArchivedSha` stays
-          // undefined; but the LOCAL ref has still been destroyed (line
-          // above) AND the remote may carry commits diverged from main.
-          // Comparing `originSha !== localArchivedSha` correctly returns
-          // true when `localArchivedSha` is undefined, so origin gets
-          // archived under a distinct tag whenever the primary archive
-          // doesn't already cover it. The convergent-tips case (origin ===
-          // local) AND the case where no local archive ran AND origin
-          // happens to equal some other-known SHA still go through the
-          // helper's idempotent "tag already exists at same SHA" path on
-          // retry.
+          // Compares `originSha` against `localPreDeleteSha`, which is
+          // captured unconditionally for every archive-and-delete +
+          // hasLocal (whether or not shouldArchive ran a primary archive).
+          // Comparing against `localArchivedSha` would spuriously fire for
+          // `empty` / `other` mergeStatus branches whose shouldArchive is
+          // false — `localArchivedSha` stays undefined and `originSha
+          // !== undefined` is always true, creating a redundant tag even
+          // when local and origin pointed at the same commit. The
+          // unconditional capture closes that gap and makes the
+          // SHA-suffixed origin tag creation match the UI copy.
           //
           // `!localDeferredToForce` is load-bearing: when `-d` is refused
           // (squash-merged always; merged-normally/direct-merged in the
@@ -389,7 +401,7 @@ export function BranchesView() {
             const remoteRef = `refs/remotes/origin/${b.name}`;
             try {
               const originSha = await resolveCommitSha(repo.path, remoteRef);
-              if (originSha !== localArchivedSha) {
+              if (originSha !== localPreDeleteSha) {
                 const originTagName = `${archiveTagNameFor(b.name)}-origin-${originSha.slice(0, 7)}`;
                 const result = await ensureArchiveTag(
                   repo.path,
@@ -399,7 +411,11 @@ export function BranchesView() {
                   errors,
                   infos,
                   {
-                    failureSuffix: 'remote branch was NOT deleted',
+                    // Local has already been deleted at this point — mirror
+                    // the primary-archive call site's framing so the user
+                    // sees both refs' states in the error.
+                    failureSuffix:
+                      'the local branch was deleted; remote branch was NOT deleted',
                     sourceLabel: 'remote branch tip',
                   },
                 );
@@ -409,7 +425,7 @@ export function BranchesView() {
               }
             } catch (e: any) {
               errors.push(
-                `${b.name}: could not read the latest commit for archiving remote branch tip — ${e?.message ?? e}. Try refreshing the branch list and retrying; remote branch was NOT deleted`,
+                `${b.name}: could not read the latest commit for archiving remote branch tip — ${e?.message ?? e}. Try refreshing the branch list and retrying; the local branch was deleted; remote branch was NOT deleted`,
               );
               remoteArchiveOk = false;
             }
