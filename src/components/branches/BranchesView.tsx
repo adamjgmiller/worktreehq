@@ -149,12 +149,13 @@ export function BranchesView() {
   // FILTERED branches, so previously-selected branches that fall outside the
   // current filter view are preserved across the toggle. A wholesale replace
   // (the prior `new Set(filtered.map(...))`) would silently drop those
-  // out-of-filter selections, contradicting the (n/m) counter shown in the
-  // header (which is scoped to the filter intersection). When every filtered
-  // branch is already in `prev`, this becomes "clear visible"; otherwise it's
-  // "fill visible". Mirrors the local `toggle` helper's additive
-  // `new Set(prev)` pattern (and WorktreesView's `toggleRange`, the
-  // parallel shift-click range writer there).
+  // out-of-filter selections, which would then disagree with the
+  // `selectedBranches.length` shown in the BulkActionBar (and the
+  // ConfirmDeleteDialog / delete-loop driven by the same filter ∩ selection
+  // set). When every filtered branch is already in `prev`, this becomes
+  // "clear visible"; otherwise it's "fill visible". Mirrors the local
+  // `toggle` helper's additive `new Set(prev)` pattern (and WorktreesView's
+  // `toggleRange`, the parallel shift-click range writer there).
   const toggleAll = useCallback(() => {
     setSelection((prev) => {
       if (filtered.length === 0) return prev;

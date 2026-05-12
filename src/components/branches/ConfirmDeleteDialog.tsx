@@ -70,7 +70,11 @@ export function ConfirmDeleteDialog({
       </div>
       {mode === 'archive-and-delete' && (
         <p className="text-xs text-wt-muted mb-3">
-          Archive tags preserve the original commits so Squash Archaeology can recover them later.
+          Archive tags preserve the original commits so Squash Archaeology can recover them
+          later. If a branch&apos;s local and origin tips have diverged (e.g. a force-push or an
+          unpushed rebase), a second SHA-suffixed tag like{' '}
+          <code className="font-mono">archive/&lt;branch&gt;-origin-&lt;sha&gt;</code> is also
+          created so origin&apos;s tip is preserved.
         </p>
       )}
       {requiresTyping && (
