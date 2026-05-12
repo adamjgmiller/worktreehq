@@ -236,8 +236,11 @@ export function WorktreesView() {
   // `toggleRange` selects every card between the anchor and the clicked
   // path within the FILTERED order (so a shift-click range only spans
   // visible cards, matching what the user can actually see). `toggleAll`
-  // adds/clears the entire filtered subset; if all visible cards are
-  // already selected, it clears (Branches uses the same rule).
+  // uses scoped union/diff semantics: it fills-or-clears the CURRENTLY
+  // FILTERED subset while preserving any selections that fall outside the
+  // current filter view. A wholesale replace would silently drop those
+  // off-screen selections, which the (n/m) counter in the header (which
+  // is scoped to the filter intersection) would never show as missing.
   const toggle = useCallback((path: string) => {
     setSelection((prev) => {
       const next = new Set(prev);
@@ -272,10 +275,15 @@ export function WorktreesView() {
   );
   const toggleAll = useCallback(() => {
     setSelection((prev) => {
-      if (filtered.length > 0 && filtered.every((w) => prev.has(w.path))) {
-        return new Set();
+      if (filtered.length === 0) return prev;
+      const allFilteredSelected = filtered.every((w) => prev.has(w.path));
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        for (const w of filtered) next.delete(w.path);
+      } else {
+        for (const w of filtered) next.add(w.path);
       }
-      return new Set(filtered.map((w) => w.path));
+      return next;
     });
   }, [filtered]);
   // Single stable handler shared by all cards — each card knows its own
@@ -742,6 +750,12 @@ export function WorktreesView() {
             // when all filtered cards are selected clears. The indeterminate
             // state is a DOM property (not an HTML attribute), so we set it
             // via callback ref.
+            //
+            // No aria-label on the <input>: the wrapping <label>'s text
+            // content (including the dynamic "(n/m)" span) is the accessible
+            // name. An aria-label on a child input inside a <label> wins
+            // over the label's text, so omitting it lets screen readers
+            // announce the current count as it changes.
             <label className="flex items-center gap-1.5 text-xs text-wt-fg-2 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -751,7 +765,6 @@ export function WorktreesView() {
                 }}
                 onChange={toggleAll}
                 disabled={filtered.length === 0}
-                aria-label={`Select all ${filtered.length} visible worktrees`}
                 className="cursor-pointer disabled:cursor-not-allowed"
               />
               <span>
