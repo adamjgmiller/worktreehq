@@ -389,9 +389,12 @@ export function BranchesView() {
           // is always populated when this block runs.
           //
           // `!localDeferredToForce` is load-bearing: when `-d` is refused
-          // (squash-merged always; merged-normally/direct-merged in the
+          // (squash-merged typically; merged-normally/direct-merged in the
           // 'other' detector-vs-git cohort), the catch above pushes the
-          // branch onto `rejectedItems` and execution falls through. In
+          // branch onto `rejectedItems` and execution falls through.
+          // (Squash-merged whose local tip equals upstream tip is the
+          // exception: `-d` succeeds, `localDeferredToForce` stays false,
+          // and this block runs normally — that's intentional.) In
           // that case `performForceDelete` will create its own primary
           // archive tag AND its own divergent-origin tag after the user
           // confirms the force-delete dialog. Running this block now would
