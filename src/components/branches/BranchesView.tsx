@@ -352,20 +352,39 @@ export function BranchesView() {
           // doesn't match `localArchivedSha`.
           //
           // The gate runs for EVERY archive-and-delete with hasLocal AND
-          // hasRemote — not only when `localArchivedSha` was set. For
-          // `empty` / `other` mergeStatus branches that succeed at `-d`,
-          // `shouldArchive` is false so the local-archive step is skipped
-          // and `localArchivedSha` stays undefined; but the LOCAL ref has
-          // still been destroyed (line above) AND the remote may carry
-          // commits diverged from main. Comparing `originSha !==
-          // localArchivedSha` correctly returns true when
-          // `localArchivedSha` is undefined, so origin gets archived under
-          // a distinct tag whenever the primary archive doesn't already
-          // cover it. The convergent-tips case (origin === local) AND the
-          // case where no local archive ran AND origin happens to equal
-          // some other-known SHA still go through the helper's idempotent
-          // "tag already exists at same SHA" path on retry.
-          if (mode === 'archive-and-delete' && b.hasLocal && b.hasRemote) {
+          // hasRemote whose local `-d` SUCCEEDED — not only when
+          // `localArchivedSha` was set. For `empty` / `other` mergeStatus
+          // branches that succeed at `-d`, `shouldArchive` is false so the
+          // local-archive step is skipped and `localArchivedSha` stays
+          // undefined; but the LOCAL ref has still been destroyed (line
+          // above) AND the remote may carry commits diverged from main.
+          // Comparing `originSha !== localArchivedSha` correctly returns
+          // true when `localArchivedSha` is undefined, so origin gets
+          // archived under a distinct tag whenever the primary archive
+          // doesn't already cover it. The convergent-tips case (origin ===
+          // local) AND the case where no local archive ran AND origin
+          // happens to equal some other-known SHA still go through the
+          // helper's idempotent "tag already exists at same SHA" path on
+          // retry.
+          //
+          // `!localDeferredToForce` is load-bearing: when `-d` is refused
+          // (squash-merged always; merged-normally/direct-merged in the
+          // 'other' detector-vs-git cohort), the catch above pushes the
+          // branch onto `rejectedItems` and execution falls through. In
+          // that case `performForceDelete` will create its own primary
+          // archive tag AND its own divergent-origin tag after the user
+          // confirms the force-delete dialog. Running this block now would
+          // create an orphan `archive/<name>-origin-<sha7>` tag against
+          // a still-live branch that the user might cancel out of —
+          // duplicating performForceDelete's tag (harmless on confirm,
+          // idempotent via the helper) but polluting the user's tag
+          // namespace on cancel with archives they didn't authorize.
+          if (
+            mode === 'archive-and-delete' &&
+            b.hasLocal &&
+            b.hasRemote &&
+            !localDeferredToForce
+          ) {
             const remoteRef = `refs/remotes/origin/${b.name}`;
             try {
               const originSha = await resolveCommitSha(repo.path, remoteRef);
