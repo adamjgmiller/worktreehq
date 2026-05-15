@@ -18,7 +18,7 @@ export function BulkActionBar({
       <button
         onClick={() => onAction('archive-and-delete')}
         className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-wt-clean/15 border border-wt-clean/50 text-wt-clean rounded hover:bg-wt-clean/25"
-        title="Create archive/<branch> tags, then delete local + remote"
+        title="Create archive/<branch> tags (plus archive/<branch>-origin-<sha> when local and origin tips have diverged), then delete local + remote"
       >
         <Archive className="w-3.5 h-3.5" /> Archive + delete
       </button>

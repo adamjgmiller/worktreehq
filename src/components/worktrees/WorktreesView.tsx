@@ -236,8 +236,11 @@ export function WorktreesView() {
   // `toggleRange` selects every card between the anchor and the clicked
   // path within the FILTERED order (so a shift-click range only spans
   // visible cards, matching what the user can actually see). `toggleAll`
-  // adds/clears the entire filtered subset; if all visible cards are
-  // already selected, it clears (Branches uses the same rule).
+  // uses scoped union/diff semantics: it fills-or-clears the CURRENTLY
+  // FILTERED subset while preserving any selections that fall outside the
+  // current filter view. A wholesale replace would silently drop those
+  // off-screen selections, which the (n/m) counter in the header (which
+  // is scoped to the filter intersection) would never show as missing.
   const toggle = useCallback((path: string) => {
     setSelection((prev) => {
       const next = new Set(prev);
@@ -272,10 +275,15 @@ export function WorktreesView() {
   );
   const toggleAll = useCallback(() => {
     setSelection((prev) => {
-      if (filtered.length > 0 && filtered.every((w) => prev.has(w.path))) {
-        return new Set();
+      if (filtered.length === 0) return prev;
+      const allFilteredSelected = filtered.every((w) => prev.has(w.path));
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        for (const w of filtered) next.delete(w.path);
+      } else {
+        for (const w of filtered) next.add(w.path);
       }
-      return new Set(filtered.map((w) => w.path));
+      return next;
     });
   }, [filtered]);
   // Single stable handler shared by all cards — each card knows its own
@@ -293,6 +301,18 @@ export function WorktreesView() {
     [toggle, toggleRange],
   );
   const selectionActive = selection.size > 0;
+  // Counts driving the filter-bar's three-state select-all checkbox.
+  // `filteredSelectedCount` is intersection size — anything in `selection`
+  // that isn't in the current `filtered` view (e.g. a worktree that's
+  // selected but filtered out, or vanished externally) doesn't contribute,
+  // matching what the checkbox claims to represent.
+  const filteredSelectedCount = useMemo(
+    () => filtered.reduce((n, w) => n + (selection.has(w.path) ? 1 : 0), 0),
+    [filtered, selection],
+  );
+  const allFilteredSelected =
+    filtered.length > 0 && filteredSelectedCount === filtered.length;
+  const someFilteredSelected = filteredSelectedCount > 0 && !allFilteredSelected;
   // Derive everything from `filtered ∩ selection` so phantom selections (a
   // worktree the user selected and then had removed externally before the
   // refresh tick caught up) never reach the action loop. See plan
@@ -722,6 +742,38 @@ export function WorktreesView() {
                 onChange={handleSortModeChange}
               />
             </>
+          }
+          selectAllControl={
+            // Visual parity with Branches' header checkbox, adapted for the
+            // grid layout. Same `toggleAll` Cmd+A already drives — clicking
+            // when none-or-some selected fills the filtered set; clicking
+            // when all filtered cards are selected clears. The indeterminate
+            // state is a DOM property (not an HTML attribute), so we set it
+            // via callback ref.
+            //
+            // No aria-label on the <input>: the wrapping <label>'s text
+            // content (including the dynamic "(n/m)" span) is the accessible
+            // name. An aria-label on a child input inside a <label> wins
+            // over the label's text, so omitting it lets screen readers
+            // announce the current count as it changes.
+            <label className="flex items-center gap-1.5 text-xs text-wt-fg-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={allFilteredSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = someFilteredSelected;
+                }}
+                onChange={toggleAll}
+                disabled={filtered.length === 0}
+                className="cursor-pointer disabled:cursor-not-allowed"
+              />
+              <span>
+                Select all
+                {filteredSelectedCount > 0
+                  ? ` (${filteredSelectedCount}/${filtered.length})`
+                  : ''}
+              </span>
+            </label>
           }
           belowDescriptionExtra={
             !dragEnabled ? 'Drag-to-reorder is paused while a filter or search is active.' : undefined

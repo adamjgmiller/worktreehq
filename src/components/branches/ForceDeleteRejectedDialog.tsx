@@ -117,6 +117,14 @@ export function ForceDeleteRejectedDialog({
           </div>
         ))}
       </div>
+      {rejected.some((r) => r.mode === 'archive-and-delete' && r.branch.hasRemote) && (
+        <p className="text-xs text-wt-muted mb-3">
+          If a branch&apos;s local and origin tips have diverged (e.g. a force-push or an
+          unpushed rebase), a second SHA-suffixed tag like{' '}
+          <code className="font-mono">archive/&lt;branch&gt;-origin-&lt;sha&gt;</code> is also
+          created so origin&apos;s tip is preserved.
+        </p>
+      )}
       {requiresTyping && (
         <div className="mb-3">
           <label htmlFor="force-delete-confirm" className="text-xs text-wt-fg-2">

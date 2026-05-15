@@ -813,8 +813,8 @@ export async function runFetchOnce(opts?: RefreshOptions): Promise<void> {
 //     re-derived here.
 //
 // Error policy: the catch below is defensive. In practice
-// `listOpenPRsForBranches` (githubService.ts:282-285) and `batchFetchPRs`
-// (githubService.ts:241-243) swallow their own errors — returning empty-or-
+// `listOpenPRsForBranches` and `batchFetchPRs` (both in githubService.ts)
+// swallow their own errors — returning empty-or-
 // stale maps rather than rejecting — so common GitHub API failures (rate
 // limit, 500, revoked token) do NOT trip this catch. The catch exists so
 // that (a) unexpected throws from store reads, helper code, or future

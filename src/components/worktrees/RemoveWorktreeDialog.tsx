@@ -160,23 +160,25 @@ export function RemoveWorktreeDialog({
       )}
       {requiresTyping && (
         <div className="mb-3">
-          <label className="text-xs text-wt-fg-2">
+          <label htmlFor="remove-worktree-typed" className="text-xs text-wt-fg-2">
             Type <code className="font-mono text-wt-conflict">delete</code> to confirm:
           </label>
           {dirty ? (
-            <p className="text-xs text-wt-muted mt-1">
+            <p id="remove-worktree-typed-hazard" className="text-xs text-wt-muted mt-1">
               This discards the uncommitted state listed above and can't be undone.
             </p>
           ) : deleteLocal && !localDeleteIsSafe ? (
-            <p className="text-xs text-wt-muted mt-1">
+            <p id="remove-worktree-typed-hazard" className="text-xs text-wt-muted mt-1">
               The local branch is force-deleted, which can drop commits not merged anywhere else.
             </p>
           ) : deleteRemote ? (
-            <p className="text-xs text-wt-muted mt-1">
+            <p id="remove-worktree-typed-hazard" className="text-xs text-wt-muted mt-1">
               The remote branch is shared with collaborators; deleting it removes it for everyone.
             </p>
           ) : null}
           <input
+            id="remove-worktree-typed"
+            aria-describedby="remove-worktree-typed-hazard"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             disabled={submitting}
